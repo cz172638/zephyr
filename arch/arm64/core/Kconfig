@@ -44,6 +44,13 @@ config CPU_AARCH64_CORTEX_R
 	help
 	  This option signifies the use of a CPU of the Cortex-R 64-bit family.
 
+config CPU_CORTEX_A35
+	bool
+	select CPU_CORTEX_A
+	select ARMV8_A
+	help
+	  This option signifies the use of a Cortex-A35 CPU
+
 config CPU_CORTEX_A53
 	bool
 	select CPU_CORTEX_A
