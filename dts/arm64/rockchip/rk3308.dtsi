@@ -1,0 +1,144 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Addresses and interrupt IDs: RK3308 TRM v1.1 Part1, tables 1-1 and 1-3.
+ * GIC_SPI n == interrupt ID (n + 32).
+ */
+
+#include <arm64/armv8-a.dtsi>
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <freq.h>
+#include <mem.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x0>;
+			enable-method = "psci";
+		};
+
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x1>;
+			enable-method = "psci";
+		};
+
+		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x2>;
+			enable-method = "psci";
+		};
+
+		cpu3: cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x3>;
+			enable-method = "psci";
+		};
+	};
+
+	psci: psci {
+		compatible = "arm,psci-1.1";
+		method = "smc";
+	};
+
+	firmware {
+		/* OP-TEE as BL32 behind TF-A (SPD=opteed) */
+		optee: optee {
+			compatible = "linaro,optee-tz";
+			method = "smc";
+			status = "disabled";
+		};
+	};
+
+	arch_timer: timer {
+		compatible = "arm,armv8-timer";
+		/* CNTFRQ_EL0 as programmed by TF-A: 24 MHz oscillator */
+		clock-frequency = <DT_FREQ_M(24)>;
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+	};
+
+	soc {
+		/* GIC-400 inside the 64K window at 0xff580000 */
+		gic: interrupt-controller@ff581000 {
+			compatible = "arm,gic-400", "arm,gic-v2", "arm,gic";
+			reg = <0xff581000 0x1000>,	/* GICD */
+			      <0xff582000 0x2000>;	/* GICC */
+			interrupt-controller;
+			#interrupt-cells = <4>;
+			#address-cells = <0>;
+			status = "okay";
+		};
+
+		/*
+		 * Synopsys DW APB UARTs. clock-frequency assumes the boot loader
+		 * left SCLK_UARTx on the 24 MHz oscillator (what U-Boot does for
+		 * the 1.5 Mbaud debug console); there is no CRU driver yet.
+		 */
+		uart0: serial@ff0a0000 {
+			compatible = "rockchip,rk3308-uart", "ns16550";
+			reg = <0xff0a0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart1: serial@ff0b0000 {
+			compatible = "rockchip,rk3308-uart", "ns16550";
+			reg = <0xff0b0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart2: serial@ff0c0000 {
+			compatible = "rockchip,rk3308-uart", "ns16550";
+			reg = <0xff0c0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 20 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart3: serial@ff0d0000 {
+			compatible = "rockchip,rk3308-uart", "ns16550";
+			reg = <0xff0d0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart4: serial@ff0e0000 {
+			compatible = "rockchip,rk3308-uart", "ns16550";
+			reg = <0xff0e0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+	};
+};

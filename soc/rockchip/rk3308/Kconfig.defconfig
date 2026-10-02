@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_RK3308
+
+# GIC-400: SPI IDs go up to 148 (TRM table 1-3), ITLinesNumber = 4
+config NUM_IRQS
+	default 160
+
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default $(dt_node_int_prop_int,/timer,clock-frequency)
+
+# DW APB UART: registers must be accessed as 32-bit words
+configdefault UART_NS16550_ACCESS_WORD_ONLY
+	default y
+
+config FLASH_SIZE
+	default 0
+
+config FLASH_BASE_ADDRESS
+	default 0
+
+endif # SOC_RK3308
