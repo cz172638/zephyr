@@ -86,6 +86,92 @@
 			status = "okay";
 		};
 
+		grf: syscon@ff000000 {
+			compatible = "rockchip,rk3308-grf", "syscon";
+			reg = <0xff000000 0x10000>;
+		};
+
+		cru: syscon@ff500000 {
+			compatible = "rockchip,rk3308-cru", "syscon";
+			reg = <0xff500000 0x10000>;
+		};
+
+		gpio0: gpio@ff220000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff220000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio1: gpio@ff230000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff230000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio2: gpio@ff240000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff240000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio3: gpio@ff250000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff250000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio4: gpio@ff260000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff260000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		/* 10/100 RMII MAC (MAC2IO), DWMAC v3.x */
+		mac: ethernet@ff4e0000 {
+			compatible = "rockchip,rk3308-mac", "snps,dwmac";
+			reg = <0xff4e0000 0x10000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			rockchip,grf = <&grf>;
+			rockchip,cru = <&cru>;
+			phy-connection-type = "rmii";
+			/* CSR clock up to 150 MHz -> MDC /62, at most 2.4 MHz */
+			snps,clk-csr = <1>;
+			status = "disabled";
+
+			mdio: mdio {
+				compatible = "snps,dwmac-mdio";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
 		/*
 		 * Synopsys DW APB UARTs. clock-frequency assumes the boot loader
 		 * left SCLK_UARTx on the 24 MHz oscillator (what U-Boot does for
