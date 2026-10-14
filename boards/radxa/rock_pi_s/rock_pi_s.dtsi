@@ -17,20 +17,17 @@
 	};
 
 	/*
-	 * DDR layout of the boot chain (ROCK Pi S, 256 MiB minimum):
+	 * DDR layout when booting straight from BL31 (ROCK Pi S, 256 MiB min):
 	 *   0x00000000-0x000fffff BL31, DDR firewall region 0 (secure)
-	 *   0x00200000-...        U-Boot proper, load addresses up to 0x0a000000
 	 *   0x02000000-0x02ffffff Zephyr (below)
-	 *   0x0a000000-0x0affffff OP-TEE TZDRAM, firewall region 1 (secure)
-	 *   0x0b000000-0x0b3fffff OP-TEE SHMEM
-	 *   ~0x0cf00000-top       U-Boot after relocation (LMB)
+	 * No OP-TEE and no U-Boot proper are loaded.
 	 */
 	sram0: memory@2000000 {
 		device_type = "memory";
 		reg = <0x02000000 DT_SIZE_M(16)>;
 	};
 
-	/* Same carve-outs as the U-Boot/Linux -optee overlay; informational */
+	/* Informational: BL31's secure carve-out, kept clear of Zephyr */
 	reserved-memory {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -40,21 +37,7 @@
 			reg = <0x00000000 DT_SIZE_M(1)>;
 			no-map;
 		};
-
-		optee_core@a000000 {
-			reg = <0x0a000000 DT_SIZE_M(16)>;
-			no-map;
-		};
-
-		optee_shm@b000000 {
-			reg = <0x0b000000 DT_SIZE_M(4)>;
-			no-map;
-		};
 	};
-};
-
-&optee {
-	status = "okay";
 };
 
 &uart0 {
