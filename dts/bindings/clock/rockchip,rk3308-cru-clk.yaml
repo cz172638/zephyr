@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+title: Rockchip RK3308 CRU Clock Controller
+
+description: |
+  Clock gate controller for the Rockchip RK3308 CRU. Clock IDs are defined in
+  include/zephyr/dt-bindings/clock/rk3308-cru.h and encode the CRU_CLKGATE_CON
+  index and bit directly.
+
+compatible: "rockchip,rk3308-cru-clk"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - clkid
