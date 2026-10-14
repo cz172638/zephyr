@@ -6,6 +6,7 @@
 
 #include <rockchip/rk3308.dtsi>
 #include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pinctrl/rk3308-pinctrl.h>
 
 / {
 	compatible = "radxa,rock-pi-s", "rockchip,rk3308";
@@ -40,9 +41,19 @@
 	};
 };
 
+&pinctrl {
+	uart0_default: uart0-default {
+		group1 {
+			pinmux = <UART0_RX_M0>, <UART0_TX_M0>;
+		};
+	};
+};
+
 &uart0 {
 	status = "okay";
 	current-speed = <1500000>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
 };
 
 &gpio0 {

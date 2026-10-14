@@ -1,0 +1,33 @@
+# Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK3308 pin controller (GRF iomux).
+
+  A pin configuration state is a child of the controller; each of its group
+  grandchildren holds a 'pinmux' array built with the RK3308_PINMUX() helper
+  and the named macros from <zephyr/dt-bindings/pinctrl/rk3308-pinctrl.h>:
+
+    &pinctrl {
+            uart0_default: uart0-default {
+                    group1 {
+                            pinmux = <UART0_RX_M0>, <UART0_TX_M0>;
+                    };
+            };
+    };
+
+  The controller is a child of the GRF syscon node and uses its register block.
+
+compatible: "rockchip,rk3308-pinctrl"
+
+include: base.yaml
+
+child-binding:
+  child-binding:
+    description: RK3308 pin configuration group.
+
+    properties:
+      pinmux:
+        type: array
+        required: true
+        description: Encoded GRF iomux fields to apply for this group.
