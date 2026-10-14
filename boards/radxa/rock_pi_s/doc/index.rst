@@ -102,4 +102,24 @@ is up to the debugger scripts, and caches must be off while loading)::
 
   OPENOCD_INTERFACE=cmsis-dap west debug
 
+Load and run over OpenOCD + GDB
+-------------------------------
+
+For bring-up without flashing, load ``zephyr.elf`` straight into DRAM. Bring
+DRAM up first (let the boot chain reach BL31, or stop at a U-Boot prompt and
+run ``dcache flush; dcache off``); BL31 stays resident so Zephyr enters as
+BL33. ``support/openocd.cfg`` and ``support/rock_pi_s.gdb`` carry the helpers::
+
+  # terminal 1
+  OPENOCD_INTERFACE=cmsis-dap openocd -f boards/radxa/rock_pi_s/support/openocd.cfg
+  # terminal 2
+  gdb-multiarch build/zephyr/zephyr.elf -x boards/radxa/rock_pi_s/support/rock_pi_s.gdb
+  (gdb) zephyr_connect
+  (gdb) zephyr_run
+
+Without GDB, load the raw binary from the OpenOCD telnet console::
+
+  > rk3308_load_zephyr /path/to/build/zephyr/zephyr.bin
+  > resume
+
 Serial console: UART0, 1500000 8N1.
