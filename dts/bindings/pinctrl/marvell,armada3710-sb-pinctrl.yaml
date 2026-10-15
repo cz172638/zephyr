@@ -1,0 +1,42 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 37xx south bridge pin controller. Pin states are nodes
+  whose children each select one pin group:
+
+    &pinctrl_sb {
+      eth0_default: eth0_default {
+        rgmii {
+          marvell,bridge = <A37XX_SB>;
+          marvell,mask = <A37XX_SB_RGMII>;
+          marvell,value = <0>;          /* 0 = function, mask = GPIO */
+        };
+      };
+    };
+
+  The same layout is used under the north bridge node.
+
+compatible: "marvell,armada3710-sb-pinctrl"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+child-binding:
+  description: Pin state
+  child-binding:
+    description: One pin group
+    properties:
+      marvell,bridge:
+        type: int
+        required: true
+        description: A37XX_NB (0) or A37XX_SB (1)
+      marvell,mask:
+        type: int
+        required: true
+      marvell,value:
+        type: int
+        required: true

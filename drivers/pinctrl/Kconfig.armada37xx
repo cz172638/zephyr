@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config PINCTRL_ARMADA37XX
+	bool "Marvell Armada 37xx pin controller"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA3710_SB_PINCTRL_ENABLED
+	help
+	  Group based pin muxing through the north and south bridge
+	  selection registers.
