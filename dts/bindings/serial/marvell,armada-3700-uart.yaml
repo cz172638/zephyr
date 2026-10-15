@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: Marvell Armada 3700 standard UART
+
+compatible: "marvell,armada-3700-uart"
+
+include: [uart-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  interrupt-names:
+    required: true
+    description: Must contain "uart-sum".
+
+  clock-frequency:
+    type: int
+    description: |
+      Base clock of the baud generator. When given together with
+      current-speed the divider is reprogrammed; otherwise the bootloader
+      setting is kept.

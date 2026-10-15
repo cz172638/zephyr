@@ -1,0 +1,11 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config UART_MVEBU_A3700
+	bool "Marvell Armada 3700 UART"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_UART_ENABLED
+	select SERIAL_HAS_DRIVER
+	select SERIAL_SUPPORT_INTERRUPT
+	help
+	  Standard UART (UART0) of the Marvell Armada 37xx SoCs.

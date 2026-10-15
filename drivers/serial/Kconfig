@@ -168,6 +168,7 @@ comment "Serial Drivers"
 # zephyr-keep-sorted-start
 rsource "Kconfig.aesc"
 rsource "Kconfig.altera"
+rsource "Kconfig.mvebu_a3700"
 rsource "Kconfig.altera_jtag"
 rsource "Kconfig.ambiq"
 rsource "Kconfig.ameba_loguart"
