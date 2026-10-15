@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config PHY_MARVELL_MV88E6XXX
+	bool "Marvell 88E6xxx switch as a PHY (minimal bring-up)"
+	default y
+	depends on DT_HAS_MARVELL_MV88E6085_ENABLED
+	select MDIO
+	help
+	  Configure a Marvell Link Street switch, attached in multi-chip SMI
+	  mode, as a port expander for one MAC and report the aggregated
+	  link state of its user ports through the Ethernet PHY API.

@@ -1,0 +1,54 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell 88E6xxx (Link Street) Ethernet switch, minimal bring-up.
+
+  The switch is presented to the MAC as its PHY. It is configured so that
+  every user port forwards only to the CPU port and the CPU port to all
+  user ports (no DSA tagging, one network interface). The reported link is
+  up while any user port has link.
+
+  Only multi-chip addressing is supported: reg is the switch SMI address
+  (non-zero) on the parent MDIO bus. Internal PHYs are expected at
+  0x10 + port number, as on the 88E6341/6390 families.
+
+  Example (ESPRESSObin, 88E6341):
+
+    &mdio {
+        switch0: ethernet-switch@1 {
+            compatible = "marvell,mv88e6085";
+            reg = <1>;
+            marvell,cpu-port = <0>;
+            marvell,user-ports = [01 02 03];
+        };
+    };
+
+compatible: "marvell,mv88e6085"
+
+include: phy.yaml
+
+on-bus: mdio
+
+properties:
+  reg:
+    required: true
+    description: Switch SMI address (multi-chip mode).
+
+  marvell,cpu-port:
+    type: int
+    default: 0
+    description: Switch port connected to the MAC.
+
+  marvell,user-ports:
+    type: uint8-array
+    required: true
+    description: Front panel ports with internal PHYs.
+
+  marvell,cpu-port-mac-ctl:
+    type: int
+    default: 0xe002
+    description: |
+      Value for the CPU port "Physical Control" register (port register 1).
+      The default enables the RGMII RX and TX timing delays in the switch
+      and selects 1000 Mb/s, as U-Boot does on the ESPRESSObin.
