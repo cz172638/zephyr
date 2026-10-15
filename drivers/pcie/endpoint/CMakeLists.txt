@@ -9,3 +9,5 @@ zephyr_library_sources_ifdef(
   pcie_ep_iproc.c
   pcie_ep_iproc_msi.c
   )
+
+zephyr_library_sources_ifdef(CONFIG_PCIE_EPC pcie_epc_core.c)

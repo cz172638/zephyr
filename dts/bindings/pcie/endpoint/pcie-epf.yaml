@@ -1,0 +1,36 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: Common properties of PCIe endpoint functions.
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: Physical function number.
+
+  vendor-id:
+    type: int
+    required: true
+
+  device-id:
+    type: int
+    required: true
+
+  revision-id:
+    type: int
+
+  class-code:
+    type: int
+    description: 24-bit class code (base << 16 | sub << 8 | prog-if).
+
+  subsystem-vendor-id:
+    type: int
+
+  subsystem-id:
+    type: int
+
+  interrupt-pin:
+    type: int
+    description: 0 = none, 1 = INTA ... 4 = INTD. Default INTA.

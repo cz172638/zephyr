@@ -14,8 +14,54 @@ module = PCIE_EP
 module-str = PCIE_EP
 source "subsys/logging/Kconfig.template.log_config"
 
-comment "PCIe Endpoint Drivers"
+comment "Legacy PCIe Endpoint API (pcie_ep.h)"
 
 source "drivers/pcie/endpoint/Kconfig.iproc"
+
+comment "Endpoint Controller / Endpoint Function API (pcie_epc.h, pcie_epf.h)"
+
+config PCIE_EPC
+	bool "Endpoint controller core"
+	help
+	  Hardware independent part of the split endpoint stack: function
+	  bookkeeping, outbound window allocator, event delivery and link
+	  autostart. Selected by EPC controller drivers.
+
+if PCIE_EPC
+
+config PCIE_EPC_INIT_PRIORITY
+	int "Endpoint controller init priority"
+	default 70
+	help
+	  POST_KERNEL priority of EPC controller drivers. Must be after the
+	  firmware (TISCI), power domain and syscon drivers.
+
+config PCIE_EPF_INIT_PRIORITY
+	int "Endpoint function init priority"
+	default 75
+	help
+	  POST_KERNEL priority of EPF drivers, after PCIE_EPC_INIT_PRIORITY.
+
+config PCIE_EPC_AUTOSTART_PRIORITY
+	int "Endpoint link autostart priority"
+	default 80
+	help
+	  POST_KERNEL priority at which controllers with at least one bound
+	  function start link training. After PCIE_EPF_INIT_PRIORITY.
+
+config PCIE_EPC_OB_PAGES
+	int "Outbound window allocator granules"
+	default 64
+	range 8 1024
+	help
+	  Number of allocation units the outbound window is split into. The
+	  granule grows (power of two, min 4 KiB) until the window fits.
+
+config PCIE_EPC_EVENT_QUEUE_DEPTH
+	int "Pending controller events"
+	default 16
+
+endif # PCIE_EPC
+
 
 endif # PCIE_ENDPOINT

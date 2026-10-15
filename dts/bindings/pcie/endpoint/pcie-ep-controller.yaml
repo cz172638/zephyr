@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Common properties of PCIe endpoint controllers driven through the
+  pcie_epc API. Endpoint functions are child nodes; their unit address
+  (reg) is the physical function number.
+
+include: base.yaml
+
+properties:
+  max-functions:
+    type: int
+    default: 1
+    description: Number of physical functions the controller exposes.
+
+  max-link-speed:
+    type: int
+    description: Highest PCIe generation to train to (1..4).
+
+  num-lanes:
+    type: int
+    description: Number of lanes to use.
+
+  zephyr,no-autostart:
+    type: boolean
+    description: |
+      Do not start link training automatically after the endpoint
+      functions bound; the application calls pcie_epc_start().
+
+  "#address-cells":
+    const: 1
+
+  "#size-cells":
+    const: 0
