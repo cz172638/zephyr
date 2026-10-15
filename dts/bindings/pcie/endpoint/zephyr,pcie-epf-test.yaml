@@ -1,0 +1,40 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  PCIe endpoint test function, register compatible with the Linux
+  pci_endpoint_test host driver (drivers/misc/pci_endpoint_test.c) and the
+  pcitest / kselftest pci_endpoint tools. Child of a PCIe endpoint
+  controller node.
+
+compatible: "zephyr,pcie-epf-test"
+
+include: pcie-epf.yaml
+
+properties:
+  memory-region:
+    type: phandle
+    required: true
+    description: |
+      Non-cacheable memory backing the BARs. Must be reachable by the PCIe
+      controller (DDR carveout), not core-local TCM.
+
+  bar-sizes:
+    type: array
+    default: [512, 512, 1024, 16384, 131072, 1048576]
+    description: Size of BAR0..BAR5 in bytes, 0 disables the BAR.
+
+  test-reg-bar:
+    type: int
+    default: 0
+    description: BAR carrying the test register block.
+
+  msi-interrupts:
+    type: int
+    default: 16
+    description: Number of MSI vectors to advertise.
+
+  msix-interrupts:
+    type: int
+    default: 0
+    description: Number of MSI-X vectors to advertise (0 = MSI-X off).

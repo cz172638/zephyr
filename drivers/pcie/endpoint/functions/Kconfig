@@ -1,0 +1,33 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+if PCIE_EPC
+
+comment "PCIe Endpoint Functions"
+
+config PCIE_EPF_TEST
+	bool "Linux pci_endpoint_test compatible test function"
+	default y
+	depends on DT_HAS_ZEPHYR_PCIE_EPF_TEST_ENABLED
+	select CRC
+	help
+	  Endpoint function speaking the register protocol of the Linux
+	  pci_endpoint_test host driver. On the host:
+	    modprobe pci_endpoint_test
+	    pcitest -b 0 / -r -s 65536 / -w -s 65536 / -c -s 65536 / -m 1
+	  or the kselftest "pci_endpoint" suite.
+
+config PCIE_EPF_TEST_POLL_US
+	int "Command register poll period [us]"
+	default 1000
+	depends on PCIE_EPF_TEST
+
+config PCIE_EPF_TEST_CHUNK
+	int "Transfer chunk size"
+	default 65536
+	depends on PCIE_EPF_TEST
+	help
+	  Host transfers are mapped and copied in chunks of this size, which
+	  also sizes the bounce buffer.
+
+endif # PCIE_EPC

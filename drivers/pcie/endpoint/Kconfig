@@ -63,5 +63,6 @@ config PCIE_EPC_EVENT_QUEUE_DEPTH
 
 endif # PCIE_EPC
 
+source "drivers/pcie/endpoint/functions/Kconfig"
 
 endif # PCIE_ENDPOINT

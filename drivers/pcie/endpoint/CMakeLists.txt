@@ -11,3 +11,4 @@ zephyr_library_sources_ifdef(
   )
 
 zephyr_library_sources_ifdef(CONFIG_PCIE_EPC pcie_epc_core.c)
+add_subdirectory_ifdef(CONFIG_PCIE_EPC functions)
