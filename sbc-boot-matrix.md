@@ -34,7 +34,7 @@ Legenda: ✅ upstream a otevřené · 🟡 otevřené, ale ve forku nebo WIP · 
 
 | deska | SoC | jádra (všechna) | DRAM init | BL1/BL2 | BL31 / SBI | Zephyr dnes |
 |---|---|---|---|---|---|---|
-| ESPRESSObin | Marvell A3720 | 2× A53, 1× Cortex-M3 (secure CPU, WTMI) | ✅ mv-ddr + WTMI (CZ.NIC) | ✅ TF-A BL1+BL2 (`PLAT=a3700`) | ✅ TF-A | ❌ |
+| ESPRESSObin | Marvell A3720 | 2× A53, 1× Cortex-M3 (secure CPU, WTMI) | ✅ mv-ddr + WTMI (CZ.NIC) | ✅ TF-A BL1+BL2 (`PLAT=a3700`) | ✅ TF-A | 🟡 větev `espressobin` (2× A53 BL33, UART, síť přes 88E6341), [detail](espressobin.md) |
 | ROCK Pi S | RK3308 | 4× A35 | 🔒 rkbin `ddr.bin` (U-Boot `sdram_rk3308.c` = jen detekce velikosti) | ✅ U-Boot TPL/SPL (s blobem) | 🔒 rkbin `rk3308_bl31` (v TF-A rk3308 není) | ❌ (chybí i `CPU_CORTEX_A35` v arch/arm64) |
 | FRWY-LS1012A, FRDM-LS1012A | NXP LS1012A | 1× A53 (PFE PE jádra jen s firmwarem) | 🟡 NXP DDR driver ve forku TF-A | 🟡 TF-A BL2 přes PBL/RCW, jen NXP fork (qoriq atf, LSDK) | 🟡 tamtéž | ❌ (je jen `ls1046a`) |
 | Radxa Zero 3E | RK3566 | 4× A55 (RISC-V MCU: ověřit v TRM) | 🔒 rkbin `ddr.bin` (`sdram_rk3568.c` = jen detekce) | ✅ U-Boot SPL | ✅ TF-A `rk3568` | 🟡 `rk3568` SoC (stačí varianta rk3566) |
@@ -64,8 +64,8 @@ Otevřená cesta tedy existuje, ale přes fork. Port `soc-ls1012a` do upstream T
 1. **ROCK Pi 4 (RK3399): dokončit.**
    - Remap PERILP M0 přesunout z U-Boot SPL do TF-A `bl31_plat_setup`, kde už je `m0_init()` pro PMU M0. U-Boot tak zůstane vanilla.
    - BL31 stavět s `aarch64-none-elf`/`aarch64-linux-gnu`. Se Zephyr SDK gcc 14 linker hlásí ADR_PREL_LO21.
-2. **ESPRESSObin (A3720): referenční TF-A BL1+BL2+BL31+FIP, celé otevřené.**
-   - Zephyr: nový SoC `a3700` (2× A53, GIC-500) a driver UART `marvell,armada-3700-uart` (Zephyr ho nemá, je to jednoduchý driver).
+2. **ESPRESSObin (A3720): referenční TF-A BL1+BL2+BL31+FIP, celé otevřené.** ✅ hotovo bez HW testu, viz [espressobin.md](espressobin.md).
+   - Zephyr: SoC `armada3720` (2× A53, GIC-500), UART, pinctrl, hodiny, NETA + 88E6341.
    - Do FIP: `--nt-fw zephyr.bin`.
    - Cortex-M3 běží WTMI, které obsluhuje reset a DVFS pro TF-A. Zephyr na CM3 = reimplementace WTMI mailboxu, až později.
 3. **FRDM/FRWY-LS1012A: TF-A BL2 přes PBL.**
