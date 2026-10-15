@@ -44,7 +44,7 @@ Legenda: ✅ upstream a otevřené · 🟡 otevřené, ale ve forku nebo WIP · 
 | BeagleY-AI | TI J722S / AM67A | 4× A53, 3× R5F (wkup, mcu, main), 2× C7x | ✅ U-Boot R5 SPL `k3-ddrss` | ✅ U-Boot R5 SPL (+ 🔒 TIFS) | ✅ TF-A `k3` | 🟡 jen R5F `main`/`mcu` |
 | BeagleBone AI-64 | TI J721E | 2× A72, 6× R5F, 2× C66x, 1× C7x | ✅ U-Boot R5 SPL `k3-ddrss` | ✅ U-Boot R5 SPL (+ 🔒 TIFS) | ✅ TF-A `k3` | 🟡 jen R5F |
 | ESP32-P4 | Espressif | 2× HP RV32IMAFC, 1× LP RV32 | ROM (PSRAM) | MCUboot / Zephyr simple boot | – (bez SBI, M-mode) | ✅ `hpcore`, `lpcore` |
-| „xy k1“ = SpacemiT K1 (předpoklad) | SpacemiT K1 | 8× X60 RV64GCV (2×4) + RCPU subsystém (ISA nezveřejněná) | 🔒 `ddr_fw.bin` (SpacemiT) | 🟡 U-Boot SPL poslaný do ML 2026-03, nezamergovaný | ✅ OpenSBI upstream (v1.9) | ❌ |
+| „xy k1“ (SpacemiT K1, potvrzeno) | SpacemiT K1 | 8× X60 RV64GCV (2×4) + RCPU subsystém (ISA nezveřejněná) | 🔒 `ddr_fw.bin` (SpacemiT) | 🟡 U-Boot SPL poslaný do ML 2026-03, nezamergovaný | ✅ OpenSBI upstream (v1.9) | ❌ |
 
 Poznámky k TI K3:
 
