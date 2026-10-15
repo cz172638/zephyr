@@ -1,0 +1,50 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config ETH_MVNETA
+	bool "Marvell NETA (Armada 3700) Ethernet driver"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_NETA_ENABLED
+	select PINCTRL
+	select CLOCK_CONTROL
+	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT
+	help
+	  Enable the NETA gigabit Ethernet controller of the Marvell
+	  Armada 3700 SoC.
+
+if ETH_MVNETA
+
+config ETH_MVNETA_RX_DESCS
+	int "Number of RX descriptors"
+	default 64
+	range 8 1024
+
+config ETH_MVNETA_TX_DESCS
+	int "Number of TX descriptors"
+	default 32
+	range 4 1024
+
+config ETH_MVNETA_RX_COAL_CYCLES
+	int "RX time coalescing, in core clock cycles"
+	default 0
+	help
+	  Value of the RX queue time coalescing register. The packet
+	  threshold is one frame, so this only matters if the threshold is
+	  raised.
+
+config ETH_MVNETA_RX_POLL_MS
+	int "RX poll interval without interrupts [ms]"
+	default 100
+	help
+	  The RX thread also polls the ring at this interval, as a safety net
+	  against a lost or misrouted interrupt.
+
+config ETH_MVNETA_RX_THREAD_STACK_SIZE
+	int "RX thread stack size"
+	default 2048
+
+config ETH_MVNETA_RX_THREAD_PRIORITY
+	int "RX thread cooperative priority"
+	default 2
+
+endif # ETH_MVNETA

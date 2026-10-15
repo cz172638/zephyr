@@ -1,0 +1,29 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell NETA gigabit Ethernet controller, Armada 3700 variant.
+
+  Only RGMII is supported (SGMII on eth1 needs the COMPHY). The link is
+  taken from the PHY given by phy-handle; for a fixed link (a switch CPU
+  port) point it to an "ethernet-phy-fixed-link" node or to the switch.
+
+compatible: "marvell,armada-3700-neta"
+
+include: [ethernet-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    required: true
+
+  phy-handle:
+    required: true
+
+  phy-connection-type:
+    default: "rgmii"
