@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: Marvell Orion SMI (clause 22 MDIO) controller
+
+compatible: "marvell,orion-mdio"
+
+include: [mdio-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    description: |
+      Optional gate clock of the block containing the SMI register (on
+      Armada 3700, the GbE0 core clock).
+
+  pinctrl-0:
+    description: Optional MDC/MDIO pin configuration.

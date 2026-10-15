@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config MDIO_ORION
+	bool "Marvell Orion SMI (MDIO) driver"
+	default y
+	depends on DT_HAS_MARVELL_ORION_MDIO_ENABLED
+	help
+	  Enable the clause 22 SMI controller of Marvell Kirkwood/Armada
+	  SoCs (compatible "marvell,orion-mdio").
