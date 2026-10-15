@@ -1,0 +1,11 @@
+identifier: espressobin/armada3720/smp
+name: Globalscale ESPRESSObin (Armada 3720, SMP 2 cores)
+type: mcu
+arch: arm64
+toolchain:
+  - zephyr
+ram: 65536
+vendor: globalscale
+supported:
+  - uart
+  - netif:eth

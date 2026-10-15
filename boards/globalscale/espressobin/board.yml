@@ -1,0 +1,8 @@
+board:
+  name: espressobin
+  full_name: ESPRESSObin
+  vendor: globalscale
+  socs:
+  - name: armada3720
+    variants:
+    - name: smp

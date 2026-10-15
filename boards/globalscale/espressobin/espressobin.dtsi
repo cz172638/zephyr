@@ -1,0 +1,68 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Globalscale ESPRESSObin (v5, DDR3 1 GiB 2CS). Zephyr is the BL33 of
+ * TF-A (PLAT=a3700), loaded at DRAM base. TF-A itself lives at
+ * 0x04000000-0x05000000.
+ */
+
+#include <freq.h>
+#include <marvell/armada3720.dtsi>
+
+/ {
+	model = "Globalscale ESPRESSObin";
+	compatible = "globalscale,espressobin", "marvell,armada3720";
+
+	chosen {
+		zephyr,sram = &ddr0;
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+	};
+
+	cpus {
+		timebase-frequency = <DT_FREQ_M(25)>;
+	};
+
+	ddr0: memory@0 {
+		device_type = "memory";
+		reg = <0x00000000 DT_SIZE_M(64)>;
+	};
+};
+
+/* micro-USB J5 through the on-board FTDI */
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+/*
+ * eth0 -- RGMII-ID, fixed 1000/full -- 88E6341 port 0 (CPU)
+ * 88E6341 at SMI address 1 (multi-chip), ports 1 (wan), 2 (lan0),
+ * 3 (lan1). Without DSA tagging all three behave as one interface.
+ */
+&mdio {
+	status = "okay";
+	pinctrl-0 = <&mdio_default>;
+	pinctrl-names = "default";
+
+	switch0: ethernet-switch@1 {
+		compatible = "marvell,mv88e6085";
+		reg = <1>;
+		marvell,cpu-port = <0>;
+		marvell,user-ports = [01 02 03];
+	};
+};
+
+&eth0 {
+	status = "okay";
+	pinctrl-0 = <&eth0_default>;
+	pinctrl-names = "default";
+	phy-connection-type = "rgmii-id";
+	phy-handle = <&switch0>;
+	/* the board MAC is in the U-Boot environment only */
+	zephyr,random-mac-address;
+};

@@ -1,0 +1,15 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include "espressobin.dtsi"
+
+/ {
+	cpus {
+		/delete-node/ cpu@1;
+	};
+};
