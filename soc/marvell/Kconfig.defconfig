@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_FAMILY_MARVELL_ARMADA
+
+rsource "*/Kconfig.defconfig"
+
+endif # SOC_FAMILY_MARVELL_ARMADA

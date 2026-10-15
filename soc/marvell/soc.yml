@@ -1,0 +1,6 @@
+family:
+  - name: marvell_armada
+    series:
+      - name: armada37xx
+        socs:
+          - name: armada3720

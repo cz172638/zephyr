@@ -1,0 +1,7 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_SERIES_ARMADA37XX
+	select ARM64
+	select CPU_CORTEX_A53
+	select ARM_ARCH_TIMER if SYS_CLOCK_EXISTS

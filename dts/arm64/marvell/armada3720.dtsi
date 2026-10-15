@@ -1,0 +1,152 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Marvell Armada 3720. Internal registers at 0xd0000000 (32 MiB).
+ * Addresses and interrupt numbers follow Linux armada-37xx.dtsi.
+ */
+
+#include <arm64/armv8-a.dtsi>
+#include <mem.h>
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <zephyr/dt-bindings/pinctrl/armada37xx-pinctrl.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0>;
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <1>;
+		};
+	};
+
+	psci: psci {
+		compatible = "arm,psci-0.2";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+	};
+
+	soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "simple-bus";
+		interrupt-parent = <&gic>;
+		ranges;
+
+		uart0: serial@d0012000 {
+			compatible = "marvell,armada-3700-uart";
+			reg = <0xd0012000 0x18>;
+			interrupts = <GIC_SPI 11 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "uart-sum";
+			status = "disabled";
+		};
+
+		nb_periph_clk: clock-controller@d0013000 {
+			compatible = "marvell,armada-3700-periph-clock-nb";
+			reg = <0xd0013000 0x100>;
+			#clock-cells = <1>;
+		};
+
+		pinctrl_nb: pinctrl@d0013800 {
+			compatible = "marvell,armada3710-nb-pinctrl";
+			reg = <0xd0013800 0x100>;
+		};
+
+		sb_periph_clk: clock-controller@d0018000 {
+			compatible = "marvell,armada-3700-periph-clock-sb";
+			reg = <0xd0018000 0x100>;
+			#clock-cells = <1>;
+		};
+
+		pinctrl_sb: pinctrl@d0018800 {
+			compatible = "marvell,armada3710-sb-pinctrl";
+			reg = <0xd0018800 0x100>;
+		};
+
+		eth0: ethernet@d0030000 {
+			compatible = "marvell,armada-3700-neta";
+			reg = <0xd0030000 0x4000>;
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			/* gbe0_core, gbe0_50, gbe0_125 */
+			clocks = <&sb_periph_clk 8>, <&sb_periph_clk 4>, <&sb_periph_clk 6>;
+			status = "disabled";
+		};
+
+		mdio: mdio@d0032004 {
+			compatible = "marvell,orion-mdio";
+			reg = <0xd0032004 0x4>;
+			/* the SMI register is part of the GbE0 block */
+			clocks = <&sb_periph_clk 8>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		eth1: ethernet@d0040000 {
+			compatible = "marvell,armada-3700-neta";
+			reg = <0xd0040000 0x4000>;
+			interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			/* gbe1_core, gbe1_50, gbe1_125 */
+			clocks = <&sb_periph_clk 7>, <&sb_periph_clk 3>, <&sb_periph_clk 5>;
+			status = "disabled";
+		};
+
+		gic: interrupt-controller@d1d00000 {
+			compatible = "arm,gic-v3", "arm,gic";
+			reg = <0xd1d00000 0x10000>, /* GICD */
+			      <0xd1d40000 0x40000>; /* GICR, 2 frames */
+			interrupt-controller;
+			#interrupt-cells = <4>;
+			status = "okay";
+		};
+	};
+};
+
+&pinctrl_nb {
+	uart0_default: uart0_default {
+		uart1 {
+			marvell,bridge = <A37XX_NB>;
+			marvell,mask = <A37XX_NB_UART1>;
+			marvell,value = <0>;
+		};
+	};
+};
+
+&pinctrl_sb {
+	eth0_default: eth0_default {
+		rgmii {
+			marvell,bridge = <A37XX_SB>;
+			marvell,mask = <A37XX_SB_RGMII>;
+			marvell,value = <0>;
+		};
+	};
+
+	mdio_default: mdio_default {
+		smi {
+			marvell,bridge = <A37XX_SB>;
+			marvell,mask = <A37XX_SB_SMI>;
+			marvell,value = <0>;
+		};
+	};
+};

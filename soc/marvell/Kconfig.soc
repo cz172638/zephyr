@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_FAMILY_MARVELL_ARMADA
+	bool
+
+config SOC_FAMILY
+	default "marvell_armada" if SOC_FAMILY_MARVELL_ARMADA
+
+rsource "*/Kconfig.soc"

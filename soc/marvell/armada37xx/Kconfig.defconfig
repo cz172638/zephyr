@@ -1,0 +1,22 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_SERIES_ARMADA37XX
+
+config NUM_IRQS
+	default 192
+
+# Generic timer runs from the 25 MHz crystal
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default 25000000
+
+config MP_MAX_NUM_CPUS
+	default 2 if SMP
+
+config FLASH_SIZE
+	default 0
+
+config FLASH_BASE_ADDRESS
+	default 0
+
+endif # SOC_SERIES_ARMADA37XX

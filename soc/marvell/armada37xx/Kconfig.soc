@@ -1,0 +1,19 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_SERIES_ARMADA37XX
+	bool
+	select SOC_FAMILY_MARVELL_ARMADA
+
+config SOC_ARMADA3720
+	bool
+	select SOC_SERIES_ARMADA37XX
+	help
+	  Marvell Armada 3720: dual Cortex-A53, GIC-500, plus a Cortex-M3
+	  secure processor running the WTMI firmware (not a Zephyr target).
+
+config SOC
+	default "armada3720" if SOC_ARMADA3720
+
+config SOC_SERIES
+	default "armada37xx" if SOC_SERIES_ARMADA37XX
