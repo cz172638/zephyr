@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 37xx south bridge peripheral clocks (gates only).
+  The cell is the index of the clock in the Linux armada-37xx-periph table.
+
+compatible: "marvell,armada-3700-periph-clock-sb"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - index

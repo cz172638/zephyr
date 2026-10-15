@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config CLOCK_CONTROL_ARMADA37XX_PERIPH
+	bool "Marvell Armada 37xx peripheral clock gates"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_PERIPH_CLOCK_SB_ENABLED || \
+		   DT_HAS_MARVELL_ARMADA_3700_PERIPH_CLOCK_NB_ENABLED
