@@ -66,3 +66,36 @@
 	/* the board MAC is in the U-Boot environment only */
 	zephyr,random-mac-address;
 };
+
+/* Boot flash: Winbond W25Q32DW, 4 MiB, 1.8 V */
+&spi0 {
+	status = "okay";
+	pinctrl-0 = <&spi0_default>;
+	pinctrl-names = "default";
+
+	spi_nor: flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(50)>;
+		size = <DT_SIZE_M(32)>; /* bits */
+		jedec-id = [ef 60 16];
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/* TIM + WTMI + TF-A + FIP with Zephyr (mkflash.sh output) */
+			boot_partition: partition@0 {
+				label = "firmware";
+				reg = <0x0 0x3f0000>;
+			};
+
+			/* U-Boot environment of the stock/upstream U-Boot */
+			env_partition: partition@3f0000 {
+				label = "u-boot-env";
+				reg = <0x3f0000 0x10000>;
+			};
+		};
+	};
+};

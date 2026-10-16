@@ -3,6 +3,10 @@
 
 if BOARD_ESPRESSOBIN
 
+# The SPI NOR boot flash sits behind the SPI controller
+configdefault SPI
+	default y if FLASH
+
 if NETWORKING
 
 configdefault ETH_DRIVER
