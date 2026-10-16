@@ -88,7 +88,13 @@
 			/* TIM + WTMI + TF-A + FIP with Zephyr (mkflash.sh output) */
 			boot_partition: partition@0 {
 				label = "firmware";
-				reg = <0x0 0x3f0000>;
+				reg = <0x0 0x3e0000>;
+			};
+
+			/* Zephyr settings, kept apart from the U-Boot environment */
+			storage_partition: partition@3e0000 {
+				label = "zephyr-storage";
+				reg = <0x3e0000 0x10000>;
 			};
 
 			/* U-Boot environment of the stock/upstream U-Boot */

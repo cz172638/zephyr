@@ -34,13 +34,19 @@ CLOCKS=${CLOCKS:-CPU_800_DDR_800}
 DDR_TOPOLOGY=${DDR_TOPOLOGY:-2}
 BOOTDEV=${BOOTDEV:-SPINOR}
 
-make -C "$TFA" -j"$(nproc)" \
-	CROSS_COMPILE=aarch64-linux-gnu- CROSS_CM3=arm-linux-gnueabi- \
-	USE_COHERENT_MEM=0 PLAT=a3700 \
-	CLOCKSPRESET="$CLOCKS" DDR_TOPOLOGY="$DDR_TOPOLOGY" \
-	BOOTDEV="$BOOTDEV" PARTNUM=0 MARVELL_SECURE_BOOT=0 \
-	WTP="$WTP" MV_DDR_PATH="$MV_DDR" CRYPTOPP_PATH="$CRYPTOPP" \
-	BL33="$BL33" "$@" mrvl_flash mrvl_uart
+# make only compares timestamps: a different but older BL33 would be ignored
+rm -f "$TFA"/build/a3700/release/fip.bin
+
+# one target at a time: both regenerate the same TIM/DDR files
+for target in mrvl_flash mrvl_uart; do
+	make -C "$TFA" -j"$(nproc)" \
+		CROSS_COMPILE=aarch64-linux-gnu- CROSS_CM3=arm-linux-gnueabi- \
+		USE_COHERENT_MEM=0 PLAT=a3700 \
+		CLOCKSPRESET="$CLOCKS" DDR_TOPOLOGY="$DDR_TOPOLOGY" \
+		BOOTDEV="$BOOTDEV" PARTNUM=0 MARVELL_SECURE_BOOT=0 \
+		WTP="$WTP" MV_DDR_PATH="$MV_DDR" CRYPTOPP_PATH="$CRYPTOPP" \
+		BL33="$BL33" "$@" "$target"
+done
 
 ls -l "$TFA"/build/a3700/release/flash-image.bin \
 	"$TFA"/build/a3700/release/uart-images.tgz.bin

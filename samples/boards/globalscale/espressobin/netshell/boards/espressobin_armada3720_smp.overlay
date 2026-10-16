@@ -1,9 +1,10 @@
 /*
- * Settings (SSH host key) in the last 64 KiB of the SPI NOR, where the
- * stock U-Boot keeps its environment.
+ * Settings (SSH host key, MAC) in the "zephyr-storage" partition just
+ * below the U-Boot environment, so a U-Boot in the same flash keeps its
+ * env and Zephyr started by it keeps its settings.
  */
 / {
 	chosen {
-		zephyr,settings-partition = &env_partition;
+		zephyr,settings-partition = &storage_partition;
 	};
 };

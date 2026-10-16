@@ -148,6 +148,28 @@ written (header sector last) and read back:
 image takes about a minute and a half. If power is lost while writing, the
 boot ROM finds no header and falls back to UART boot (``mox-imager``).
 
+Booting from U-Boot
+===================
+
+Zephyr carries an AArch64 ``Image`` header (``text_offset`` 0), so an
+existing U-Boot (stock Marvell or mainline as BL33 of the same TF-A) can
+start ``zephyr.bin`` with ``booti``; it moves the image to the start of
+DRAM. The devicetree argument is ignored.
+
+.. code-block:: console
+
+   => load mmc 0:1 $kernel_addr_r boot/Image
+   => booti $kernel_addr_r - $fdtcontroladdr
+
+or over the network:
+
+.. code-block:: console
+
+   => dhcp $kernel_addr_r zephyr.bin && booti $kernel_addr_r - $fdtcontroladdr
+
+The SPI NOR ``zephyr-storage`` partition (``0x3e0000``, 64 KiB) holds the
+Zephyr settings, apart from the U-Boot environment at ``0x3f0000``.
+
 Console
 =======
 
@@ -198,7 +220,7 @@ Limitations
 * No DSA tagging yet: the three switch ports are one network.
 * The Armada 3700 NETA has a single, shared interrupt: no RSS, all RX is
   handled by one thread.
-* The board MAC address lives in the stock U-Boot environment only, so a
+* The board MAC address lives in the U-Boot environment only, so a
   random address is used (``zephyr,random-mac-address``); set
   ``local-mac-address`` in an overlay to use the one on the sticker.
 * eth1 (SGMII) needs the COMPHY and is not used on this board.
