@@ -20,7 +20,11 @@ Stav k 2026-10-16. Zephyr `main` @ `124121fbb`, větev `espressobin` (12 commit�
   - twister build-only 7/7,
   - checkpatch bez chyb,
   - TF-A `mrvl_flash` + `mrvl_uart` s Zephyrem jako BL33 (`fiptool info` ukazuje BL33 = 0x6B898 B).
-- Na HW netestováno.
+- **Ověřeno na HW (2026-10-16, ESPRESSObin v5, 88F3720 1 GHz):**
+  - boot ROM → WTMI (mv-ddr, DDR3 1 GiB 2CS) → TF-A v2.15 BL1/BL2/BL31 → Zephyr SMP, druhé jádro naběhne přes PSCI,
+  - UART, shell, switch 88E6341 nalezen (produkt 0x341), MAC z DT, 4 RX / 8 TX fronty, link up přes port switche,
+  - SPI NOR, `fwupdate ymodem` přes tio (1 MB za ~100 s při 115200, tedy ~10 KB/s), zápis a verifikace, `kernel reboot cold` přes PSCI do nového image.
+- Zbývá ověřit: DHCP/ping, přerušení NETA, priority TX front, Qav rychlost, frekvence jádra GbE.
 
 ## 1. Boot chain
 
