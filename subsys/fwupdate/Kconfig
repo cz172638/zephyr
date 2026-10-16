@@ -1,0 +1,54 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig FWUPDATE
+	bool "Firmware update into a flash partition"
+	depends on FLASH && FLASH_MAP
+	help
+	  Shell driven update of the boot image in the partition with node
+	  label fwupdate_partition (or boot_partition). The image is
+	  received into RAM, checked, then erased, written (first erase
+	  unit last) and verified.
+
+if FWUPDATE
+
+config FWUPDATE_YMODEM
+	bool "YMODEM over the shell UART"
+	default y
+	depends on SHELL
+	select CRC
+	help
+	  "fwupdate ymodem [dry]" receives the image with YMODEM (CRC-16,
+	  1 KiB blocks) on the shell's own UART, e.g. with tio (ctrl-t y)
+	  or lrzsz sb.
+
+config FWUPDATE_YMODEM_START_TIMEOUT
+	int "Seconds to wait for the sender"
+	default 60
+	depends on FWUPDATE_YMODEM
+
+config FWUPDATE_YMODEM_RX_BUF_SIZE
+	int "Receive buffer between the shell and the YMODEM thread"
+	default 4096
+	depends on FWUPDATE_YMODEM
+
+config FWUPDATE_TIM_HEADER
+	bool "Require a Marvell TIM header"
+	default y if SOC_SERIES_ARMADA37XX
+	help
+	  Refuse images that do not carry a TIM header ("TIMH" at offset 4),
+	  as produced by the Armada 3700 TF-A mrvl_flash target.
+
+config FWUPDATE_THREAD_STACK_SIZE
+	int "Update thread stack size"
+	default 2048
+
+config FWUPDATE_THREAD_PRIORITY
+	int "Update thread priority"
+	default 5
+
+# 1 KiB blocks must not overrun the shell's UART receive ring
+configdefault SHELL_BACKEND_SERIAL_RX_RING_BUFFER_SIZE
+	default 2048 if FWUPDATE_YMODEM
+
+endif # FWUPDATE
