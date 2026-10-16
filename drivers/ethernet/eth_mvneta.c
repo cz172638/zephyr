@@ -153,9 +153,11 @@ LOG_MODULE_REGISTER(eth_mvneta, CONFIG_ETHERNET_LOG_LEVEL);
 #define TXQ_TOKEN_SIZE_MAX   0x7fffffff
 
 /* Refill every 1000 base periods of 100 ns: 10 kb/s per refill unit */
-#define REFILL_BASE_PERIOD_NS 100
-#define REFILL_PERIOD         1000
-#define RATE_RESOLUTION_BPS   (NSEC_PER_SEC / (REFILL_BASE_PERIOD_NS * REFILL_PERIOD))
+#define REFILL_BASE_PERIOD_NS  100
+#define REFILL_PERIOD          1000
+/* Refill timer rate relative to the core clock, measured on the 88F3720 */
+#define MVNETA_REFILL_CLK_MULT 2
+#define RATE_RESOLUTION_BPS    (NSEC_PER_SEC / (REFILL_BASE_PERIOD_NS * REFILL_PERIOD))
 
 /* Descriptors (little endian layout) */
 #define TXD_L4_CSUM_NOT BIT(31)
@@ -728,7 +730,13 @@ static void mvneta_shaper_apply(const struct device *dev)
 		if (tq->qav_enabled) {
 			refill = DIV_ROUND_UP(tq->idle_slope, RATE_RESOLUTION_BPS);
 			refill = CLAMP(refill, 1, REFILL_VALUE_MAX);
-			bucket = mtu;
+			/*
+			 * One maximum frame plus one refill quantum: with only
+			 * one frame, tokens arriving while the bucket is full
+			 * are lost and the queue falls short of its rate
+			 * (measured 85 % at 40 Mb/s).
+			 */
+			bucket = MIN(mtu + refill, TXQ_TOKEN_SIZE_MAX);
 		}
 
 		neta_write(dev, TXQ_BUCKET_REFILL(hw),
@@ -768,7 +776,15 @@ static void mvneta_shaper_init(const struct device *dev)
 		return;
 	}
 
-	cycles = (uint32_t)((uint64_t)data->core_hz * REFILL_BASE_PERIOD_NS / NSEC_PER_SEC);
+	/*
+	 * Linux computes the base period from the core clock (gbe0_core,
+	 * 250 MHz here). On the Armada 3720 the limiter then delivers exactly
+	 * twice the programmed rate (5 Mb/s -> 10.06 Mb/s on the wire,
+	 * preamble and IFG included), i.e. the refill timer counts at twice
+	 * that rate. Program the period for the faster timer.
+	 */
+	cycles = (uint32_t)((uint64_t)data->core_hz * MVNETA_REFILL_CLK_MULT *
+			    REFILL_BASE_PERIOD_NS / NSEC_PER_SEC);
 	if (cycles == 0 || cycles > REFILL_MAX_NUM_CLK) {
 		LOG_WRN("core clock %u Hz unusable for shaping", data->core_hz);
 		data->core_hz = 0;
