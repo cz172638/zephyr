@@ -47,8 +47,11 @@ properties:
 
   marvell,cpu-port-mac-ctl:
     type: int
-    default: 0xe002
+    default: 0xe03e
     description: |
       Value for the CPU port "Physical Control" register (port register 1).
       The default enables the RGMII RX and TX timing delays in the switch
-      and selects 1000 Mb/s, as U-Boot does on the ESPRESSObin.
+      (bits 15, 14), forces 1000 Mb/s (bit 13, speed 2), and forces the link
+      up (bits 5, 4) and full duplex (bits 3, 2), as Linux DSA does for a
+      fixed-link CPU port. U-Boot's 0xe002 leaves the duplex unforced and
+      the port comes up 1000/half on the ESPRESSObin.
