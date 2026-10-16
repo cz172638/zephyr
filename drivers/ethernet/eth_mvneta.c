@@ -1233,7 +1233,7 @@ static void mvneta_load_mac(const struct device *dev)
 	data->mac_addr[5] = lo;
 
 	if (!net_eth_is_addr_valid((struct net_eth_addr *)data->mac_addr)) {
-		gen_random_mac(data->mac_addr, 0x00, 0x50, 0x43);
+		gen_random_mac(data->mac_addr, 0x02, 0x50, 0x43);
 		LOG_WRN("%s: no MAC address configured, using a random one", dev->name);
 	}
 }
