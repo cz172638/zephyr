@@ -1,0 +1,19 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+source "Kconfig.zephyr"
+
+config NETSHELL_USERNAME
+	string "SSH user name (empty: any)"
+	default "root"
+
+config NETSHELL_PASSWORD
+	string "SSH password (empty: public key only)"
+	default ""
+	help
+	  Only used when no authorized key is built in, or in addition to it.
+	  Stored in clear text in the image.
+
+config NETSHELL_HOST_KEY_BITS
+	int "RSA host key size"
+	default 2048

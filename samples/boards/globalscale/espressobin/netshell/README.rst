@@ -1,0 +1,57 @@
+.. zephyr:code-sample:: espressobin-netshell
+   :name: ESPRESSObin network shell
+   :relevant-api: ssh_server
+
+   Headless ESPRESSObin: DHCP, SSH shell and firmware update over TCP.
+
+Overview
+********
+
+For a board without a working serial console. On boot the sample:
+
+* keeps a random MAC address stable across reboots (settings in the last
+  64 KiB of the SPI NOR, the old U-Boot environment),
+* gets an address with DHCP and announces ``espressobin<mac>.local`` over
+  mDNS (and the same name in the DHCP request),
+* generates an RSA host key on the first boot and keeps it in settings,
+* starts the SSH server with the Zephyr shell, allowing a built-in public
+  key and/or a password.
+
+From the shell, ``fwupdate tcp`` replaces the SPI NOR boot image.
+
+Building
+********
+
+Zephyr's SSH server accepts RSA keys. Export the public key in PEM/PKCS8:
+
+.. code-block:: console
+
+   ssh-keygen -e -m PKCS8 -f ~/.ssh/id_rsa.pub > authorized_key.pem
+
+.. zephyr-app-commands::
+   :zephyr-app: samples/boards/globalscale/espressobin/netshell
+   :board: espressobin/armada3720/smp
+   :gen-args: -DNETSHELL_AUTHORIZED_KEY=authorized_key.pem
+   :goals: build
+
+Without a key, set ``CONFIG_NETSHELL_PASSWORD``; it is stored in clear
+text in the image. The first boot spends a few seconds generating the host
+key.
+
+Using
+*****
+
+.. code-block:: console
+
+   ssh -i ~/.ssh/id_rsa root@espressobinf0ad4e03858d.local
+   zephyr:~$ fwupdate tcp
+   $ nc -N espressobinf0ad4e03858d.local 6969 < flash-image.bin
+   zephyr:~$ kernel reboot cold
+
+Limitations
+***********
+
+There is no hardware RNG driver yet: host key and session keys come from
+``CONFIG_TEST_RANDOM_GENERATOR``, which is not cryptographically secure.
+Use it on trusted networks only. ``fwupdate tcp`` has no authentication of
+its own; it only listens after being started from the shell.

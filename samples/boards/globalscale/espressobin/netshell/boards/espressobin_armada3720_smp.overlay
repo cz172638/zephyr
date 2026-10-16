@@ -1,0 +1,9 @@
+/*
+ * Settings (SSH host key) in the last 64 KiB of the SPI NOR, where the
+ * stock U-Boot keeps its environment.
+ */
+/ {
+	chosen {
+		zephyr,settings-partition = &env_partition;
+	};
+};

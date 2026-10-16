@@ -1,0 +1,15 @@
+sample:
+  name: ESPRESSObin network shell
+common:
+  platform_allow:
+    - espressobin
+    - espressobin/armada3720/smp
+  tags:
+    - net
+    - shell
+    - ssh
+  build_only: true
+tests:
+  sample.boards.espressobin.netshell:
+    extra_configs:
+      - CONFIG_NETSHELL_PASSWORD="test"
