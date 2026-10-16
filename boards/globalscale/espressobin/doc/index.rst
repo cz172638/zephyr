@@ -128,6 +128,26 @@ or the separate files from ``uart-images.tgz.bin``:
 
 This is also the way to iterate on Zephyr without touching the SPI NOR.
 
+Updating from Zephyr
+====================
+
+With ``CONFIG_FLASH=y``, ``CONFIG_FLASH_MAP=y`` and ``CONFIG_FWUPDATE=y`` the
+shell can replace the image in the SPI NOR ``firmware`` partition, without
+U-Boot. The image is the ``flash-image.bin`` from ``mkflash.sh``; it is
+received completely into RAM, must carry the TIM header, and is then erased,
+written (header sector last) and read back:
+
+.. code-block:: console
+
+   uart:~$ fwupdate ymodem
+   (tio: ctrl-t y, flash-image.bin)
+   received "flash-image.bin", 1001448 bytes, crc32 ...
+   firmware updated, reboot to start it
+
+``fwupdate ymodem dry`` only receives and checks. At 115200 baud a 1 MiB
+image takes about a minute and a half. If power is lost while writing, the
+boot ROM finds no header and falls back to UART boot (``mox-imager``).
+
 Console
 =======
 
