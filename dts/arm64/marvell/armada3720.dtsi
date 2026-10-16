@@ -33,6 +33,13 @@
 		};
 	};
 
+	/* 25 MHz on most boards; 40 MHz if strapped (NB GPIO1 latch bit 9) */
+	xtalclk: xtal-clk {
+		compatible = "fixed-clock";
+		clock-frequency = <25000000>;
+		#clock-cells = <0>;
+	};
+
 	psci: psci {
 		compatible = "arm,psci-0.2";
 		method = "smc";
@@ -65,6 +72,14 @@
 		nb_periph_clk: clock-controller@d0013000 {
 			compatible = "marvell,armada-3700-periph-clock-nb";
 			reg = <0xd0013000 0x100>;
+			clocks = <&tbg 0>, <&tbg 1>, <&tbg 2>, <&tbg 3>, <&xtalclk>;
+			#clock-cells = <1>;
+		};
+
+		tbg: clock-controller@d0013200 {
+			compatible = "marvell,armada-3700-tbg-clock";
+			reg = <0xd0013200 0x100>;
+			clocks = <&xtalclk>;
 			#clock-cells = <1>;
 		};
 
@@ -76,6 +91,7 @@
 		sb_periph_clk: clock-controller@d0018000 {
 			compatible = "marvell,armada-3700-periph-clock-sb";
 			reg = <0xd0018000 0x100>;
+			clocks = <&tbg 0>, <&tbg 1>, <&tbg 2>, <&tbg 3>, <&xtalclk>;
 			#clock-cells = <1>;
 		};
 
