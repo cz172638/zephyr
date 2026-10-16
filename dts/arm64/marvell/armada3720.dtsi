@@ -61,6 +61,17 @@
 		interrupt-parent = <&gic>;
 		ranges;
 
+		spi0: spi@d0010600 {
+			compatible = "marvell,armada-3700-spi";
+			reg = <0xd0010600 0xa00>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			/* sqf */
+			clocks = <&nb_periph_clk 7>;
+			interrupts = <GIC_SPI 0 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			status = "disabled";
+		};
+
 		uart0: serial@d0012000 {
 			compatible = "marvell,armada-3700-uart";
 			reg = <0xd0012000 0x18>;
@@ -140,6 +151,15 @@
 };
 
 &pinctrl_nb {
+	/* CLK, MOSI, MISO and CS0 are dedicated; IO2/IO3 (WP#/HOLD#) are muxed */
+	spi0_default: spi0_default {
+		spi_quad {
+			marvell,bridge = <A37XX_NB>;
+			marvell,mask = <A37XX_NB_SPI_QUAD>;
+			marvell,value = <0>;
+		};
+	};
+
 	uart0_default: uart0_default {
 		uart1 {
 			marvell,bridge = <A37XX_NB>;

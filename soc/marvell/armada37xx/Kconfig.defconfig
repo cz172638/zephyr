@@ -13,6 +13,10 @@ config SYS_CLOCK_HW_CYCLES_PER_SEC
 config MP_MAX_NUM_CPUS
 	default 2 if SMP
 
+# Peripheral clocks are gated after reset; every driver needs the gates
+configdefault CLOCK_CONTROL
+	default y
+
 config FLASH_SIZE
 	default 0
 
