@@ -14,15 +14,58 @@ config ETH_MVNETA
 
 if ETH_MVNETA
 
+config ETH_MVNETA_RX_QUEUES
+	int "Number of RX queues"
+	default NET_TC_RX_COUNT if NET_TC_RX_COUNT > 0
+	default 1
+	range 1 8
+	help
+	  VLAN tagged frames are sorted into the queues by their PCP, untagged
+	  frames go to queue 0. Higher queues are processed first. With as
+	  many queues as RX traffic classes, the stack's priority to traffic
+	  class mapping is used.
+
+config ETH_MVNETA_TX_QUEUES
+	int "Number of TX queues"
+	default NET_TC_TX_COUNT if NET_TC_TX_COUNT > 0
+	default 1
+	range 1 8
+	help
+	  Packets are put into the queues by net_pkt priority and sent in
+	  strict priority order. With as many queues as TX traffic classes,
+	  queue N carries traffic class N (needed for Qav traffic class
+	  queries).
+
+config ETH_MVNETA_TXQ0_HIGHEST
+	bool "Hardware TX queue 0 has the highest priority"
+	help
+	  Select which end of the hardware TX queues the strict priority
+	  arbiter serves first. The default assumes queue 7 is served first;
+	  flip this if measurements show the opposite.
+
 config ETH_MVNETA_RX_DESCS
-	int "Number of RX descriptors"
-	default 64
+	int "Number of RX descriptors per queue"
+	default 64 if ETH_MVNETA_RX_QUEUES = 1
+	default 32
 	range 8 1024
 
 config ETH_MVNETA_TX_DESCS
-	int "Number of TX descriptors"
-	default 32
+	int "Number of TX descriptors per queue"
+	default 32 if ETH_MVNETA_TX_QUEUES = 1
+	default 16
 	range 4 1024
+
+config ETH_MVNETA_RX_BUDGET
+	int "Frames taken from one RX queue before rechecking higher ones"
+	default 16
+	range 1 1024
+
+config ETH_MVNETA_TX_TIMEOUT_MS
+	int "Time to wait for a free TX descriptor [ms]"
+	default 100
+	help
+	  A rate limited queue can stay full for a while; send() sleeps in
+	  20 us steps up to this time before dropping the packet.
 
 config ETH_MVNETA_RX_COAL_CYCLES
 	int "RX time coalescing, in core clock cycles"
@@ -46,5 +89,12 @@ config ETH_MVNETA_RX_THREAD_STACK_SIZE
 config ETH_MVNETA_RX_THREAD_PRIORITY
 	int "RX thread cooperative priority"
 	default 2
+
+config ETH_MVNETA_SHELL
+	bool "mvneta shell commands"
+	depends on SHELL && NET_L2_ETHERNET_MGMT
+	help
+	  "mvneta queues" and "mvneta qav" commands to look at the TX queues
+	  and set their rate limit through the Ethernet management API.
 
 endif # ETH_MVNETA
