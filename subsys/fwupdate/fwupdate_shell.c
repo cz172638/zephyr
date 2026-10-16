@@ -297,7 +297,8 @@ static void fw_worker(void *p1, void *p2, void *p3)
 
 	ret = fw_program(sh, fw.received);
 	if (ret == 0) {
-		shell_print(sh, "firmware updated, reboot to start it");
+		shell_print(sh, "firmware updated, start it with: %s",
+			    IS_ENABLED(CONFIG_REBOOT) ? "kernel reboot cold" : "a power cycle");
 	}
 
 done:

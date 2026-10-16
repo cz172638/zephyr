@@ -4,6 +4,7 @@
 menuconfig FWUPDATE
 	bool "Firmware update into a flash partition"
 	depends on FLASH && FLASH_MAP
+	imply REBOOT
 	help
 	  Shell driven update of the boot image in the partition with node
 	  label fwupdate_partition (or boot_partition). The image is
