@@ -29,7 +29,9 @@ Stav k 2026-10-16. Zephyr `main` @ `124121fbb`, větev `espressobin` (12 commit�
   - TX fronty zapnuté ve `start()` při vynuceném link down nikdy nevysílaly (descriptory pending, TX DMA nečinné). Fronty se teď zapínají v link callbacku, jako Linux `mvneta_port_up()`.
   - CPU port switche s `0xe002` z U-Bootu naběhl 1000/half. Výchozí hodnota je teď `0xe03e` (vynucený link, full, 1000).
   - `TXQ_CMD1` má po resetu hodnotu `0x09` a mimo Qav ho necháváme být.
-- Zbývá ověřit: ping a latence (přerušení NETA), priority TX front, Qav rychlost, frekvence jádra GbE.
+  - ping na bránu 0,08–0,10 ms (RX přes přerušení), UDP TX ~820 Mb/s po drátu (MIB `good_octets_tx` odpovídá zperf),
+  - **Qav/limiter po kalibraci:** nastaveno 5/10/20/50 Mb/s, naměřeno 5,01/10,07/20,11/50,22 Mb/s (L2 rámce včetně FCS, bez preambule a IFG), chyba ≤ 0,7 %.
+- Zbývá ověřit: pořadí priorit HW TX front (test dvou streamů), RX propustnost (`zperf udp download`).
 
 ## 1. Boot chain
 
@@ -204,8 +206,8 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
 5. **MAC adresa.** Zatím jen náhodná nebo z DT. Čtení z prostředí stock U-Boot v SPI NOR (u `mvebu_espressobin` defconfigu je `CONFIG_ENV_OFFSET` na konci 4MiB flash, ověřit) by šlo doplnit přes flash driver, ten ale ještě není.
 6. **SPI NOR:** ověřit `flash read flash@0 0 40` (`TIMH`). Kdyby nesedělo JEDEC ID nebo data, zkus nižší `spi-max-frequency`.
 7. **Pořadí priorit HW TX front.** Veřejně není zdokumentované, který konec arbiter obsluhuje první. Driver předpokládá frontu 7. Test: dva saturující UDP streamy s různou prioritou. Když vyhrává ten nižší, zapni `CONFIG_ETH_MVNETA_TXQ0_HIGHEST=y`.
-8. **Jednotky token bucketu.** Pro `TX_MTU` a `TXQ_TOKEN_SIZE` beru jednotku bit (Linux zapisuje `TX_MTU` = velikost × 8) a pro refill 10 kb/s na jednotku za 100 µs (podle komentáře v Linuxu). Ověření: best effort (priorita BE) jde při 8 třídách do fronty 1, takže `mvneta qav 1 1 10000000` a `zperf` musí ukázat ~10 Mb/s.
-9. **Frekvence jádra GbE.** Linux čte 1bitový dělič `gbe0_core` (`DIV_SEL1` bit 14) jako pole nulové šířky, takže ho vždy bere jako 0. Já bit čtu. Kdyby se rychlost lišila přesně 2×, příčina bude tady. Na konzoli (`LOG_DBG`) se vypíše „core clock … Hz“.
+8. **Jednotky token bucketu.** Vyřešeno měřením: limiter počítá bajty L2 rámce včetně FCS (bez preambule a IFG), 10 kb/s na jednotku refillu.
+9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
    - DSA s Marvell tagy (rozhraní na každý port),
    - eth1 přes SGMII (COMPHY), I2C, GPIO, Xenon SDHCI (microSD/eMMC), USB, PCIe,
@@ -213,7 +215,7 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (21 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (24 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
 ```sh
