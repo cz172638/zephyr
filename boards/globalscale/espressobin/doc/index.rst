@@ -30,13 +30,18 @@ Supported features
 .. zephyr:board-supported-hw::
 
 * UART0 (``uart-sum`` interrupt), 115200 baud on the micro-USB connector
-* North/south bridge pin multiplexing and peripheral clock gates
+* North/south bridge pin multiplexing, peripheral clock gates and rates
+  (TBG, muxes and dividers are read back as set by the boot firmware)
 * GICv3, ARM generic timer (25 MHz), PSCI
 * Ethernet: NETA0 (RGMII-ID, fixed 1000/full) and the 88E6341 switch on the
   Orion SMI bus. The switch is configured as a port expander: ``wan``,
   ``lan0`` and ``lan1`` can only exchange frames with the CPU, there is no
   DSA tagging and Zephyr sees a single interface whose carrier is up while
   any of the three ports has link.
+* Ethernet queues: up to 8 TX queues in strict priority order, selected by
+  packet priority, each with an optional rate limit exposed as 802.1Qav
+  (``ETHERNET_QAV``); up to 8 RX queues selected by the VLAN PCP. See
+  `Priority queues and shaping`_.
 
 Memory map
 ==========
@@ -133,10 +138,46 @@ The micro-USB connector carries UART0 through an FTDI bridge,
 
    picocom -b 115200 /dev/ttyUSB0
 
+Priority queues and shaping
+===========================
+
+The number of queues follows the traffic classes of the stack:
+
+.. code-block:: cfg
+
+   CONFIG_NET_TC_TX_COUNT=8     # -> CONFIG_ETH_MVNETA_TX_QUEUES=8
+   CONFIG_NET_TC_RX_COUNT=4     # -> CONFIG_ETH_MVNETA_RX_QUEUES=4
+   CONFIG_NET_VLAN=y
+   CONFIG_NET_L2_ETHERNET_MGMT=y
+   CONFIG_ETH_MVNETA_SHELL=y    # "mvneta" shell commands
+
+Each TX queue has a token bucket with 10 kb/s resolution. Setting the Qav
+idle slope (``NET_REQUEST_ETHERNET_SET_QAV_PARAM``) limits that queue to
+the reserved rate with one frame of burst; this is a rate limiter, not a
+credit-based shaper. With 8 traffic classes, queue N carries class N.
+With the default ``CONFIG_NET_TC_MAPPING_STRICT`` best effort is queue 1
+and priority CA (PCP 3) queue 3; for AVB use
+``CONFIG_NET_TC_MAPPING_SR_CLASS_A_AND_B``, which puts SR class A (PCP 3)
+into the highest queue 7 and class B (PCP 2) into queue 6. From the shell,
+a 20 Mb/s class A reservation on interface 1 with the SR mapping:
+
+.. code-block:: console
+
+   uart:~$ mvneta qav 1 7 20000000
+   uart:~$ mvneta queues 1
+   uart:~$ net iface 1
+
+Which end of the hardware queues the arbiter serves first is not
+documented publicly. The driver assumes queue 7; if a test with two
+saturating streams shows the opposite, set
+``CONFIG_ETH_MVNETA_TXQ0_HIGHEST=y``.
+
 Limitations
 ***********
 
 * No DSA tagging yet: the three switch ports are one network.
+* The Armada 3700 NETA has a single, shared interrupt: no RSS, all RX is
+  handled by one thread.
 * The board MAC address lives in the stock U-Boot environment only, so a
   random address is used (``zephyr,random-mac-address``); set
   ``local-mac-address`` in an overlay to use the one on the sticker.
