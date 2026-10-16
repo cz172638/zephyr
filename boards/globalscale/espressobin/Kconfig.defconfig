@@ -7,6 +7,11 @@ if BOARD_ESPRESSOBIN
 configdefault SPI
 	default y if FLASH
 
+# 4 KiB sectors: NVS sectors must fit in 16 bits, and the settings
+# partition is only 64 KiB
+configdefault SPI_NOR_FLASH_LAYOUT_PAGE_SIZE
+	default 4096
+
 if NETWORKING
 
 configdefault ETH_DRIVER

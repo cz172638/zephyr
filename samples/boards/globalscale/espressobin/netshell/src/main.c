@@ -120,6 +120,11 @@ static int settings_init(void)
 	if (ret == 0) {
 		return 0;
 	}
+	if (ret == -EDOM || ret == -EINVAL || ret == -ENOENT) {
+		/* configuration problem, erasing would not help */
+		LOG_ERR("settings init failed (%d)", ret);
+		return ret;
+	}
 	LOG_WRN("settings init failed (%d), erasing the settings partition", ret);
 
 	ret = flash_area_open(SETTINGS_AREA, &fa);
