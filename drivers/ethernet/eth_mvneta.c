@@ -119,6 +119,10 @@ LOG_MODULE_REGISTER(eth_mvneta, CONFIG_ETHERNET_LOG_LEVEL);
 #define AN_FLOW_CTRL_EN       BIT(11)
 #define AN_CONFIG_FULL_DUPLEX BIT(12)
 #define AN_DUPLEX_EN          BIT(13)
+#define LPI_CTRL_1            0x2cc4
+#define LPI_REQUEST_ENABLE    BIT(0)
+#define LPI_REQUEST_FORCE     BIT(1)
+#define LPI_MANUAL_MODE       BIT(2)
 #define GMAC_STATUS           0x2c10
 #define GMAC_LINK_UP          BIT(0)
 #define DA_FILT_SPEC_MCAST    0x3400
@@ -265,6 +269,10 @@ struct mvneta_data {
 	struct mvneta_txq txq[NUM_TXQ];
 	uint32_t core_hz; /* GbE core clock, 0 if unknown (no shaping) */
 	uint32_t link_mbps;
+	uint32_t txq_cmd1_reset; /* limiter state as left by reset */
+	bool link_up;
+	bool started;
+	bool shaper_on;
 	struct k_mutex shaper_lock;
 	struct k_sem rx_sem;
 	K_KERNEL_STACK_MEMBER(rx_stack, CONFIG_ETH_MVNETA_RX_THREAD_STACK_SIZE);
@@ -673,6 +681,23 @@ static void mvneta_shaper_apply(const struct device *dev)
 	bool any = false;
 
 	for (unsigned int q = 0; q < NUM_TXQ; q++) {
+		any |= data->txq[q].qav_enabled;
+	}
+
+	if (!any) {
+		/*
+		 * No reservation: give the limiter back its reset state, as
+		 * Linux runs without mqprio. Setting BW_LIM_EN | BW_LIM_SEL_V1
+		 * here stalled all TX queues on the hardware.
+		 */
+		if (data->shaper_on) {
+			neta_write(dev, TXQ_CMD1, data->txq_cmd1_reset);
+			data->shaper_on = false;
+		}
+		return;
+	}
+
+	for (unsigned int q = 0; q < NUM_TXQ; q++) {
 		const struct mvneta_txq *tq = &data->txq[q];
 		unsigned int hw = TXQ_HW(q);
 		uint32_t refill = REFILL_VALUE_MAX;
@@ -682,7 +707,6 @@ static void mvneta_shaper_apply(const struct device *dev)
 			refill = DIV_ROUND_UP(tq->idle_slope, RATE_RESOLUTION_BPS);
 			refill = CLAMP(refill, 1, REFILL_VALUE_MAX);
 			bucket = mtu;
-			any = true;
 		}
 
 		neta_write(dev, TXQ_BUCKET_REFILL(hw),
@@ -690,21 +714,33 @@ static void mvneta_shaper_apply(const struct device *dev)
 		neta_write(dev, TXQ_TOKEN_SIZE(hw), bucket);
 	}
 
-	/* BW_LIM_EN | BW_LIM_SEL_V1 set = limiter off; both clear = per-queue limiter */
-	neta_rmw(dev, TXQ_CMD1, TXQ_CMD1_BW_LIM_EN | TXQ_CMD1_BW_LIM_V1,
-		 any ? 0 : (TXQ_CMD1_BW_LIM_EN | TXQ_CMD1_BW_LIM_V1));
+	/* Linux mvneta_enable_per_queue_rate_limit(): both bits clear */
+	neta_write(dev, TXQ_CMD1,
+		   data->txq_cmd1_reset & ~(TXQ_CMD1_BW_LIM_EN | TXQ_CMD1_BW_LIM_V1));
+	data->shaper_on = true;
 }
 
 static void mvneta_shaper_init(const struct device *dev)
 {
 	struct mvneta_data *data = dev->data;
+	uint32_t mtu = mvneta_tx_mtu_tokens();
 	uint32_t cycles;
 
 	k_mutex_init(&data->shaper_lock);
 	data->link_mbps = 1000;
+	data->shaper_on = false;
+	data->txq_cmd1_reset = neta_read(dev, TXQ_CMD1);
 
-	neta_rmw(dev, TX_MTU, TX_MTU_MAX, mvneta_tx_mtu_tokens());
-	neta_write(dev, TX_TOKEN_SIZE, TX_TOKEN_SIZE_MAX);
+	/* As Linux mvneta_txq_max_tx_size_set(): MTU, token sizes >= MTU */
+	neta_rmw(dev, TX_MTU, TX_MTU_MAX, mtu);
+	if (neta_read(dev, TX_TOKEN_SIZE) < mtu) {
+		neta_write(dev, TX_TOKEN_SIZE, mtu);
+	}
+	for (int q = 0; q < 8; q++) {
+		if ((neta_read(dev, TXQ_TOKEN_SIZE(q)) & TXQ_TOKEN_SIZE_MAX) < mtu) {
+			neta_write(dev, TXQ_TOKEN_SIZE(q), mtu);
+		}
+	}
 
 	if (data->core_hz == 0) {
 		return;
@@ -717,8 +753,6 @@ static void mvneta_shaper_init(const struct device *dev)
 		return;
 	}
 	neta_write(dev, REFILL_NUM_CLK, cycles);
-
-	mvneta_shaper_apply(dev);
 }
 
 static int mvneta_set_qav(const struct device *dev, const struct ethernet_qav_param *p)
@@ -860,6 +894,9 @@ static void mvneta_defaults(const struct device *dev)
 
 	neta_rmw(dev, UNIT_CONTROL, PHY_POLLING_ENABLE, 0);
 
+	/* No EEE: TX LPI requests off (Linux mvneta_mac_disable_tx_lpi()) */
+	neta_rmw(dev, LPI_CTRL_1, LPI_REQUEST_ENABLE | LPI_REQUEST_FORCE | LPI_MANUAL_MODE, 0);
+
 	mvneta_set_mcast_filter(dev, true);
 	mvneta_set_rx_prio_map(dev);
 
@@ -898,6 +935,34 @@ static int mvneta_port_power_up(const struct device *dev)
 	return 0;
 }
 
+static uint32_t mvneta_txq_hw_mask(void)
+{
+	uint32_t mask = 0;
+
+	for (unsigned int q = 0; q < NUM_TXQ; q++) {
+		mask |= BIT(TXQ_HW(q));
+	}
+	return mask;
+}
+
+/* Queues are enabled on link up and stopped on link down, as Linux
+ * mvneta_port_up()/mvneta_port_down() do: TX queues enabled while the link
+ * was forced down never started transmitting.
+ */
+static void mvneta_port_up(const struct device *dev)
+{
+	neta_write(dev, TXQ_CMD, mvneta_txq_hw_mask());
+	neta_write(dev, RXQ_CMD, RXQ_MASK);
+}
+
+static void mvneta_port_down(const struct device *dev)
+{
+	neta_write(dev, RXQ_CMD, RXQ_MASK << RXQ_DISABLE_SHIFT);
+	(void)WAIT_FOR((neta_read(dev, RXQ_CMD) & RXQ_MASK) == 0, 1000, k_busy_wait(10));
+	neta_write(dev, TXQ_CMD, mvneta_txq_hw_mask() << TXQ_DISABLE_SHIFT);
+	(void)WAIT_FOR((neta_read(dev, TXQ_CMD) & 0xff) == 0, 1000, k_busy_wait(10));
+}
+
 static void mvneta_link_cb(const struct device *phy, struct phy_link_state *state, void *user_data)
 {
 	const struct device *dev = user_data;
@@ -927,7 +992,14 @@ static void mvneta_link_cb(const struct device *phy, struct phy_link_state *stat
 	} else {
 		val |= AN_FORCE_LINK_DOWN;
 	}
+	if (!state->is_up) {
+		mvneta_port_down(dev);
+	}
 	neta_write(dev, GMAC_AUTONEG_CONFIG, val);
+	data->link_up = state->is_up;
+	if (state->is_up && data->started) {
+		mvneta_port_up(dev);
+	}
 
 	LOG_INF("%s: link %s", dev->name, state->is_up ? "up" : "down");
 
@@ -943,25 +1015,19 @@ static void mvneta_link_cb(const struct device *phy, struct phy_link_state *stat
 /* ---------------------------------------------------------------------- */
 /* Ethernet API                                                            */
 
-static uint32_t mvneta_txq_hw_mask(void)
-{
-	uint32_t mask = 0;
-
-	for (unsigned int q = 0; q < NUM_TXQ; q++) {
-		mask |= BIT(TXQ_HW(q));
-	}
-	return mask;
-}
-
 static int mvneta_start(const struct device *dev, struct net_if *iface)
 {
 	const struct mvneta_config *cfg = dev->config;
 
 	ARG_UNUSED(iface);
 
-	neta_write(dev, RXQ_CMD, RXQ_MASK);
-	neta_write(dev, TXQ_CMD, mvneta_txq_hw_mask());
+	struct mvneta_data *data = dev->data;
+
 	neta_rmw(dev, GMAC_CTRL_0, 0, GMAC0_PORT_ENABLE);
+	data->started = true;
+	if (data->link_up) {
+		mvneta_port_up(dev);
+	}
 	neta_write(dev, INTR_NEW_MASK, INTR_RX_MASK | INTR_MISC);
 	irq_enable(cfg->irq);
 
@@ -974,10 +1040,12 @@ static int mvneta_stop(const struct device *dev, struct net_if *iface)
 
 	ARG_UNUSED(iface);
 
+	struct mvneta_data *data = dev->data;
+
 	irq_disable(cfg->irq);
 	neta_write(dev, INTR_NEW_MASK, 0);
-	neta_write(dev, RXQ_CMD, RXQ_MASK << RXQ_DISABLE_SHIFT);
-	neta_write(dev, TXQ_CMD, mvneta_txq_hw_mask() << TXQ_DISABLE_SHIFT);
+	data->started = false;
+	mvneta_port_down(dev);
 	neta_rmw(dev, GMAC_CTRL_0, GMAC0_PORT_ENABLE, 0);
 
 	return 0;
