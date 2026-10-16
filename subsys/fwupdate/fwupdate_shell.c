@@ -7,6 +7,10 @@
  * with YMODEM (e.g. tio ctrl-t y, or sb), check it and write it into the
  * firmware flash partition.
  *
+ * "fwupdate tcp [port] [dry]": the same over one TCP connection, e.g.
+ * "nc -N <board> 6969 < flash-image.bin"; the result is sent back on the
+ * connection.
+ *
  * The whole image is received into RAM first, so an aborted transfer does
  * not touch the flash. Programming erases the first erase unit (the boot
  * header) first and writes it last: if power fails in between, the boot
@@ -26,6 +30,10 @@
 #include <zephyr/sys/ring_buffer.h>
 
 #include "ymodem.h"
+
+#if defined(CONFIG_FWUPDATE_TCP)
+#include <zephyr/net/socket.h>
+#endif
 
 #if PARTITION_EXISTS(fwupdate_partition)
 #define FW_LABEL fwupdate_partition
@@ -60,6 +68,7 @@ static struct fwupdate {
 static K_THREAD_STACK_DEFINE(fw_stack, CONFIG_FWUPDATE_THREAD_STACK_SIZE);
 static struct k_thread fw_thread;
 
+#if defined(CONFIG_FWUPDATE_YMODEM)
 /* ---------------------------------------------------------------------- */
 /* Transport: raw bytes on the shell UART                                  */
 
@@ -150,6 +159,8 @@ static const struct ymodem_ops fw_ymodem_ops = {
 	.close = fw_close,
 };
 
+#endif /* CONFIG_FWUPDATE_YMODEM */
+
 /* ---------------------------------------------------------------------- */
 /* Image check and flash programming                                       */
 
@@ -236,6 +247,7 @@ out:
 /* ---------------------------------------------------------------------- */
 /* Shell                                                                   */
 
+#if defined(CONFIG_FWUPDATE_YMODEM)
 static void fw_log(const struct shell *sh, bool on)
 {
 #if defined(CONFIG_SHELL_LOG_BACKEND)
@@ -305,6 +317,166 @@ done:
 	atomic_clear(&fw.busy);
 }
 
+#endif /* CONFIG_FWUPDATE_YMODEM */
+
+#if defined(CONFIG_FWUPDATE_TCP)
+static void fw_reply(int c, const char *msg)
+{
+	if (c >= 0) {
+		(void)zsock_send(c, msg, strlen(msg), 0);
+	}
+}
+
+static int fw_tcp_receive(const struct shell *sh, uint16_t port, int *conn)
+{
+	struct net_sockaddr_in addr = {
+		.sin_family = NET_AF_INET,
+		.sin_port = net_htons(port),
+	};
+	struct zsock_pollfd pfd;
+	int one = 1;
+	int s, c, ret;
+	size_t len = 0;
+
+	*conn = -1;
+	s = zsock_socket(NET_AF_INET, NET_SOCK_STREAM, NET_IPPROTO_TCP);
+	if (s < 0) {
+		return -errno;
+	}
+	(void)zsock_setsockopt(s, ZSOCK_SOL_SOCKET, ZSOCK_SO_REUSEADDR, &one, sizeof(one));
+	if (zsock_bind(s, (struct net_sockaddr *)&addr, sizeof(addr)) < 0 ||
+	    zsock_listen(s, 1) < 0) {
+		ret = -errno;
+		goto out;
+	}
+
+	pfd.fd = s;
+	pfd.events = ZSOCK_POLLIN;
+	ret = zsock_poll(&pfd, 1, CONFIG_FWUPDATE_TCP_ACCEPT_TIMEOUT * MSEC_PER_SEC);
+	if (ret <= 0) {
+		ret = ret == 0 ? -ETIMEDOUT : -errno;
+		goto out;
+	}
+	c = zsock_accept(s, NULL, NULL);
+	if (c < 0) {
+		ret = -errno;
+		goto out;
+	}
+	*conn = c;
+
+	pfd.fd = c;
+	while (true) {
+		ssize_t n;
+
+		ret = zsock_poll(&pfd, 1, 10 * MSEC_PER_SEC);
+		if (ret <= 0) {
+			ret = ret == 0 ? -ETIMEDOUT : -errno;
+			break;
+		}
+		if (len >= FW_SIZE) {
+			ret = -EFBIG;
+			break;
+		}
+		n = zsock_recv(c, &fw_buf[len], FW_SIZE - len, 0);
+		if (n < 0) {
+			ret = -errno;
+			break;
+		}
+		if (n == 0) {
+			/* EOF: the sender is done */
+			ret = 0;
+			break;
+		}
+		len += n;
+	}
+
+	fw.received = len;
+out:
+	zsock_close(s);
+	return ret;
+}
+
+static void fw_tcp_worker(void *p1, void *p2, void *p3)
+{
+	const struct shell *sh = fw.sh;
+	uint16_t port = (uintptr_t)p1;
+	char msg[96];
+	int conn, ret;
+
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	ret = fw_tcp_receive(sh, port, &conn);
+	if (ret < 0) {
+		shell_error(sh, "tcp: receive failed (%d)", ret);
+		fw_reply(conn, "fwupdate: receive failed\n");
+		goto done;
+	}
+
+	snprintk(msg, sizeof(msg), "received %zu bytes, crc32 %08x\n", fw.received,
+		 crc32_ieee(fw_buf, fw.received));
+	shell_print(sh, "%s", msg);
+	fw_reply(conn, msg);
+
+	if (fw_check(sh, fw.received) < 0) {
+		fw_reply(conn, "fwupdate: image rejected\n");
+		goto done;
+	}
+	if (fw.dry) {
+		fw_reply(conn, "fwupdate: dry run, flash not touched\n");
+		goto done;
+	}
+
+	ret = fw_program(sh, fw.received);
+	fw_reply(conn, ret == 0 ? "fwupdate: firmware updated\n" : "fwupdate: FAILED\n");
+	if (ret == 0) {
+		shell_print(sh, "firmware updated, start it with: %s",
+			    IS_ENABLED(CONFIG_REBOOT) ? "kernel reboot cold" : "a power cycle");
+	}
+
+done:
+	if (conn >= 0) {
+		zsock_close(conn);
+	}
+	atomic_clear(&fw.busy);
+}
+
+static int cmd_tcp(const struct shell *sh, size_t argc, char **argv)
+{
+	uintptr_t port = CONFIG_FWUPDATE_TCP_PORT;
+
+	if (!atomic_cas(&fw.busy, 0, 1)) {
+		shell_error(sh, "update already running");
+		return -EBUSY;
+	}
+
+	fw.sh = sh;
+	fw.dry = false;
+	fw.size = 0;
+	fw.received = 0;
+	for (size_t i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "dry") == 0) {
+			fw.dry = true;
+		} else {
+			port = strtoul(argv[i], NULL, 0);
+		}
+	}
+
+	shell_print(sh, "partition %s: %u KiB. Waiting %d s on TCP port %u, e.g.",
+		    STRINGIFY(FW_LABEL), (unsigned int)(FW_SIZE / 1024),
+		    CONFIG_FWUPDATE_TCP_ACCEPT_TIMEOUT, (unsigned int)port);
+	shell_print(sh, "  nc -N <board> %u < flash-image.bin%s", (unsigned int)port,
+		    fw.dry ? "  (dry run)" : "");
+
+	k_thread_create(&fw_thread, fw_stack, K_THREAD_STACK_SIZEOF(fw_stack), fw_tcp_worker,
+			(void *)port, NULL, NULL, CONFIG_FWUPDATE_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&fw_thread, "fwupdate-tcp");
+
+	return 0;
+}
+#endif /* CONFIG_FWUPDATE_TCP */
+
+#if defined(CONFIG_FWUPDATE_YMODEM)
 static int cmd_ymodem(const struct shell *sh, size_t argc, char **argv)
 {
 	if (!atomic_cas(&fw.busy, 0, 1)) {
@@ -333,12 +505,18 @@ static int cmd_ymodem(const struct shell *sh, size_t argc, char **argv)
 
 	return 0;
 }
+#endif /* CONFIG_FWUPDATE_YMODEM */
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	fwupdate_cmds,
-	SHELL_CMD_ARG(ymodem, NULL,
-		      "[dry]: receive an image with YMODEM and write it to the firmware partition",
-		      cmd_ymodem, 1, 1),
+	IF_ENABLED(CONFIG_FWUPDATE_YMODEM,
+		   (SHELL_CMD_ARG(ymodem, NULL,
+				  "[dry]: receive an image with YMODEM and write it to the "
+				  "firmware partition",
+				  cmd_ymodem, 1, 1),))
+	IF_ENABLED(CONFIG_FWUPDATE_TCP,
+		   (SHELL_CMD_ARG(tcp, NULL, "[port] [dry]: receive an image over one TCP connection",
+				  cmd_tcp, 1, 2),))
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(fwupdate, &fwupdate_cmds, "Firmware update", NULL);

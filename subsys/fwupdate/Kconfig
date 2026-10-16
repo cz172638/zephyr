@@ -33,6 +33,27 @@ config FWUPDATE_YMODEM_RX_BUF_SIZE
 	default 4096
 	depends on FWUPDATE_YMODEM
 
+config FWUPDATE_TCP
+	bool "Raw TCP upload"
+	depends on SHELL && NET_SOCKETS && NET_TCP && NET_IPV4
+	select CRC
+	help
+	  "fwupdate tcp [port] [dry]" accepts one TCP connection and takes
+	  everything up to EOF as the image, e.g. nc -N <board> 6969 <
+	  flash-image.bin. There is no authentication: enable it only on
+	  trusted networks; the command has to be started from a shell (UART
+	  or SSH) for each update.
+
+config FWUPDATE_TCP_PORT
+	int "Default TCP port"
+	default 6969
+	depends on FWUPDATE_TCP
+
+config FWUPDATE_TCP_ACCEPT_TIMEOUT
+	int "Seconds to wait for the connection"
+	default 120
+	depends on FWUPDATE_TCP
+
 config FWUPDATE_TIM_HEADER
 	bool "Require a Marvell TIM header"
 	default y if SOC_SERIES_ARMADA37XX
