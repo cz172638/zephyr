@@ -22,11 +22,18 @@
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/ssh/keygen.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/storage/flash_map.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_uart.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(netshell, LOG_LEVEL_INF);
+
+#if DT_HAS_CHOSEN(zephyr_settings_partition)
+#define SETTINGS_AREA DT_PARTITION_ID(DT_CHOSEN(zephyr_settings_partition))
+#else
+#define SETTINGS_AREA PARTITION_ID(storage_partition)
+#endif
 
 #define HOST_KEY_IDX 0
 #define AUTH_KEY_IDX 1
@@ -100,6 +107,33 @@ static int run(const char *cmd)
 	return ret;
 }
 
+/*
+ * The settings partition is the sector where the stock U-Boot kept its
+ * environment: anything but erased flash or NVS makes the mount fail.
+ * Erase it once and try again.
+ */
+static int settings_init(void)
+{
+	const struct flash_area *fa;
+	int ret = settings_subsys_init();
+
+	if (ret == 0) {
+		return 0;
+	}
+	LOG_WRN("settings init failed (%d), erasing the settings partition", ret);
+
+	ret = flash_area_open(SETTINGS_AREA, &fa);
+	if (ret == 0) {
+		ret = flash_area_erase(fa, 0, fa->fa_size);
+		flash_area_close(fa);
+	}
+	if (ret != 0) {
+		LOG_ERR("erase failed: %d", ret);
+		return ret;
+	}
+	return settings_subsys_init();
+}
+
 static int host_key(void)
 {
 	char cmd[64];
@@ -116,7 +150,11 @@ static int host_key(void)
 	if (run(cmd) != 0) {
 		return -EIO;
 	}
-	return run("net ssh_key save 0 priv id_rsa");
+	if (run("net ssh_key save 0 priv id_rsa") != 0) {
+		/* Still usable for this boot, just a new fingerprint next time */
+		LOG_WRN("host key not saved");
+	}
+	return 0;
 }
 
 int main(void)
@@ -130,8 +168,8 @@ int main(void)
 		k_msleep(10);
 	}
 
-	if (settings_subsys_init() != 0) {
-		LOG_ERR("settings unavailable, host key will not persist");
+	if (settings_init() != 0) {
+		LOG_ERR("settings unavailable, host key and MAC will not persist");
 	}
 
 	if (net_if_l2(iface) == &NET_L2_GET_NAME(ETHERNET)) {
