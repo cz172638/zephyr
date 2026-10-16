@@ -94,7 +94,8 @@ config ETH_MVNETA_SHELL
 	bool "mvneta shell commands"
 	depends on SHELL && NET_L2_ETHERNET_MGMT
 	help
-	  "mvneta queues" and "mvneta qav" commands to look at the TX queues
-	  and set their rate limit through the Ethernet management API.
+	  "mvneta queues" and "mvneta qav" to look at the TX queues and set
+	  their rate limit through the Ethernet management API, "mvneta regs"
+	  and "mvneta sw" to dump MAC and switch state for debugging.
 
 endif # ETH_MVNETA
