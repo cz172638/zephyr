@@ -1,0 +1,11 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SPI_MVEBU_A3700
+	bool "Marvell Armada 3700 SPI controller"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_SPI_ENABLED
+	select PINCTRL
+	help
+	  Polled, byte-at-a-time (legacy mode) driver for the SPI controller
+	  of the Armada 3700, used for the boot SPI NOR flash.

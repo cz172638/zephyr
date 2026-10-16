@@ -6,6 +6,7 @@ zephyr_library()
 
 # zephyr-keep-sorted-start
 zephyr_library_sources_ifdef(CONFIG_SPI_ASYNC spi_signal.c)
+zephyr_library_sources_ifdef(CONFIG_SPI_MVEBU_A3700 spi_mvebu_a3700.c)
 zephyr_library_sources_ifdef(CONFIG_SPI_RTIO spi_rtio.c)
 zephyr_library_sources_ifdef(CONFIG_SPI_SHELL spi_shell.c)
 zephyr_library_sources_ifdef(CONFIG_USERSPACE spi_handlers.c)
