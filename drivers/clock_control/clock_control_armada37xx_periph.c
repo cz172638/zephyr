@@ -188,9 +188,16 @@ static const struct a37xx_clk_desc sb_clks[] = {
 	GATE(1, 0),                                  /* 4 gbe0_50 */
 	GATE(2, 2),                                  /* 5 gbe1_125 */
 	GATE(3, 2),                                  /* 6 gbe0_125 */
-	GATE_DIV(4, 1, DIV_SEL1, 13, 1),             /* 7 gbe1_core */
-	GATE_DIV(5, 1, DIV_SEL1, 14, 1),             /* 8 gbe0_core */
-	GATE_DIV(12, 1, DIV_SEL1, 0, 1),             /* 9 gbe_bm */
+	/*
+	 * gbe*_core and gbe_bm: Linux registers a 1-bit divider here with a
+	 * zero-width field, i.e. never divides. On the ESPRESSObin DIV_SEL1
+	 * bit 14 reads 1, yet the NETA rate limiter timed from this clock
+	 * ran exactly 2x fast when the bit was applied, so the divider is not
+	 * in the path (or the bit means something else): follow Linux.
+	 */
+	GATE(4, 1),                                  /* 7 gbe1_core */
+	GATE(5, 1),                                  /* 8 gbe0_core */
+	GATE(12, 1),                                 /* 9 gbe_bm */
 	FULL_DD(11, 14, DIV_SEL0, 3, DIV_SEL0, 6),   /* 10 sdio */
 	FULL_DD(16, 16, DIV_SEL0, 9, DIV_SEL0, 12),  /* 11 usb32_usb2_sys */
 	FULL_DD(17, 18, DIV_SEL0, 15, DIV_SEL0, 18), /* 12 usb32_ss_sys */
