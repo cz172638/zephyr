@@ -193,7 +193,22 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
   - Zápis: nejdřív smaže první sektor, pak zbytek, zapíše data, header až nakonec a vše přečte zpátky.
   - Při výpadku napájení uprostřed zápisu boot ROM nenajde header a přejde do UART recovery.
   - Na hostiteli ověřeno proti lrzsz `sb` (1K i 128B bloky, s vloženými chybami na lince) a tio 2.7 přes pty.
+- `fwupdate tcp [port] [dry]`: totéž přes TCP (`nc -N <ip> 6969 < flash-image.bin`), odpověď s velikostí a crc32 přijde zpátky po spojení.
+- Layout stránky SPI NOR je na desce 4 KiB (`SPI_NOR_FLASH_LAYOUT_PAGE_SIZE`). S výchozími 64 KiB vyjde NVS sektor na 65536 B, nevejde se do 16 bitů a `settings_backend_init()` vrátí `-EDOM` (-33). Mazání velkých rozsahů dál používá 64KiB bloky.
 - `samples/drivers/spi_flash` na ESPRESSObinu nespouštět: testuje na offsetu 0xFF000, tedy uvnitř firmware oddílu.
+
+### 3.6 Shell přes SSH (`samples/boards/globalscale/espressobin/netshell`)
+
+Pro desku bez konzole: DHCP, mDNS hostname `espressobin<mac>`, Zephyr SSH server s autorizací klíčem (RSA, PEM vložený při buildu z `-DNETSHELL_AUTHORIZED_KEY=...`) a `fwupdate tcp`.
+
+- Settings v NVS v oddílu `u-boot-env` (`zephyr,settings-partition`). Když je v oddílu nečitelný obsah (starý U-Boot env), sample ho jednou smaže.
+- Host klíč (RSA 2048) se při prvním bootu vygeneruje a uloží (`ssh/keys/id_rsa`), náhodná locally-administered MAC se uloží jako `netshell/mac`. DHCP pak dává pořád stejnou IP.
+- Ověřeno na desce: SSH přihlášení klíčem, MAC, IP i host klíč přežijí reboot.
+- Entropie je zatím z `TEST_RANDOM_GENERATOR` (není kryptograficky bezpečná). Chybí driver TRNG Armada 3700.
+
+```sh
+ssh -i ~/.ssh/id_rsa root@espressobin<mac>.local
+```
 
 ## 4. Nejistoty a otevřené body
 
@@ -204,7 +219,7 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
    - `CPU_MAP` je zapsaný pro obě CPU (všechny fronty). Na A3700 jsou cause registry viditelné ze všech CPU (Linux `neta_armada3700`).
    - IRQ jde přes GIC SPI 42 na CPU, které má Zephyr nastavené.
 5. **MAC adresa.** Zatím jen náhodná nebo z DT. Čtení z prostředí stock U-Boot v SPI NOR (u `mvebu_espressobin` defconfigu je `CONFIG_ENV_OFFSET` na konci 4MiB flash, ověřit) by šlo doplnit přes flash driver, ten ale ještě není.
-6. **SPI NOR:** ověřit `flash read flash@0 0 40` (`TIMH`). Kdyby nesedělo JEDEC ID nebo data, zkus nižší `spi-max-frequency`.
+6. **SPI NOR.** Vyřešeno: čtení, zápis (`fwupdate`) i NVS settings ověřeny na desce.
 7. **Pořadí priorit HW TX front.** Veřejně není zdokumentované, který konec arbiter obsluhuje první. Driver předpokládá frontu 7. Test: dva saturující UDP streamy s různou prioritou. Když vyhrává ten nižší, zapni `CONFIG_ETH_MVNETA_TXQ0_HIGHEST=y`.
 8. **Jednotky token bucketu.** Vyřešeno měřením: limiter počítá bajty L2 rámce včetně FCS (bez preambule a IFG), 10 kb/s na jednotku refillu.
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
@@ -215,7 +230,8 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (24 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (30 commitů nad `124121fbb`) + `gh-pages`
+- `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
 ```sh
