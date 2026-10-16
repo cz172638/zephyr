@@ -1,6 +1,6 @@
 # Zephyr na ESPRESSObin (Marvell Armada 3720): TF-A BL33 + síť přes 88E6341
 
-Stav k 2026-10-15. Zephyr `main` @ `124121fbb`, větev `espressobin` (8 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
+Stav k 2026-10-16. Zephyr `main` @ `124121fbb`, větev `espressobin` (12 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
 
 ## TL;DR
 
@@ -8,14 +8,15 @@ Stav k 2026-10-15. Zephyr `main` @ `124121fbb`, větev `espressobin` (8 commitů
 - Targety jsou `espressobin` (1× A53) a `espressobin/armada3720/smp` (2× A53, druhé jádro startuje přes PSCI `CPU_ON`).
 - Nové drivery:
   - pinctrl NB/SB,
-  - hradla periferních hodin,
+  - periferní hodiny NB/SB a TBG (hradla, čtení frekvencí),
   - UART (`marvell,armada-3700-uart`),
   - MDIO `marvell,orion-mdio`,
   - minimální switch 88E6xxx (přes PHY API),
   - Ethernet NETA (`marvell,armada-3700-neta`).
+- NETA má **8 RX a 8 TX front**: TX podle priority paketu se strict priority, každá fronta má token bucket vystavený jako Qav (`ETHERNET_QAV`), RX fronty se vybírají podle VLAN PCP. Viz 3.4.
 - Síť: eth0 je připojený přes RGMII-ID s pevným 1000/full na port 0 switche 88E6341 (adresa SMI 1, multi-chip). Porty `wan`, `lan0` a `lan1` posílají rámce jen na CPU a v Zephyru se jeví jako **jedno rozhraní**, zatím bez DSA tagů.
 - Ověřeno bez HW:
-  - build obou targetů (hello_world, synchronization, dhcpv4_client, echo_server, tests/drivers/ethernet/api),
+  - build obou targetů (hello_world, synchronization, dhcpv4_client, echo_server, tests/drivers/ethernet/api), multi-queue konfigurace (8 TX / 4 RX, VLAN, shell) s dhcpv4_client a ethernet/vlan,
   - twister build-only 7/7,
   - checkpatch bez chyb,
   - TF-A `mrvl_flash` + `mrvl_uart` s Zephyrem jako BL33 (`fiptool info` ukazuje BL33 = 0x6B898 B).
@@ -143,6 +144,34 @@ Init (podle U-Boot `espressobin_last_stage_init()`):
 - MDIO si samo zapne hodiny GbE0 a SMI piny.
 - PHY callback a RX vlákno se registrují až v `iface_init`, kdy už jsou switch i MDIO připravené.
 
+### 3.4 Fronty, priority a Qav
+
+Počet front se řídí traffic classes stacku (`CONFIG_ETH_MVNETA_TX_QUEUES` má default `NET_TC_TX_COUNT`, RX obdobně):
+
+```
+CONFIG_NET_TC_TX_COUNT=8
+CONFIG_NET_TC_RX_COUNT=4
+CONFIG_NET_VLAN=y
+CONFIG_NET_L2_ETHERNET_MGMT=y
+CONFIG_ETH_MVNETA_SHELL=y
+```
+
+- **TX výběr fronty:** při stejném počtu front a TX tříd je fronta N = traffic class N (`net_tx_priority2tc()`), jinak lineárně podle 802.1Q pořadí priorit (BK < BE < EE < … < NC).
+  - Výchozí `CONFIG_NET_TC_MAPPING_STRICT`: BE → fronta 1, CA (PCP 3) → fronta 3.
+  - Pro AVB je lepší `CONFIG_NET_TC_MAPPING_SR_CLASS_A_AND_B`: SR třída A (PCP 3) jde do nejvyšší fronty 7, třída B (PCP 2) do 6. Rezervace třídy A 20 Mb/s pak vypadá jako `mvneta qav 1 7 20000000`.
+- **TX arbitráž:** `TXQ_CMD_1` = 0 vypíná legacy WRR, fronty jdou ve strict priority. Každá fronta má vlastní ring a mutex. Plná fronta v `send()` spí po 20 µs (max `CONFIG_ETH_MVNETA_TX_TIMEOUT_MS`), protože omezená fronta může být plná legitimně.
+- **RX:** `VLAN_PRIO_TO_RXQ` (0x2440) mapuje PCP na frontu (přes `net_vlan2priority()` a `net_rx_priority2tc()`), netagované rámce jdou do fronty 0. Vlákno bere vyšší fronty dřív, po dávkách `CONFIG_ETH_MVNETA_RX_BUDGET` (16) a po každé dávce z nižší fronty začne znovu odshora. Prioritu paketu nastaví z PCP ještě před `net_recv_data()`, takže paket skončí ve správné RX třídě stacku.
+- **Qav přes token bucket** (registry podle Linux `mvneta_setup_queue_rates()`):
+  - `REFILL_NUM_CLK` (0x3e08) = takty jádra GbE na 100 ns. Frekvenci jádra dává nový `get_rate()` v clock driveru: TBG → mux → děliče → `gbe0_core`.
+  - `TXQ_BUCKET_REFILL(q)` (0x3e20) = `ceil(idle_slope / 10 kb/s) | 1000 << 20`. Rozlišení je 10 kb/s, rozsah do ~5,2 Gb/s.
+  - `TXQ_TOKEN_SIZE(q)` (0x3e40) = jeden maximální rámec (stejné jednotky jako `TX_MTU` = velikost × 8), takže burst je jeden rámec. Neomezené fronty mají refill a bucket na maximu.
+  - `TXQ_CMD1` (0x3e00): obě bity `BW_LIM_EN | BW_LIM_SEL_V1` = 0 zapne per-queue limiter (Linux „version 3“). Pokud Qav nemá zapnutá žádná fronta, bity se zase nastaví.
+  - Podporuje `STATUS`, `IDLE_SLOPE`, `DELTA_BANDWIDTH` (procento aktuální rychlosti linku), `OPER_IDLE_SLOPE` (zaokrouhleno na 10 kb/s) a `TRAFFIC_CLASS` (jen při 1:1 frontách a třídách). Dále `ETHERNET_CONFIG_TYPE_PRIORITY_QUEUES_NUM`.
+  - Je to omezovač rychlosti, ne credit-based shaper (kredit nejde do mínusu, chybí send slope). Pro AVB talkera to ale dělá podstatné: drží stream na rezervaci s burstem jednoho rámce a strict priority ho pouští před best effort.
+- **Shell:** `mvneta queues <iface>` vypíše stav Qav po frontách, `mvneta qav <iface> <queue> <b/s|off>` ho nastaví přes `NET_REQUEST_ETHERNET_SET_QAV_PARAM`. Jde tedy stejnou cestou jako aplikace. `net iface` ukáže schopnosti „Priority queues“ a „IEEE 802.1Qav“.
+
+Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají 392 KiB nocache.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.**
@@ -154,15 +183,18 @@ Init (podle U-Boot `espressobin_last_stage_init()`):
    - `CPU_MAP` je zapsaný pro obě CPU (všechny fronty). Na A3700 jsou cause registry viditelné ze všech CPU (Linux `neta_armada3700`).
    - IRQ jde přes GIC SPI 42 na CPU, které má Zephyr nastavené.
 5. **MAC adresa.** Zatím jen náhodná nebo z DT. Čtení z prostředí stock U-Boot v SPI NOR (u `mvebu_espressobin` defconfigu je `CONFIG_ENV_OFFSET` na konci 4MiB flash, ověřit) by šlo doplnit přes flash driver, ten ale ještě není.
-6. **Do budoucna:**
+6. **Pořadí priorit HW TX front.** Veřejně není zdokumentované, který konec arbiter obsluhuje první. Driver předpokládá frontu 7. Test: dva saturující UDP streamy s různou prioritou. Když vyhrává ten nižší, zapni `CONFIG_ETH_MVNETA_TXQ0_HIGHEST=y`.
+7. **Jednotky token bucketu.** Pro `TX_MTU` a `TXQ_TOKEN_SIZE` beru jednotku bit (Linux zapisuje `TX_MTU` = velikost × 8) a pro refill 10 kb/s na jednotku za 100 µs (podle komentáře v Linuxu). Ověření: best effort (priorita BE) jde při 8 třídách do fronty 1, takže `mvneta qav 1 1 10000000` a `zperf` musí ukázat ~10 Mb/s.
+8. **Frekvence jádra GbE.** Linux čte 1bitový dělič `gbe0_core` (`DIV_SEL1` bit 14) jako pole nulové šířky, takže ho vždy bere jako 0. Já bit čtu. Kdyby se rychlost lišila přesně 2×, příčina bude tady. Na konzoli (`LOG_DBG`) se vypíše „core clock … Hz“.
+9. **Do budoucna:**
    - DSA s Marvell tagy (rozhraní na každý port),
    - eth1 přes SGMII (COMPHY), SPI NOR, I2C, GPIO, SDHCI, USB, PCIe,
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (8 commitů nad `124121fbb`) + `gh-pages`
-- `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (12 commitů nad `124121fbb`) + `gh-pages`
+- `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
 ```sh
 git -C zephyr fetch zephyr-espressobin.bundle espressobin:espressobin gh-pages:gh-pages
@@ -173,7 +205,7 @@ Očekávaný výstup na konzoli (115200 8N1) po bootu:
 ```
 *** Booting Zephyr OS ... ***
 <inf> phy_mv88e6xxx: switch product 0x341 rev 0 at SMI address 1
-<inf> eth_mvneta: ethernet@d0030000: MAC 02:...
+<inf> eth_mvneta: ethernet@d0030000: MAC 02:..., 4 RX / 8 TX queues
 <inf> eth_mvneta: ethernet@d0030000: link up
 <inf> net_dhcpv4_client_sample: Address[1]: 192.168.x.y
 ```
