@@ -24,7 +24,12 @@ Stav k 2026-10-16. Zephyr `main` @ `124121fbb`, větev `espressobin` (12 commit�
   - boot ROM → WTMI (mv-ddr, DDR3 1 GiB 2CS) → TF-A v2.15 BL1/BL2/BL31 → Zephyr SMP, druhé jádro naběhne přes PSCI,
   - UART, shell, switch 88E6341 nalezen (produkt 0x341), MAC z DT, 4 RX / 8 TX fronty, link up přes port switche,
   - SPI NOR, `fwupdate ymodem` přes tio (1 MB za ~100 s při 115200, tedy ~10 KB/s), zápis a verifikace, `kernel reboot cold` přes PSCI do nového image.
-- Zbývá ověřit: DHCP/ping, přerušení NETA, priority TX front, Qav rychlost, frekvence jádra GbE.
+  - **síť: DHCP přes `lan1` (port 3 switche) → 192.168.200.167**, RX i TX přes NETA a 88E6341.
+- Opravy z prvního testu na HW:
+  - TX fronty zapnuté ve `start()` při vynuceném link down nikdy nevysílaly (descriptory pending, TX DMA nečinné). Fronty se teď zapínají v link callbacku, jako Linux `mvneta_port_up()`.
+  - CPU port switche s `0xe002` z U-Bootu naběhl 1000/half. Výchozí hodnota je teď `0xe03e` (vynucený link, full, 1000).
+  - `TXQ_CMD1` má po resetu hodnotu `0x09` a mimo Qav ho necháváme být.
+- Zbývá ověřit: ping a latence (přerušení NETA), priority TX front, Qav rychlost, frekvence jádra GbE.
 
 ## 1. Boot chain
 
@@ -172,6 +177,7 @@ CONFIG_ETH_MVNETA_SHELL=y
   - `TXQ_CMD1` (0x3e00): obě bity `BW_LIM_EN | BW_LIM_SEL_V1` = 0 zapne per-queue limiter (Linux „version 3“). Pokud Qav nemá zapnutá žádná fronta, bity se zase nastaví.
   - Podporuje `STATUS`, `IDLE_SLOPE`, `DELTA_BANDWIDTH` (procento aktuální rychlosti linku), `OPER_IDLE_SLOPE` (zaokrouhleno na 10 kb/s) a `TRAFFIC_CLASS` (jen při 1:1 frontách a třídách). Dále `ETHERNET_CONFIG_TYPE_PRIORITY_QUEUES_NUM`.
   - Je to omezovač rychlosti, ne credit-based shaper (kredit nejde do mínusu, chybí send slope). Pro AVB talkera to ale dělá podstatné: drží stream na rezervaci s burstem jednoho rámce a strict priority ho pouští před best effort.
+- **Ladění:** `mvneta regs <iface>` (MAC, fronty, limiter, LPI, TX descriptory, MIB) a `mvneta sw <iface> [addr reg]` (porty switche).
 - **Shell:** `mvneta queues <iface>` vypíše stav Qav po frontách, `mvneta qav <iface> <queue> <b/s|off>` ho nastaví přes `NET_REQUEST_ETHERNET_SET_QAV_PARAM`. Jde tedy stejnou cestou jako aplikace. `net iface` ukáže schopnosti „Priority queues“ a „IEEE 802.1Qav“.
 
 Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají 392 KiB nocache.
@@ -189,9 +195,7 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
 
 ## 4. Nejistoty a otevřené body
 
-1. **CPU port switche.**
-   - Hodnota 0xe002 je převzatá z U-Boot. Link na portu 0 se v ní nevynucuje (ForcedLink = 0), to Linux DSA dělá. Pokud bude RGMII link mrtvý, zkus `marvell,cpu-port-mac-ctl = <0xe03e>` (force link, FD, 1000).
-   - Ověření: dump `PORT_STS` portu 0 přes `phy_read(switch, 0x1000)`.
+1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
 2. **RGMII delaye.** Delay dělá switch a NETA žádné nemá. Kdyby se rámce na RX ztrácely s CRC chybou (`INTR_MISC_CAUSE` bit 9), zkus u switche jen jeden směr (bit 15 nebo 14).
 3. **Časová koalescence RX.** `RXQ_TIME_COAL` = 0. Při prahu 1 rámec by na tom nemělo záležet. Kdyby RX IRQ nechodily, pojistkou je 100ms polling (viditelné jako latence ~100 ms u pingu).
 4. **SMP a per-CPU registry.**
@@ -209,7 +213,7 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (17 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (21 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
 ```sh
