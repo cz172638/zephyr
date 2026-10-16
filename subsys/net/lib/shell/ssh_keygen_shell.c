@@ -217,7 +217,7 @@ static void shell_bypass_pubkey_import(const struct shell *sh, uint8_t *data, si
 {
 	ARG_UNUSED(user_data);
 
-	shell_fprintf(sh, SHELL_NORMAL, "%.*s", len, data);
+	shell_fprintf(sh, SHELL_NORMAL, "%.*s", (int)len, data);
 
 	if (pubkey_import_len + len >= sizeof(key_buf)) {
 		shell_error(sh, "Key too big");

@@ -614,7 +614,7 @@ static void ssh_server_list_cb(struct ssh_server *sshd, int instance, void *user
 				PR("Instance  Transport    Peer Address\n");
 			}
 
-			PR("%8d  %9d    %s%s%s:%d\n", instance, i,
+			PR("%8d  %9zu    %s%s%s:%d\n", instance, i,
 			   sshd->transport[i].addr.ss_family == NET_AF_INET6 ? "[" : "",
 			   addr_str,
 			   sshd->transport[i].addr.ss_family == NET_AF_INET6 ? "]" : "",
