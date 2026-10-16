@@ -436,7 +436,8 @@ static void mvneta_rxq_init(const struct device *dev, unsigned int q)
 	mvneta_rxq_update(dev, q, 0, RX_DESCS);
 }
 
-static void mvneta_rx_one(const struct device *dev, struct mvneta_rxq_dma *rq, uint16_t idx)
+/* Returns -ENOMEM when no net_pkt is free: the frame stays in the ring */
+static int mvneta_rx_one(const struct device *dev, struct mvneta_rxq_dma *rq, uint16_t idx)
 {
 	struct mvneta_data *data = dev->data;
 	struct mvneta_rx_desc *d = &rq->desc[idx];
@@ -450,19 +451,18 @@ static void mvneta_rx_one(const struct device *dev, struct mvneta_rxq_dma *rq, u
 	    (status & RXD_ERR_SUMMARY) != 0) {
 		LOG_DBG("rx drop status 0x%08x size %u", status, size);
 		eth_stats_update_errors_rx(data->iface);
-		return;
+		return 0;
 	}
 
 	len = (int)size - MVNETA_MH_SIZE - MVNETA_FCS_LEN;
 	if (len <= 0 || len > MVNETA_MAX_RX_SIZE) {
 		eth_stats_update_errors_rx(data->iface);
-		return;
+		return 0;
 	}
 
 	pkt = net_pkt_rx_alloc_with_buffer(data->iface, len, NET_AF_UNSPEC, 0, K_NO_WAIT);
 	if (pkt == NULL) {
-		eth_stats_update_errors_rx(data->iface);
-		return;
+		return -ENOMEM;
 	}
 
 	/* Pick the RX traffic class from the PCP before the stack queues it */
@@ -474,6 +474,7 @@ static void mvneta_rx_one(const struct device *dev, struct mvneta_rxq_dma *rq, u
 		net_pkt_unref(pkt);
 		eth_stats_update_errors_rx(data->iface);
 	}
+	return 0;
 }
 
 static int mvneta_rx(const struct device *dev, unsigned int q, int budget)
@@ -482,6 +483,7 @@ static int mvneta_rx(const struct device *dev, unsigned int q, int budget)
 	struct mvneta_rxq_dma *rq = &data->dma->rxq[q];
 	uint32_t occupied;
 	uint32_t done = 0;
+	int ret = 0;
 
 	occupied = neta_read(dev, RXQ_STATUS(q)) & RXQ_OCCUPIED_MASK;
 	occupied = MIN(occupied, (uint32_t)budget);
@@ -490,7 +492,10 @@ static int mvneta_rx(const struct device *dev, unsigned int q, int budget)
 	while (done < occupied) {
 		uint16_t idx = data->rx_idx[q];
 
-		mvneta_rx_one(dev, rq, idx);
+		ret = mvneta_rx_one(dev, rq, idx);
+		if (ret < 0) {
+			break;
+		}
 		mvneta_rx_desc_fill(rq, idx);
 
 		data->rx_idx[q] = (idx + 1) % RX_DESCS;
@@ -502,7 +507,7 @@ static int mvneta_rx(const struct device *dev, unsigned int q, int budget)
 		mvneta_rxq_update(dev, q, done, done);
 	}
 
-	return done;
+	return ret < 0 ? ret : (int)done;
 }
 
 /*
@@ -510,19 +515,26 @@ static int mvneta_rx(const struct device *dev, unsigned int q, int budget)
  * queue, start again from the top, so a burst of best effort traffic
  * cannot hold back a frame waiting in a higher queue.
  */
-static void mvneta_rx_all(const struct device *dev)
+static int mvneta_rx_all(const struct device *dev)
 {
 	bool again;
+	int ret;
 
 	do {
 		again = false;
 		for (int q = NUM_RXQ - 1; q >= 0; q--) {
-			if (mvneta_rx(dev, q, CONFIG_ETH_MVNETA_RX_BUDGET) > 0) {
+			ret = mvneta_rx(dev, q, CONFIG_ETH_MVNETA_RX_BUDGET);
+			if (ret < 0) {
+				return ret;
+			}
+			if (ret > 0) {
 				again = true;
 				break;
 			}
 		}
 	} while (again);
+
+	return 0;
 }
 
 static void mvneta_rx_thread(void *p1, void *p2, void *p3)
@@ -544,8 +556,18 @@ static void mvneta_rx_thread(void *p1, void *p2, void *p3)
 			neta_write(dev, INTR_MISC_CAUSE, 0);
 		}
 
-		if (data->iface != NULL && net_if_is_up(data->iface)) {
-			mvneta_rx_all(dev);
+		if (data->iface != NULL && net_if_is_up(data->iface) &&
+		    mvneta_rx_all(dev) == -ENOMEM) {
+			/*
+			 * Out of net_pkt: leave the frames in the ring (the MAC
+			 * drops new ones when it is full) and let the stack
+			 * threads run, otherwise this cooperative thread would
+			 * livelock under a flood.
+			 */
+			eth_stats_update_errors_rx(data->iface);
+			k_sleep(K_MSEC(1));
+			k_sem_give(&data->rx_sem);
+			continue;
 		}
 
 		neta_write(dev, INTR_NEW_MASK, INTR_RX_MASK | INTR_MISC);
