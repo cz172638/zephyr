@@ -172,6 +172,17 @@ CONFIG_ETH_MVNETA_SHELL=y
 
 Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají 392 KiB nocache.
 
+### 3.5 SPI NOR a `fwupdate ymodem`
+
+- `spi_mvebu_a3700.c`: řadič v legacy režimu (bez FIFO, 1 bajt na přenos, polling), nativní CS i `cs-gpios`. Prescaler počítá z hodin `sqf` (NB index 7).
+- Deska: W25Q32DW jako `jedec,spi-nor` (`ef 60 16`, 4 MiB, 50 MHz). Oddíly: `firmware` 0–0x3F0000 (`boot_partition`), `u-boot-env` 0x3F0000–0x400000.
+- `subsys/fwupdate`: `fwupdate ymodem [dry]` přepne shell UART do bypass a obraz přijme YMODEMem (CRC-16, bloky 128/1024 B) do RAM.
+  - Kontroly: ohlášená velikost a TIM header (`TIMH` na offsetu 4).
+  - Zápis: nejdřív smaže první sektor, pak zbytek, zapíše data, header až nakonec a vše přečte zpátky.
+  - Při výpadku napájení uprostřed zápisu boot ROM nenajde header a přejde do UART recovery.
+  - Na hostiteli ověřeno proti lrzsz `sb` (1K i 128B bloky, s vloženými chybami na lince) a tio 2.7 přes pty.
+- `samples/drivers/spi_flash` na ESPRESSObinu nespouštět: testuje na offsetu 0xFF000, tedy uvnitř firmware oddílu.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.**
@@ -183,17 +194,18 @@ Paměť: DMA ringy a buffery pro 4 RX × 32 a 8 TX × 16 descriptorů zabírají
    - `CPU_MAP` je zapsaný pro obě CPU (všechny fronty). Na A3700 jsou cause registry viditelné ze všech CPU (Linux `neta_armada3700`).
    - IRQ jde přes GIC SPI 42 na CPU, které má Zephyr nastavené.
 5. **MAC adresa.** Zatím jen náhodná nebo z DT. Čtení z prostředí stock U-Boot v SPI NOR (u `mvebu_espressobin` defconfigu je `CONFIG_ENV_OFFSET` na konci 4MiB flash, ověřit) by šlo doplnit přes flash driver, ten ale ještě není.
-6. **Pořadí priorit HW TX front.** Veřejně není zdokumentované, který konec arbiter obsluhuje první. Driver předpokládá frontu 7. Test: dva saturující UDP streamy s různou prioritou. Když vyhrává ten nižší, zapni `CONFIG_ETH_MVNETA_TXQ0_HIGHEST=y`.
-7. **Jednotky token bucketu.** Pro `TX_MTU` a `TXQ_TOKEN_SIZE` beru jednotku bit (Linux zapisuje `TX_MTU` = velikost × 8) a pro refill 10 kb/s na jednotku za 100 µs (podle komentáře v Linuxu). Ověření: best effort (priorita BE) jde při 8 třídách do fronty 1, takže `mvneta qav 1 1 10000000` a `zperf` musí ukázat ~10 Mb/s.
-8. **Frekvence jádra GbE.** Linux čte 1bitový dělič `gbe0_core` (`DIV_SEL1` bit 14) jako pole nulové šířky, takže ho vždy bere jako 0. Já bit čtu. Kdyby se rychlost lišila přesně 2×, příčina bude tady. Na konzoli (`LOG_DBG`) se vypíše „core clock … Hz“.
-9. **Do budoucna:**
+6. **SPI NOR:** ověřit `flash read flash@0 0 40` (`TIMH`). Kdyby nesedělo JEDEC ID nebo data, zkus nižší `spi-max-frequency`.
+7. **Pořadí priorit HW TX front.** Veřejně není zdokumentované, který konec arbiter obsluhuje první. Driver předpokládá frontu 7. Test: dva saturující UDP streamy s různou prioritou. Když vyhrává ten nižší, zapni `CONFIG_ETH_MVNETA_TXQ0_HIGHEST=y`.
+8. **Jednotky token bucketu.** Pro `TX_MTU` a `TXQ_TOKEN_SIZE` beru jednotku bit (Linux zapisuje `TX_MTU` = velikost × 8) a pro refill 10 kb/s na jednotku za 100 µs (podle komentáře v Linuxu). Ověření: best effort (priorita BE) jde při 8 třídách do fronty 1, takže `mvneta qav 1 1 10000000` a `zperf` musí ukázat ~10 Mb/s.
+9. **Frekvence jádra GbE.** Linux čte 1bitový dělič `gbe0_core` (`DIV_SEL1` bit 14) jako pole nulové šířky, takže ho vždy bere jako 0. Já bit čtu. Kdyby se rychlost lišila přesně 2×, příčina bude tady. Na konzoli (`LOG_DBG`) se vypíše „core clock … Hz“.
+10. **Do budoucna:**
    - DSA s Marvell tagy (rozhraní na každý port),
-   - eth1 přes SGMII (COMPHY), SPI NOR, I2C, GPIO, SDHCI, USB, PCIe,
+   - eth1 přes SGMII (COMPHY), I2C, GPIO, Xenon SDHCI (microSD/eMMC), USB, PCIe,
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (12 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (17 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
 ```sh
