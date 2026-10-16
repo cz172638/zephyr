@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 37xx time base generator: four PLL outputs from the
+  crystal, read-only. Cells: 0 TBG-A-P, 1 TBG-B-P, 2 TBG-A-S, 3 TBG-B-S.
+
+compatible: "marvell,armada-3700-tbg-clock"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+    description: The crystal, a fixed-clock node.
+
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - index
