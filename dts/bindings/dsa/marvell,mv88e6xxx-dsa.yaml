@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  DSA ports of a Marvell 88E6xxx switch. The switch itself is the
+  marvell,mv88e6085 node on the SMI bus, referenced by marvell,switch;
+  it remains the PHY of the conduit MAC.
+
+  One child per switch port (reg = port number). The CPU port has the
+  "ethernet" phandle of the conduit and the tag protocol
+  (DSA_TAG_PROTO_DSA or DSA_TAG_PROTO_EDSA, set CONFIG_DSA_TAG_SIZE to 4
+  or 8 to match). User ports have a phy-handle, normally an
+  "ethernet-phy" on the switch's internal MDIO bus.
+
+    dsa {
+        compatible = "marvell,mv88e6xxx-dsa";
+        marvell,switch = <&switch0>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        port@0 {
+            compatible = "zephyr,dsa-port";
+            reg = <0>;
+            ethernet = <&eth0>;
+            dsa-tag-protocol = <DSA_TAG_PROTO_DSA>;
+        };
+        port@1 {
+            compatible = "zephyr,dsa-port";
+            reg = <1>;
+            phy-handle = <&switch0phy1>;
+            zephyr,random-mac-address;
+        };
+    };
+
+compatible: "marvell,mv88e6xxx-dsa"
+
+include: [dsa.yaml, base.yaml]
+
+properties:
+  marvell,switch:
+    type: phandle
+    required: true
+    description: The marvell,mv88e6085 switch node.

@@ -10,5 +10,9 @@
 #define DSA_TAG_PROTO_NOTAG	0
 /* NXP NETC switch tag protocol */
 #define DSA_TAG_PROTO_NETC	1
+/* Marvell DSA tag (4 bytes after the source address) */
+#define DSA_TAG_PROTO_DSA	2
+/* Marvell Ethertype DSA tag (EtherType, 2 reserved bytes, DSA tag) */
+#define DSA_TAG_PROTO_EDSA	3
 
 #endif /* ZEPHYR_INCLUDE_DT_BINDINGS_ETHERNET_DSA_TAG_PROTO_H_ */

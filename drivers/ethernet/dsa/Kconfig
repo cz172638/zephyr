@@ -30,6 +30,16 @@ config DSA_NXP_IMX_NETC_GCL_LEN
 	  Amount of Gate control list to use. Small value saves RAM.
 	  The Max of the value can be 64, 128, or 256.
 
+config DSA_MARVELL_MV88E6XXX
+	bool "Support for Marvell 88E6xxx (Link Street) switches"
+	default y
+	depends on DT_HAS_MARVELL_MV88E6XXX_DSA_ENABLED
+	depends on PHY_MARVELL_MV88E6XXX
+	help
+	  DSA driver for Marvell 88E6xxx switches managed by the
+	  marvell,mv88e6085 driver, with one interface per user port.
+	  Set DSA_TAG_SIZE to 4 for the DSA tag or 8 for EDSA.
+
 # DSA tag protocol drivers
 #   Tag protocol ID found in <zephyr/dt-bindings/ethernet/dsa_tag_proto.h>
 
@@ -40,5 +50,12 @@ config DSA_TAG_PROTOCOL_NETC
 	depends on $(dt_compat_any_has_prop,$(DT_COMPAT_ZEPHYR_DSA_PORT),dsa-tag-protocol,1)
 	help
 	  NXP NETC tag protocol.
+
+config DSA_TAG_PROTOCOL_MV88E6XXX
+	bool "Tag protocol - Marvell DSA and EDSA"
+	default y
+	depends on DSA_MARVELL_MV88E6XXX
+	help
+	  Marvell DSA (4 byte) and Ethertype DSA (8 byte) tag protocols.
 
 endif # DSA_DRIVERS

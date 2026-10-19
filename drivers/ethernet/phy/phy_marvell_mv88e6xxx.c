@@ -4,10 +4,15 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Minimal Marvell 88E6xxx (Link Street) switch bring-up, exposed to the
- * MAC as its PHY. The switch is set up as a "port expander": every user
- * port can only forward to the CPU port, the CPU port to all of them, no
- * DSA tagging. The MAC sees one interface whose carrier is up while any
- * user port has link.
+ * MAC as its PHY. Every user port can only forward to the CPU port, the
+ * CPU port to all of them.
+ *
+ * Without DSA ("port expander") nothing is tagged and the MAC sees one
+ * interface whose carrier is up while any user port has link. With the
+ * DSA driver (dsa_mv88e6xxx.c) the CPU port speaks the Marvell DSA or
+ * EDSA tag, each user port becomes its own interface and the MAC carrier
+ * follows the fixed CPU port link. The internal PHYs are then reached
+ * through the switch's MDIO bus (mdio_mv88e6xxx.c).
  *
  * Access is through the multi-chip SMI interface (switch strapped to a
  * non-zero SMI address): two registers at that address, command (0) and
@@ -31,6 +36,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(phy_mv88e6xxx, CONFIG_PHY_LOG_LEVEL);
 
+#include "phy_marvell_mv88e6xxx.h"
+
 /* Multi-chip SMI: registers at the switch's own SMI address */
 #define MC_SMI_CMD          0x00
 #define MC_SMI_DATA         0x01
@@ -43,6 +50,7 @@ LOG_MODULE_REGISTER(phy_mv88e6xxx, CONFIG_PHY_LOG_LEVEL);
 
 /* Internal device addresses */
 #define ADDR_PORT(p) (0x10 + (p))
+#define ADDR_GLOBAL1 0x1b
 #define ADDR_GLOBAL2 0x1c
 #define ADDR_PHY(p)  (0x10 + (p))
 
@@ -56,9 +64,26 @@ LOG_MODULE_REGISTER(phy_mv88e6xxx, CONFIG_PHY_LOG_LEVEL);
 #define PORT_SWITCH_ID_PROD GENMASK(15, 4)
 #define PORT_CTL0           0x04
 #define PORT_BASE_VLAN      0x06
+#define PORT_CTL2           0x08
+#define PORT_ETYPE          0x0f
 
-/* Port control 0: state forwarding, egress unmodified, all frame modes */
-#define PORT_CTL0_FORWARDING 0x007f
+/* Port control 0: state forwarding, flood unknown unicast and multicast,
+ * initial priority from tag and IP, normal frame mode, egress unmodified.
+ */
+#define PORT_CTL0_FORWARDING       0x007f
+#define PORT_CTL0_FRAME_MODE_MASK  GENMASK(9, 8)
+#define PORT_CTL0_FRAME_MODE_DSA   0x0100
+#define PORT_CTL0_FRAME_MODE_EDSA  0x0300
+#define PORT_CTL0_EGRESS_MODE_MASK GENMASK(13, 12)
+#define PORT_CTL0_EGRESS_MODE_EDSA 0x3000
+
+/* Port control 2: maximum frame size, 2048 leaves room for the tag */
+#define PORT_CTL2_JUMBO_MASK GENMASK(13, 12)
+#define PORT_CTL2_JUMBO_2048 0x1000
+
+/* Global 1 control 2: device number used in DSA tags */
+#define G1_CTL2            0x1c
+#define G1_CTL2_DEVICE_NUM GENMASK(4, 0)
 
 /* Global 2 SMI PHY access */
 #define G2_SMI_PHY_CMD  0x18
@@ -82,6 +107,8 @@ struct mv88e6xxx_data {
 	phy_callback_t cb;
 	void *cb_data;
 	struct k_work_delayable monitor;
+	/* DSA tagging on the CPU port, carrier = CPU port link */
+	bool dsa;
 };
 
 static int mc_wait(const struct mv88e6xxx_config *cfg)
@@ -202,29 +229,36 @@ static int sw_phy_read(const struct mv88e6xxx_config *cfg, uint8_t phy, uint8_t 
 	return ret;
 }
 
-/* Carrier of the MAC: up while at least one user port has link. The MAC
- * side itself is always the fixed 1000/full RGMII link to the CPU port.
+/* Carrier of the MAC. The MAC side itself is always the fixed 1000/full
+ * RGMII link to the CPU port. Without DSA it is up while at least one
+ * user port has link, with DSA it is the CPU port link and the user ports
+ * report their own.
  */
 static int mv88e6xxx_poll(const struct device *dev, struct phy_link_state *state)
 {
 	const struct mv88e6xxx_config *cfg = dev->config;
+	struct mv88e6xxx_data *data = dev->data;
 	uint16_t sts;
-	int ret;
+	int ret = 0;
 
 	state->speed = LINK_FULL_1000BASE;
 	state->is_up = false;
 
-	for (int i = 0; i < cfg->num_user_ports; i++) {
-		ret = sw_read(cfg, ADDR_PORT(cfg->user_ports[i]), PORT_STS, &sts);
-		if (ret < 0) {
-			return ret;
-		}
-		if (sts & PORT_STS_LINK) {
-			state->is_up = true;
+	k_mutex_lock(&data->lock, K_FOREVER);
+	if (data->dsa) {
+		ret = sw_read(cfg, ADDR_PORT(cfg->cpu_port), PORT_STS, &sts);
+		state->is_up = (ret == 0) && (sts & PORT_STS_LINK) != 0;
+	} else {
+		for (int i = 0; ret == 0 && i < cfg->num_user_ports; i++) {
+			ret = sw_read(cfg, ADDR_PORT(cfg->user_ports[i]), PORT_STS, &sts);
+			if (ret == 0 && (sts & PORT_STS_LINK)) {
+				state->is_up = true;
+			}
 		}
 	}
+	k_mutex_unlock(&data->lock);
 
-	return 0;
+	return ret;
 }
 
 static int mv88e6xxx_get_link(const struct device *dev, struct phy_link_state *state)
@@ -255,7 +289,8 @@ static void mv88e6xxx_monitor(struct k_work *work)
 	}
 
 	if (changed) {
-		LOG_INF("%s: user ports link %s", data->dev->name, state.is_up ? "up" : "down");
+		LOG_INF("%s: %s link %s", data->dev->name, data->dsa ? "CPU port" : "user ports",
+			state.is_up ? "up" : "down");
 		if (data->cb != NULL) {
 			data->cb(data->dev, &state, data->cb_data);
 		}
@@ -309,6 +344,109 @@ static int mv88e6xxx_reg_write(const struct device *dev, uint16_t reg_addr, uint
 	k_mutex_unlock(&data->lock);
 
 	return ret;
+}
+
+int mv88e6xxx_phy_read(const struct device *dev, uint8_t phy, uint8_t reg, uint16_t *val)
+{
+	struct mv88e6xxx_data *data = dev->data;
+	int ret;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = sw_phy_read(dev->config, phy, reg, val);
+	k_mutex_unlock(&data->lock);
+
+	return ret;
+}
+
+int mv88e6xxx_phy_write(const struct device *dev, uint8_t phy, uint8_t reg, uint16_t val)
+{
+	struct mv88e6xxx_data *data = dev->data;
+	int ret;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = sw_phy_write(dev->config, phy, reg, val);
+	k_mutex_unlock(&data->lock);
+
+	return ret;
+}
+
+uint8_t mv88e6xxx_cpu_port(const struct device *dev)
+{
+	const struct mv88e6xxx_config *cfg = dev->config;
+
+	return cfg->cpu_port;
+}
+
+static int sw_rmw(const struct mv88e6xxx_config *cfg, uint8_t addr, uint8_t reg, uint16_t mask,
+		  uint16_t val)
+{
+	uint16_t v;
+	int ret;
+
+	ret = sw_read(cfg, addr, reg, &v);
+	if (ret == 0) {
+		ret = sw_write(cfg, addr, reg, (v & ~mask) | val);
+	}
+
+	return ret;
+}
+
+/* As Linux mv88e6xxx_set_port_mode_dsa()/_edsa() for the CPU port */
+int mv88e6xxx_dsa_enable(const struct device *dev, enum mv88e6xxx_tag tag)
+{
+	const struct mv88e6xxx_config *cfg = dev->config;
+	struct mv88e6xxx_data *data = dev->data;
+	uint8_t cpu = ADDR_PORT(cfg->cpu_port);
+	uint16_t ctl0 = PORT_CTL0_FORWARDING;
+	int ret;
+
+	switch (tag) {
+	case MV88E6XXX_TAG_DSA:
+		ctl0 |= PORT_CTL0_FRAME_MODE_DSA;
+		break;
+	case MV88E6XXX_TAG_EDSA:
+		ctl0 |= PORT_CTL0_FRAME_MODE_EDSA | PORT_CTL0_EGRESS_MODE_EDSA;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	/* Single switch: device 0, as addressed by the tags */
+	ret = sw_rmw(cfg, ADDR_GLOBAL1, G1_CTL2, G1_CTL2_DEVICE_NUM, 0);
+	if (ret == 0) {
+		ret = sw_write(cfg, cpu, PORT_CTL0, ctl0);
+	}
+	if (ret == 0 && tag == MV88E6XXX_TAG_EDSA) {
+		ret = sw_write(cfg, cpu, PORT_ETYPE, MV88E6XXX_EDSA_ETHERTYPE);
+	}
+	/* Tagged frames are longer than 1522 bytes at full MTU */
+	if (ret == 0) {
+		ret = sw_rmw(cfg, cpu, PORT_CTL2, PORT_CTL2_JUMBO_MASK, PORT_CTL2_JUMBO_2048);
+	}
+	for (int i = 0; ret == 0 && i < cfg->num_user_ports; i++) {
+		ret = sw_rmw(cfg, ADDR_PORT(cfg->user_ports[i]), PORT_CTL2, PORT_CTL2_JUMBO_MASK,
+			     PORT_CTL2_JUMBO_2048);
+	}
+	if (ret == 0) {
+		data->dsa = true;
+	}
+
+	k_mutex_unlock(&data->lock);
+
+	if (ret < 0) {
+		LOG_ERR("%s: DSA setup failed (%d)", dev->name, ret);
+		return ret;
+	}
+
+	LOG_INF("%s: CPU port %u in %s mode", dev->name, cfg->cpu_port,
+		tag == MV88E6XXX_TAG_EDSA ? "EDSA" : "DSA");
+
+	/* Carrier now follows the CPU port */
+	k_work_reschedule(&data->monitor, K_NO_WAIT);
+
+	return 0;
 }
 
 static int mv88e6xxx_init(const struct device *dev)

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 zephyr_library_sources_ifdef(CONFIG_DSA_NXP_IMX_NETC dsa_nxp_imx_netc.c)
+zephyr_library_sources_ifdef(CONFIG_DSA_MARVELL_MV88E6XXX dsa_mv88e6xxx.c)
 
 # DSA tag protocol drivers
 zephyr_library_sources_ifdef(CONFIG_DSA_TAG_PROTOCOL_NETC dsa_tag_netc.c)
+zephyr_library_sources_ifdef(CONFIG_DSA_TAG_PROTOCOL_MV88E6XXX dsa_tag_mv88e6xxx.c)

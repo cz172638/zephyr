@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config MDIO_MV88E6XXX
+	bool "Marvell 88E6xxx switch internal MDIO bus"
+	default y
+	depends on DT_HAS_MARVELL_MV88E6XXX_MDIO_ENABLED
+	depends on PHY_MARVELL_MV88E6XXX
+	help
+	  MDIO bus of the internal PHYs of a Marvell 88E6xxx switch, reached
+	  through the switch's Global 2 SMI PHY registers. Lets generic PHY
+	  drivers handle the switch user ports.
