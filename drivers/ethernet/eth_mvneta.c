@@ -60,6 +60,7 @@ LOG_MODULE_REGISTER(eth_mvneta, CONFIG_ETHERNET_LOG_LEVEL);
 #define BASE_ADDR_ENABLE      0x2290
 #define ACCESS_PROTECT_ENABLE 0x2294
 #define PORT_CONFIG           0x2400
+#define UNI_PROMISC_MODE      BIT(0)
 #define TX_UNSET_ERR_SUM      BIT(12)
 #define RX_CSUM_WITH_PSEUDO   BIT(25)
 #define PORT_CONFIG_EXTEND    0x2404
@@ -197,8 +198,11 @@ BUILD_ASSERT(sizeof(struct mvneta_rx_desc) == 32);
 /* Marvell header prepended by the MAC on RX, CRC kept at the end */
 #define MVNETA_MH_SIZE     2
 #define MVNETA_FCS_LEN     4
-/* MTU + MH + VLAN + Ethernet header + FCS, multiple of 8 */
-#define MVNETA_MAX_RX_SIZE ROUND_UP(NET_ETH_MTU + MVNETA_MH_SIZE + 4 + 14 + 4, 8)
+/* MTU + MH + VLAN + Ethernet header + switch tag (DSA conduit) + FCS,
+ * multiple of 8
+ */
+#define MVNETA_MAX_RX_SIZE                                                                         \
+	ROUND_UP(NET_ETH_MTU + MVNETA_MH_SIZE + 4 + 14 + DSA_TAG_SIZE + 4, 8)
 #define MVNETA_BUF_SIZE    ROUND_UP(MVNETA_MAX_RX_SIZE, 64)
 
 #define RX_DESCS CONFIG_ETH_MVNETA_RX_DESCS
@@ -274,6 +278,7 @@ struct mvneta_data {
 	uint32_t txq_cmd1_reset; /* limiter state as left by reset */
 	bool link_up;
 	bool started;
+	bool promisc;
 	bool shaper_on;
 	struct k_mutex shaper_lock;
 	struct k_sem rx_sem;
@@ -353,6 +358,7 @@ static unsigned int mvneta_rx_queue(enum net_priority prio)
 
 static void mvneta_set_mac_addr(const struct device *dev, const uint8_t *a)
 {
+	struct mvneta_data *data = dev->data;
 	uint32_t ucast[4] = {0};
 	uint8_t nibble = a[5] & 0xf;
 
@@ -360,11 +366,29 @@ static void mvneta_set_mac_addr(const struct device *dev, const uint8_t *a)
 	neta_write(dev, MAC_ADDR_HIGH, (a[0] << 24) | (a[1] << 16) | (a[2] << 8) | a[3]);
 
 	/* Unicast table is indexed by the last nibble: accept, queue 0 */
-	ucast[nibble / 4] = BIT(0) << ((nibble % 4) * 8);
+	if (data->promisc) {
+		memset(ucast, 0x01, sizeof(ucast));
+	} else {
+		ucast[nibble / 4] = BIT(0) << ((nibble % 4) * 8);
+	}
 	for (int i = 0; i < 4; i++) {
 		neta_write(dev, DA_FILT_UCAST_BASE + 4 * i, ucast[i]);
 	}
 }
+
+#if defined(CONFIG_NET_PROMISCUOUS_MODE)
+/* As Linux mvneta_set_rx_mode() with IFF_PROMISC: unicast promiscuous bit
+ * and all unicast table entries (multicast is always accepted).
+ */
+static void mvneta_set_promisc(const struct device *dev, bool on)
+{
+	struct mvneta_data *data = dev->data;
+
+	data->promisc = on;
+	neta_rmw(dev, PORT_CONFIG, UNI_PROMISC_MODE, on ? UNI_PROMISC_MODE : 0);
+	mvneta_set_mac_addr(dev, data->mac_addr);
+}
+#endif
 
 static void mvneta_set_mcast_filter(const struct device *dev, bool accept)
 {
@@ -1107,6 +1131,9 @@ static enum ethernet_hw_caps mvneta_get_caps(const struct device *dev, struct ne
 	if (data->core_hz != 0) {
 		caps |= ETHERNET_QAV;
 	}
+	if (IS_ENABLED(CONFIG_NET_PROMISCUOUS_MODE)) {
+		caps |= ETHERNET_PROMISC_MODE;
+	}
 
 	return caps;
 }
@@ -1127,6 +1154,14 @@ static int mvneta_set_config(const struct device *dev, struct net_if *iface,
 		return 0;
 	case ETHERNET_CONFIG_TYPE_QAV_PARAM:
 		return mvneta_set_qav(dev, &config->qav_param);
+#if defined(CONFIG_NET_PROMISCUOUS_MODE)
+	case ETHERNET_CONFIG_TYPE_PROMISC_MODE:
+		if (config->promisc_mode == data->promisc) {
+			return -EALREADY;
+		}
+		mvneta_set_promisc(dev, config->promisc_mode);
+		return 0;
+#endif
 	default:
 		return -ENOTSUP;
 	}
