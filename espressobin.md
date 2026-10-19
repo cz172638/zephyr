@@ -210,6 +210,21 @@ Pro desku bez konzole: DHCP, mDNS hostname `espressobin<mac>`, Zephyr SSH server
 ssh -i ~/.ssh/id_rsa root@espressobin<mac>.local
 ```
 
+### 3.7 DSA (snippet `espressobin-dsa`)
+
+```sh
+west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globalscale/espressobin/netshell
+```
+
+- `eth0` je conduit: promiskuitní, bez IP. `swp0` je CPU port (bez IP), `swp1`–`swp3` jsou porty switche 1–3. Popisky se liší podle verze desky: v5 má port 1 `wan`, 2 `lan0`, 3 `lan1`; v7 má port 1 `lan1`, 2 `lan0`, 3 `wan` (stejně jako v Linuxu).
+- Driver `marvell,mv88e6085` zůstává PHY conduitu. V DSA režimu přepne CPU port do frame mode DSA nebo EDSA, nastaví u EDSA EtherType `0xdada`, rámce do 2048 B na všech portech a číslo zařízení 0. Carrier conduitu pak sleduje link CPU portu.
+- PHY uživatelských portů obsluhuje generický `phy_mii` na interní MDIO switche (`marvell,mv88e6xxx-mdio`, Global 2 SMI PHY, adresy 0x11–0x13).
+- Tagger `dsa_tag_mv88e6xxx.c` vychází z Linuxu `tag_dsa.c`. Na TX posílá FROM_CPU na port rozhraní, na RX bere TO_CPU a FORWARD (FRAME2REG a trunky zahazuje). 802.1Q hlavičku skládá do tagu a zpět. Test je v `tests/net/dsa_tag_mv88e6xxx` (native_sim, 9 případů).
+- Snippet používá 4bajtový DSA tag. Pro EDSA nastav `dsa-tag-protocol = <DSA_TAG_PROTO_EDSA>` a `CONFIG_DSA_TAG_SIZE=8`.
+- mvneta: přidán promiskuitní režim (`UNI_PROMISC_MODE` + celá unicast tabulka) a do maximální délky RX rámce se počítá `CONFIG_DSA_TAG_SIZE`.
+- netshell spouští DHCP na každém uživatelském portu a každé rozhraní má vlastní stabilní MAC v settings (`netshell/mac<idx>`). Conduit si drží MAC kvůli unikátnímu hostname.
+- Na hardwaru zatím neověřeno.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
@@ -224,13 +239,13 @@ ssh -i ~/.ssh/id_rsa root@espressobin<mac>.local
 8. **Jednotky token bucketu.** Vyřešeno měřením: limiter počítá bajty L2 rámce včetně FCS (bez preambule a IFG), 10 kb/s na jednotku refillu.
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
-   - DSA s Marvell tagy (rozhraní na každý port),
+   - DSA: bridge offload (porty jsou zatím standalone), PTP na 88E6341 (TAI, časové značky v registrech portu), Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
    - eth1 přes SGMII (COMPHY), I2C, GPIO, Xenon SDHCI (microSD/eMMC), USB, PCIe,
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (30 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (34 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
