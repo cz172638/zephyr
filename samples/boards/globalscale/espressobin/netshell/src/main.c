@@ -11,6 +11,9 @@
  * (NVS in the SPI NOR), so the fingerprint stays the same across reboots
  * and firmware updates. A random (locally administered) MAC address is
  * kept the same way, so DHCP leases and the mDNS name stay stable.
+ *
+ * With DSA (espressobin-dsa snippet) every switch port is its own
+ * interface: each one gets a stable MAC address and DHCP.
  */
 
 #include <stdio.h>
@@ -64,23 +67,33 @@ static int setting_read_cb(const char *key, size_t len, settings_read_cb read_cb
 	return 0;
 }
 
-/* Keep a random MAC address over reboots; a real (universal) one wins */
+/* Keep a random MAC address over reboots; a real (universal) one wins.
+ * Interface 1 keeps the key of the single interface setup.
+ */
 static void stable_mac(struct net_if *iface)
 {
 	struct net_linkaddr *ll = net_if_get_link_addr(iface);
 	struct ethernet_req_params params = {0};
 	uint8_t mac[NET_ETH_ADDR_LEN];
 	struct setting_read r = {.buf = mac, .len = sizeof(mac)};
+	int idx = net_if_get_by_iface(iface);
+	char key[24];
 
 	if (ll->len != NET_ETH_ADDR_LEN || (ll->addr[0] & 0x02) == 0) {
 		return;
 	}
 
-	(void)settings_load_subtree_direct("netshell/mac", setting_read_cb, &r);
+	if (idx == 1) {
+		snprintf(key, sizeof(key), "netshell/mac");
+	} else {
+		snprintf(key, sizeof(key), "netshell/mac%d", idx);
+	}
+
+	(void)settings_load_subtree_direct(key, setting_read_cb, &r);
 	if (!r.found) {
-		(void)settings_save_one("netshell/mac", ll->addr, NET_ETH_ADDR_LEN);
-		LOG_INF("saved MAC %02x:%02x:%02x:%02x:%02x:%02x", ll->addr[0], ll->addr[1],
-			ll->addr[2], ll->addr[3], ll->addr[4], ll->addr[5]);
+		(void)settings_save_one(key, ll->addr, NET_ETH_ADDR_LEN);
+		LOG_INF("iface %d: saved MAC %02x:%02x:%02x:%02x:%02x:%02x", idx, ll->addr[0],
+			ll->addr[1], ll->addr[2], ll->addr[3], ll->addr[4], ll->addr[5]);
 		return;
 	}
 	if (memcmp(mac, ll->addr, sizeof(mac)) == 0) {
@@ -93,8 +106,34 @@ static void stable_mac(struct net_if *iface)
 		LOG_WRN("could not restore the saved MAC address");
 	}
 	(void)net_if_up(iface);
-	LOG_INF("MAC %02x:%02x:%02x:%02x:%02x:%02x (saved)", mac[0], mac[1], mac[2], mac[3], mac[4],
-		mac[5]);
+	LOG_INF("iface %d: MAC %02x:%02x:%02x:%02x:%02x:%02x (saved)", idx, mac[0], mac[1], mac[2],
+		mac[3], mac[4], mac[5]);
+}
+
+/* Interfaces that carry IP: all but a DSA conduit and the DSA CPU port.
+ * The conduit (eth0, the default interface) still keeps its MAC address:
+ * the unique hostname is derived from it.
+ */
+static void start_iface(struct net_if *iface, void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	if (net_if_l2(iface) != &NET_L2_GET_NAME(ETHERNET)) {
+		return;
+	}
+#if defined(CONFIG_NET_DSA)
+	enum ethernet_hw_caps caps = net_eth_get_hw_capabilities(iface);
+
+	if (caps & ETHERNET_DSA_CONDUIT_PORT) {
+		stable_mac(iface);
+		return;
+	}
+	if ((caps & ETHERNET_DSA_USER_PORT) == 0) {
+		return;
+	}
+#endif
+	stable_mac(iface);
+	net_dhcpv4_start(iface);
 }
 
 static int run(const char *cmd)
@@ -164,7 +203,6 @@ static int host_key(void)
 
 int main(void)
 {
-	struct net_if *iface = net_if_get_default();
 	char cmd[128];
 	int n;
 
@@ -177,10 +215,7 @@ int main(void)
 		LOG_ERR("settings unavailable, host key and MAC will not persist");
 	}
 
-	if (net_if_l2(iface) == &NET_L2_GET_NAME(ETHERNET)) {
-		stable_mac(iface);
-	}
-	net_dhcpv4_start(iface);
+	net_if_foreach(start_iface, NULL);
 
 	if (host_key() != 0) {
 		LOG_ERR("no SSH host key");

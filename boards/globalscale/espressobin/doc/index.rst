@@ -34,10 +34,12 @@ Supported features
   (TBG, muxes and dividers are read back as set by the boot firmware)
 * GICv3, ARM generic timer (25 MHz), PSCI
 * Ethernet: NETA0 (RGMII-ID, fixed 1000/full) and the 88E6341 switch on the
-  Orion SMI bus. The switch is configured as a port expander: ``wan``,
+  Orion SMI bus. By default the switch is a port expander: ``wan``,
   ``lan0`` and ``lan1`` can only exchange frames with the CPU, there is no
-  DSA tagging and Zephyr sees a single interface whose carrier is up while
-  any of the three ports has link.
+  tagging and Zephyr sees a single interface whose carrier is up while any
+  of the three ports has link. With the ``espressobin-dsa`` snippet the CPU
+  port uses the Marvell DSA tag and each port is its own interface, see
+  `DSA`_.
 * Ethernet queues: up to 8 TX queues in strict priority order, selected by
   packet priority, each with an optional rate limit exposed as 802.1Qav
   (``ETHERNET_QAV``); up to 8 RX queues selected by the VLAN PCP. See
@@ -214,10 +216,30 @@ documented publicly. The driver assumes queue 7; if a test with two
 saturating streams shows the opposite, set
 ``CONFIG_ETH_MVNETA_TXQ0_HIGHEST=y``.
 
+DSA
+===
+
+.. code-block:: console
+
+   west build -b espressobin/armada3720/smp -S espressobin-dsa samples/net/dhcpv4_client
+
+``eth0`` becomes the DSA conduit (promiscuous, no IP), the CPU port and the
+front ports get their own interfaces, ``swp0`` (CPU port, no IP) and
+``swp1`` to ``swp3`` for switch ports 1 to 3. The front labels differ
+between board versions: v5 port 1 ``wan``, 2 ``lan0``, 3 ``lan1``; v7 port 1
+``lan1``, 2 ``lan0``, 3 ``wan``.
+
+The user port PHYs are handled by the generic PHY driver on the switch's
+internal MDIO bus (``marvell,mv88e6xxx-mdio``), the tags by
+``dsa_tag_mv88e6xxx.c``. The snippet uses the 4 byte DSA tag; for EDSA set
+``dsa-tag-protocol = <DSA_TAG_PROTO_EDSA>`` on the CPU port and
+``CONFIG_DSA_TAG_SIZE=8``.
+
 Limitations
 ***********
 
-* No DSA tagging yet: the three switch ports are one network.
+* DSA ports are standalone (no bridging in the switch) and have no PTP
+  timestamping yet.
 * The Armada 3700 NETA has a single, shared interrupt: no RSS, all RX is
   handled by one thread.
 * The board MAC address lives in the U-Boot environment only, so a

@@ -38,6 +38,11 @@ Without a key, set ``CONFIG_NETSHELL_PASSWORD``; it is stored in clear
 text in the image. The first boot spends a few seconds generating the host
 key.
 
+With the ``espressobin-dsa`` snippet (``-S espressobin-dsa``) every front
+port is its own interface (``swp1`` to ``swp3`` = switch ports 1 to 3) and
+gets DHCP and a stable MAC address; ``eth0`` only carries the tagged
+frames.
+
 Using
 *****
 

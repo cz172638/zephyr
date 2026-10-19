@@ -1,0 +1,9 @@
+name: espressobin-dsa
+description: |
+  ESPRESSObin: DSA tagging on the 88E6341 CPU port, one network interface
+  per front port instead of one for the whole switch.
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_CONF_FILE: espressobin-dsa.conf
+      EXTRA_DTC_OVERLAY_FILE: espressobin-dsa.overlay
