@@ -12,6 +12,11 @@
 	status = "okay";
 };
 
+/* Used when a PTP clock is enabled (gPTP) */
+&switch0_ptp {
+	status = "okay";
+};
+
 &switch0phy1 {
 	status = "okay";
 };
@@ -43,6 +48,7 @@
 			compatible = "zephyr,dsa-port";
 			reg = <1>;
 			phy-handle = <&switch0phy1>;
+			ptp-clock = <&switch0_ptp>;
 			zephyr,random-mac-address;
 		};
 
@@ -50,6 +56,7 @@
 			compatible = "zephyr,dsa-port";
 			reg = <2>;
 			phy-handle = <&switch0phy2>;
+			ptp-clock = <&switch0_ptp>;
 			zephyr,random-mac-address;
 		};
 
@@ -57,6 +64,7 @@
 			compatible = "zephyr,dsa-port";
 			reg = <3>;
 			phy-handle = <&switch0phy3>;
+			ptp-clock = <&switch0_ptp>;
 			zephyr,random-mac-address;
 		};
 	};

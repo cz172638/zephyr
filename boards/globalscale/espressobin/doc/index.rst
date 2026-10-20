@@ -235,11 +235,34 @@ internal MDIO bus (``marvell,mv88e6xxx-mdio``), the tags by
 ``dsa-tag-protocol = <DSA_TAG_PROTO_EDSA>`` on the CPU port and
 ``CONFIG_DSA_TAG_SIZE=8``.
 
+PTP
+===
+
+With the ``espressobin-dsa`` snippet and a PTP clock enabled (any gPTP
+configuration), the 88E6341 time stamps PTP event messages on the front
+ports. ``marvell,mv88e6xxx-ptp`` is the clock: a software time counter on
+the free running 32 bit TAI, as in Linux, so stepping and rate changes do
+not touch the switch. Arrival time stamps are read from the port when the
+tagger sees an event message, departure time stamps are polled after
+sending (one frame in flight per port). On the 88E6341 time stamps are
+taken at the MAC; Linux does the same, the PHY time stamps are unreliable.
+
+.. code-block:: console
+
+   west build -b espressobin/armada3720/smp -S espressobin-dsa \
+      samples/boards/globalscale/espressobin/netshell -- -DEXTRA_CONF_FILE=gptp.conf
+
+``net gptp`` shows the port states, ``ptp_clock`` the clock.
+``samples/net/ethernet/tsn-switch`` also builds with the snippet (software
+bridge over the ports, gPTP relay; its Qbv setup is not supported).
+
 Limitations
 ***********
 
-* DSA ports are standalone (no bridging in the switch) and have no PTP
-  timestamping yet.
+* DSA ports are standalone (no bridging in the switch); bridging is done
+  in software (``CONFIG_NET_ETHERNET_BRIDGE``).
+* The switch PTP clock is a software time counter: no PPS output or
+  event capture (TAI GPIOs) yet.
 * The Armada 3700 NETA has a single, shared interrupt: no RSS, all RX is
   handled by one thread.
 * The board MAC address lives in the U-Boot environment only, so a

@@ -58,6 +58,11 @@
 		marvell,user-ports = [01 02 03];
 
 		/* Used by the DSA ports (espressobin-dsa snippet) */
+		switch0_ptp: ptp-clock {
+			compatible = "marvell,mv88e6xxx-ptp";
+			status = "disabled";
+		};
+
 		switch0_mdio: mdio {
 			compatible = "marvell,mv88e6xxx-mdio";
 			#address-cells = <1>;
