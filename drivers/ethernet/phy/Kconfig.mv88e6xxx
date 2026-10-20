@@ -18,3 +18,18 @@ config PHY_MARVELL_MV88E6XXX_SHELL
 	  "mv88e6xxx" shell command: raw read/write of the PTP, AVB, Qav
 	  and Qvb register blocks behind the Global 2 AVB command and a
 	  summary of the egress shapers.
+
+config PHY_MARVELL_MV88E6XXX_TCAM
+	bool "TCAM (ingress ACL) of the 88E6341/88E6390"
+	depends on PHY_MARVELL_MV88E6XXX
+	help
+	  Rules matching the first 48 bytes of ingress frames on given
+	  ports, with drop, trap to the CPU, redirect or mirror actions,
+	  using the TCAM register layout of Linux for the 88E6390. With the
+	  shell: "mv88e6xxx tcam add/del/list/flush".
+
+config PHY_MARVELL_MV88E6XXX_TCAM_RULES
+	int "Number of TCAM rules"
+	default 32
+	range 1 256
+	depends on PHY_MARVELL_MV88E6XXX_TCAM
