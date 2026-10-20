@@ -253,6 +253,25 @@ int ssh_connection_process_msg(struct ssh_transport *transport, uint8_t msg_id,
 		/* TODO: ssh_payload_read_complete for different request types */
 		NET_DBG("GLOBAL_REQUEST: %.*s want reply: %s", request_name.len,
 			request_name.data, want_reply ? "true" : "false");
+
+		/* None are supported. RFC 4254 4: answer with REQUEST_FAILURE
+		 * when a reply is wanted; OpenSSH keepalives
+		 * (keepalive@openssh.com, ServerAliveInterval) count on it and
+		 * drop the connection otherwise.
+		 */
+		if (want_reply) {
+			SSH_PAYLOAD_BUF(payload, transport->tx_buf);
+
+			if (!ssh_payload_skip_bytes(&payload, SSH_PKT_MSG_ID_OFFSET) ||
+			    !ssh_payload_write_byte(&payload, SSH_MSG_REQUEST_FAILURE)) {
+				return -1;
+			}
+			ret = ssh_transport_send_packet(transport, &payload);
+			if (ret < 0) {
+				NET_DBG("Failed to send %s (%d)", "REQUEST_FAILURE", ret);
+				return ret;
+			}
+		}
 		ret = 0;
 		break;
 	}

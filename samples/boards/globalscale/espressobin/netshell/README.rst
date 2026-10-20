@@ -64,7 +64,8 @@ NAT, so the upstream router needs a route to the LAN, e.g. on Linux:
 
    ip route add 192.168.10.0/24 via <wan address of the board>
 
-``net bridge`` and ``net route`` show the state.
+``net bridge`` and ``net route`` show the state. gPTP on the three ports
+combines with it: ``-DEXTRA_CONF_FILE="router.conf;gptp.conf"``.
 
 Using
 *****
