@@ -99,6 +99,34 @@
 			reg = <0xd0013800 0x100>;
 		};
 
+		/* GPIO banks of the pin controllers: pins 0..31, 32..35 (NB) */
+		gpionb0: gpio@d0013800 {
+			compatible = "marvell,armada-3700-gpio";
+			reg = <0xd0013800 0x1c>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpionb1: gpio@d0013804 {
+			compatible = "marvell,armada-3700-gpio";
+			reg = <0xd0013804 0x18>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <4>;
+			status = "disabled";
+		};
+
+		gpiosb: gpio@d0018800 {
+			compatible = "marvell,armada-3700-gpio";
+			reg = <0xd0018800 0x1c>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <30>;
+			status = "disabled";
+		};
+
 		sb_periph_clk: clock-controller@d0018000 {
 			compatible = "marvell,armada-3700-periph-clock-sb";
 			reg = <0xd0018000 0x100>;
@@ -139,6 +167,27 @@
 			status = "disabled";
 		};
 
+		/* SD/SDIO slot; second register: SoC pad voltage */
+		sdhci1: mmc@d00d0000 {
+			compatible = "marvell,armada-3700-sdhci";
+			reg = <0xd00d0000 0x300>, <0xd001e808 0x4>;
+			reg-names = "base", "pad";
+			interrupts = <GIC_SPI 25 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			/* mmc */
+			clocks = <&nb_periph_clk 0>;
+			status = "disabled";
+		};
+
+		/* eMMC slot */
+		sdhci0: mmc@d00d8000 {
+			compatible = "marvell,armada-3700-sdhci";
+			reg = <0xd00d8000 0x300>, <0xd0017808 0x4>;
+			reg-names = "base", "pad";
+			interrupts = <GIC_SPI 26 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&nb_periph_clk 0>;
+			status = "disabled";
+		};
+
 		gic: interrupt-controller@d1d00000 {
 			compatible = "arm,gic-v3", "arm,gic";
 			reg = <0xd1d00000 0x10000>, /* GICD */
@@ -170,6 +219,27 @@
 };
 
 &pinctrl_sb {
+	/* SD slot on the south bridge pins; NB GPIO 3 (card detect) and 4
+	 * (IO voltage) as GPIO
+	 */
+	sdio_default: sdio_default {
+		sdio {
+			marvell,bridge = <A37XX_SB>;
+			marvell,mask = <A37XX_SB_SDIO>;
+			marvell,value = <0>;
+		};
+		gpio3 {
+			marvell,bridge = <A37XX_NB>;
+			marvell,mask = <A37XX_NB_I2C2>;
+			marvell,value = <A37XX_NB_I2C2>;
+		};
+		gpio4 {
+			marvell,bridge = <A37XX_NB>;
+			marvell,mask = <A37XX_NB_ONEWIRE>;
+			marvell,value = <A37XX_NB_ONEWIRE>;
+		};
+	};
+
 	eth0_default: eth0_default {
 		rgmii {
 			marvell,bridge = <A37XX_SB>;

@@ -293,6 +293,20 @@ header at 18.
 
 Rules live in RAM; QoS and policing actions of the TCAM are not known yet.
 
+microSD
+=======
+
+The microSD slot J1 is ``sdhci1``, the Xenon SD host controller
+(``marvell,armada-3700-sdhci``) with card detect on NB GPIO 3 and the IO
+voltage regulator on NB GPIO 4 (``marvell,armada-3700-gpio``). It is a
+``zephyr,sdmmc-disk`` named ``SD``; netshell builds it in with
+``sdcard.conf``:
+
+.. code-block:: console
+
+   uart:~$ fs mount fat /SD:
+   uart:~$ fs ls /SD:
+
 Qav on the switch ports
 =======================
 
@@ -339,4 +353,6 @@ Limitations
   random address is used (``zephyr,random-mac-address``); set
   ``local-mac-address`` in an overlay to use the one on the sticker.
 * eth1 (SGMII) needs the COMPHY and is not used on this board.
-* No drivers yet for SPI, I2C, GPIO, SDHCI, USB, SATA or PCIe.
+* SD card: polled PIO, 3.3 V signalling (up to 50 MHz high speed); no UHS,
+  DMA or eMMC (``sdhci0``) testing yet.
+* No drivers yet for I2C, USB, SATA or PCIe.

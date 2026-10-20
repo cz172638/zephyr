@@ -10,6 +10,7 @@
 
 #include <freq.h>
 #include <marvell/armada3720.dtsi>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
 	model = "Globalscale ESPRESSObin";
@@ -23,6 +24,17 @@
 
 	cpus {
 		timebase-frequency = <DT_FREQ_M(25)>;
+	};
+
+	/* IO voltage of the SD slot */
+	vcc_sd_reg1: regulator-vcc-sd {
+		compatible = "regulator-gpio";
+		regulator-name = "vcc_sd1";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+		gpios = <&gpionb0 4 GPIO_ACTIVE_HIGH>;
+		states = <1800000 0x1 3300000 0x0>;
 	};
 
 	ddr0: memory@0 {
@@ -136,5 +148,35 @@
 				reg = <0x3f0000 0x10000>;
 			};
 		};
+	};
+};
+
+&gpionb0 {
+	status = "okay";
+};
+
+&gpionb1 {
+	status = "okay";
+};
+
+&gpiosb {
+	status = "okay";
+};
+
+/* microSD J1 */
+&sdhci1 {
+	status = "okay";
+	bus-width = <4>;
+	cd-gpios = <&gpionb0 3 GPIO_ACTIVE_LOW>;
+	vqmmc-supply = <&vcc_sd_reg1>;
+	max-bus-freq = <50000000>;
+	power-delay-ms = <10>;
+	pinctrl-0 = <&sdio_default>;
+	pinctrl-names = "default";
+
+	sdmmc {
+		compatible = "zephyr,sdmmc-disk";
+		disk-name = "SD";
+		status = "okay";
 	};
 };

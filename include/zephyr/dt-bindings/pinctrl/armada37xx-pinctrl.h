@@ -21,6 +21,7 @@
 #define A37XX_NB_I2C2     (1 << 9)
 #define A37XX_NB_I2C1     (1 << 10)
 #define A37XX_NB_SPI_CS1  (1 << 12)
+#define A37XX_NB_ONEWIRE  (1 << 16)
 #define A37XX_NB_UART1    (1 << 17)
 #define A37XX_NB_SPI_QUAD (1 << 18)
 
