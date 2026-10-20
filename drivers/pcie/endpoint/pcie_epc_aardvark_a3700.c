@@ -28,6 +28,14 @@
 
 LOG_MODULE_REGISTER(pcie_epc_a3700, CONFIG_PCIE_EP_LOG_LEVEL);
 
+/* printk checkpoints: visible even when the init hangs with deferred logging */
+#define TRACE(fmt, ...)                                                                            \
+	do {                                                                                       \
+		if (IS_ENABLED(CONFIG_PCIE_EPC_AARDVARK_TRACE_INIT)) {                             \
+			printk("advk_ep: " fmt "\n", ##__VA_ARGS__);                               \
+		}                                                                                  \
+	} while (0)
+
 struct a3700_ep_config {
 	uintptr_t reg_phys;
 	size_t reg_size;
@@ -135,6 +143,7 @@ static int a3700_ep_init(const struct device *dev)
 	int ret;
 
 	data->dev = dev;
+	TRACE("init");
 
 	/* PCIE1_RESETn is an output of the controller: GPIO in EP mode */
 	if (cfg->pcfg != NULL) {
@@ -144,6 +153,7 @@ static int a3700_ep_init(const struct device *dev)
 		}
 	}
 
+	TRACE("pinctrl done, clock on");
 	if (!device_is_ready(cfg->clk_dev)) {
 		return -ENODEV;
 	}
@@ -153,6 +163,7 @@ static int a3700_ep_init(const struct device *dev)
 		return ret;
 	}
 
+	TRACE("clock on, COMPHY SiP call");
 	if (!cfg->comphy_skip) {
 		data->comphy_ret = comphy_power_on(dev);
 		if (data->comphy_ret != 0) {
@@ -162,13 +173,18 @@ static int a3700_ep_init(const struct device *dev)
 		}
 	}
 
+	TRACE("COMPHY returned %ld, clock output off", data->comphy_ret);
 	device_map(&data->comphy, cfg->comphy_phys, 0x400, K_MEM_CACHE_NONE);
 	if (!cfg->comphy_skip) {
 		comphy_clkout_off(dev);
 	}
 
+	TRACE("misc_ctrl0 %04x, mapping controller and OB window",
+	      sys_read16(data->comphy + ADVK_COMPHY_MISC_CTRL0));
 	device_map(&ep->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
 	device_map(&ob, cfg->mem_phys, cfg->mem_size, K_MEM_CACHE_NONE);
+	TRACE("ctrl at 0x%lx, OB at 0x%lx; ctrl0 %08x", (unsigned long)ep->reg,
+	      (unsigned long)ob, sys_read32(ep->reg + ADVK_CTRL0));
 	ep->ob_virt = ob;
 	ep->ob_phys = cfg->mem_phys;
 	ep->ob_size = cfg->mem_size;
@@ -187,10 +203,12 @@ static int a3700_ep_init(const struct device *dev)
 		data->perst_asserted = gpio_pin_get_dt(&cfg->perst) > 0;
 	}
 
+	TRACE("controller setup");
 	ret = advk_ep_init(dev, cfg->autostart);
 	if (ret != 0) {
 		return ret;
 	}
+	TRACE("ready, ltssm 0x%02x", advk_ltssm(ep));
 
 	k_work_init_delayable(&data->poll_work, poll_handler);
 	k_work_schedule(&data->poll_work, K_MSEC(CONFIG_PCIE_EPC_AARDVARK_POLL_MS));

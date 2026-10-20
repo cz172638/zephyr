@@ -22,6 +22,12 @@ config PCIE_EPC_AARDVARK_POLL_MS
 	  The controller interrupt sources of endpoint mode are not known,
 	  link state, bus master enable and PERST# are polled.
 
+config PCIE_EPC_AARDVARK_TRACE_INIT
+	bool "printk checkpoints in the driver init"
+	help
+	  For bring-up: shows how far the init got when it hangs before the
+	  console (deferred) log comes out.
+
 config PCIE_EPC_AARDVARK_SHELL
 	bool "Bring-up shell (advk_ep)"
 	default y

@@ -429,8 +429,18 @@ static int epf_test_init(const struct device *dev)
 	}
 
 #ifdef CONFIG_MMU
-	/* The carveout is outside the kernel image, nothing maps it */
-	device_map((mm_reg_t *)&d->mem_virt, cfg->mem_base, cfg->mem_size, K_MEM_CACHE_NONE);
+	/*
+	 * The carveout is outside the kernel image, nothing maps it. Normal
+	 * non-cacheable where the architecture has it: memset/memcpy use
+	 * unaligned and DC ZVA accesses, which fault on Device memory.
+	 */
+	device_map((mm_reg_t *)&d->mem_virt, cfg->mem_base, cfg->mem_size,
+#ifdef K_MEM_ARM_NORMAL_NC
+		   K_MEM_ARM_NORMAL_NC
+#else
+		   K_MEM_CACHE_NONE
+#endif
+	);
 #else
 	d->mem_virt = cfg->mem_base;
 #endif
