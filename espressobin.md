@@ -223,6 +223,20 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 - Snippet používá 4bajtový DSA tag. Pro EDSA nastav `dsa-tag-protocol = <DSA_TAG_PROTO_EDSA>` a `CONFIG_DSA_TAG_SIZE=8`.
 - mvneta: přidán promiskuitní režim (`UNI_PROMISC_MODE` + celá unicast tabulka) a do maximální délky RX rámce se počítá `CONFIG_DSA_TAG_SIZE`.
 - netshell spouští DHCP na každém uživatelském portu a každé rozhraní má vlastní stabilní MAC v settings (`netshell/mac<idx>`). Conduit si drží MAC kvůli unikátnímu hostname.
+- Ověřeno na desce: rozhraní na každém portu, DHCP i SSH fungují.
+
+### 3.8 PTP (gPTP přes switch)
+
+```sh
+west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globalscale/espressobin/netshell -- -DEXTRA_CONF_FILE=gptp.conf
+```
+
+- 88E6341 (podle Linuxu `mv88e6341_ops`: `ptp_ops = mv88e6352`, `avb_ops = mv88e6390`): TAI je volně běžící 32bitový čítač, perioda v `TAI_CLOCK_PERIOD` (8 ns → přetečení za 34 s). Časové značky se ukládají per port: příjem do ARR0/ARR1, odeslání do DEP, vždy se sequence ID. Přístup jde přes Global 2 AVB 0x16/0x17 v layoutu 6390 (port 0x1e = TAI, 0x1f = PTP global).
+- `marvell,mv88e6xxx-ptp` (`drivers/ptp_clock/ptp_clock_mv88e6xxx.c`) je softwarový timecounter nad TAI jako v Linuxu: násobitel 32.32, update každé 4 s, `rate_adjust` = absolutní poměr vůči nominálu (tak ho volá adaptér `precision_clock` z gPTP). Hardware se při nastavování nemění.
+- Globální PTP nastavení: EtherType 0x88F7, časové značky pro všechny event zprávy, Pdelay_Resp do ARR1. Na 6341 jsou značky z MAC místo PHY (`PTP_CFG` 0x07 = 0x8080, Linux uvádí, že značky z PHY jsou nespolehlivé).
+- Porty s `ptp-clock`: `PORT_PTP_CFG0` = bez kontroly transportSpecific. RX: tagger u event zpráv (typy 0–3) zavolá hook switche, ten přečte ARR0/ARR1, ověří seq a nastaví `pkt->timestamp`. TX: `port_txtstamp` si paket podrží a DEP se polluje po 1 ms až 20 ms, pak `net_if_call_timestamp_cb()`. Na každém portu může čekat na značku jen jeden rámec.
+- Testy: `tests/drivers/ptp_clock/mv88e6xxx_tc` (timecounter: přetečení, poměr, kroky) a hook v `tests/net/dsa_tag_mv88e6xxx`.
+- Protistrana: Linux s `ptp4l -f gPTP.cfg -i <iface> -m` (linuxptp, profil 802.1AS) a NIC s HW časovými značkami.
 - Na hardwaru zatím neověřeno.
 
 ## 4. Nejistoty a otevřené body
@@ -239,13 +253,13 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 8. **Jednotky token bucketu.** Vyřešeno měřením: limiter počítá bajty L2 rámce včetně FCS (bez preambule a IFG), 10 kb/s na jednotku refillu.
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
-   - DSA: bridge offload (porty jsou zatím standalone), PTP na 88E6341 (TAI, časové značky v registrech portu), Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
+   - DSA: bridge offload (porty jsou zatím standalone), PPS/event capture (TAI GPIO), Qav na portech switche (AVB blok QAV), Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
    - eth1 přes SGMII (COMPHY), I2C, GPIO, Xenon SDHCI (microSD/eMMC), USB, PCIe,
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (34 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (37 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
