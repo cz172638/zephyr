@@ -1,6 +1,6 @@
 # Zephyr na ESPRESSObin (Marvell Armada 3720): TF-A BL33 + síť přes 88E6341
 
-Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (54 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
+Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (57 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
 
 ## TL;DR
 
@@ -281,6 +281,14 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - Zatím neznámé: akce pro QoS (QPri/FPri override) a policing na page 2. TCAM čítače jsou v MIB bank 1 (0x08–0x0b).
 - Ověřeno na desce: drop ICMP na lan0+lan1 v 48B režimu (port 0x0d = 1) zastaví ping ze Zero 3E za deskou. Výjimka `permit proto icmp dst 192.168.10.1` s nižší prioritou funguje (ping na desku projde, na 8.8.8.8 ne), takže pořadí podle priority i match na IPv4 dst (offset 34) sedí.
 
+### 3.12 microSD (Xenon SDHC)
+
+- `sdhci1` @ 0xd00d0000 (SPI 25, NB clock 0 „mmc“). Druhý registr 0xd001e808 je SoC pad (0 = 3,3 V, 1 = 1,8 V). Slot J1: card detect NB GPIO 3 (aktivní v nule), přepínání IO napětí `regulator-gpio` na NB GPIO 4 (1 = 1,8 V, 0 = 3,3 V), piny SB skupina sdio (bit 2 = 0). NB GPIO 3/4 jsou ve skupinách i2c2/onewire (bit 9/16 = 1 = GPIO).
+- GPIO driver `marvell,armada-3700-gpio` (výstup 0x00, vstup 0x10, hodnoty 0x18). NB má 36 pinů, banka 1 je samostatný uzel na base+4. Bez přerušení.
+- SDHC driver `drivers/sdhc/sdhc_xenon.c`: SDHCI v3, polling a PIO, auto CMD12. Nastavení Xenon slotu (vypnutí ACG při initu, enable slotu, parallel transfer, vypnutí retuningu, maskování cmd conflict) a eMMC PHY (pad control, pull-upy, QSN phase, init PHY po změně hodin) podle U-Boot `xenon_sdhci.c`. Základní hodiny z clock driveru (NB mmc), jinak z capabilities.
+- Netshell `sdcard.conf`: disk `SD`, FatFs (west modul `fatfs`), `fs mount fat /SD:`.
+- Zatím jen 3,3 V (HS do 50 MHz). UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou. Na desce neověřeno.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
@@ -296,12 +304,12 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
    - DSA: TCAM, VLAN-aware bridge, forward-tagged TX do bridge, NAT, PPS/event capture (TAI GPIO), AVB režimy portů a SRP rezervace, Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
-   - eth1 přes SGMII (COMPHY), I2C, GPIO, Xenon SDHCI (microSD/eMMC), USB, PCIe,
+   - eth1 přes SGMII (COMPHY), I2C, eMMC a UHS/DMA pro SD, USB, PCIe,
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (54 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (57 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
