@@ -5,7 +5,9 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(netshell)
 
-target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE src/main.c src/config.c)
+# TCAM rule API of the switch driver
+target_include_directories(app PRIVATE ${ZEPHYR_BASE}/drivers/ethernet/phy)
 
 # Public key allowed to log in, PEM/PKCS8, e.g.
 #   ssh-keygen -e -m PKCS8 -f ~/.ssh/id_rsa.pub > authorized_key.pem

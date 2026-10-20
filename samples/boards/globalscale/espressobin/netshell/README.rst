@@ -67,6 +67,25 @@ NAT, so the upstream router needs a route to the LAN, e.g. on Linux:
 ``net bridge`` and ``net route`` show the state. gPTP on the three ports
 combines with it: ``-DEXTRA_CONF_FILE="router.conf;gptp.conf"``.
 
+Saved configuration
+===================
+
+Changes made from the shell apply at once but last only until a reboot,
+as on network gear, until they are saved:
+
+.. code-block:: console
+
+   uart:~$ router lan 192.168.20.1/24     # router: LAN address, pool moves along
+   uart:~$ router pool 192.168.20.50
+   uart:~$ router dns 192.168.200.1       # or "auto": DNS server of the wan lease
+   uart:~$ mv88e6xxx tcam add 1 10 lan0,lan1 drop proto icmp
+   uart:~$ mvneta qav 4 3 20000000
+   uart:~$ config save                    # LAN, TCAM rules, Qav of all interfaces
+   uart:~$ config show
+   uart:~$ config erase                   # defaults on the next boot
+
+A rule that locks you out is therefore gone after a reboot unless saved.
+
 Using
 *****
 

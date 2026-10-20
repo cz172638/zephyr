@@ -37,6 +37,8 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_uart.h>
 
+#include "config.h"
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(netshell, LOG_LEVEL_INF);
 
@@ -121,6 +123,11 @@ static void stable_mac(struct net_if *iface)
 #if defined(CONFIG_NETSHELL_ROUTER)
 static struct net_if *lan_bridge;
 
+struct net_if *netshell_bridge(void)
+{
+	return lan_bridge;
+}
+
 static void find_bridge(struct eth_bridge_iface_context *br, void *user_data)
 {
 	struct net_if **found = user_data;
@@ -165,6 +172,11 @@ static void wan_dns_handler(struct net_dhcpv4_option_callback *cb, size_t length
 	}
 
 	memcpy(dns.s4_addr, wan_dns, sizeof(wan_dns));
+	netshell_wan_dns = dns;
+	if (!net_ipv4_is_addr_unspecified(&netshell_lan.dns)) {
+		/* A fixed one is configured */
+		return;
+	}
 	net_dhcpv4_server_set_dns_address(&dns);
 	LOG_INF("LAN DNS server %s (from %s)",
 		net_addr_ntop(NET_AF_INET, &dns, str, sizeof(str)), name);
@@ -202,25 +214,42 @@ static void wan_gw_handler(struct net_dhcpv4_option_callback *cb, size_t length,
 		name, wan_router == NULL ? " failed" : "");
 }
 
-static int lan_start(struct net_if *br)
+struct net_in_addr netshell_wan_dns;
+
+/* (Re)configure the bridge from netshell_lan: one address, the DHCP
+ * server handing out this address as router and the DNS server
+ */
+int netshell_lan_apply(struct net_if *br)
 {
-	struct net_in_addr addr, mask, pool;
+	struct net_if_ipv4 *ipv4;
 	char name[CONFIG_NET_INTERFACE_NAME_LEN + 1];
+	char a[NET_IPV4_ADDR_LEN], m[NET_IPV4_ADDR_LEN], p[NET_IPV4_ADDR_LEN];
 	int ret;
 
-	if (net_addr_pton(NET_AF_INET, CONFIG_NETSHELL_LAN_ADDR, &addr) < 0 ||
-	    net_addr_pton(NET_AF_INET, CONFIG_NETSHELL_LAN_NETMASK, &mask) < 0 ||
-	    net_addr_pton(NET_AF_INET, CONFIG_NETSHELL_DHCP_POOL, &pool) < 0) {
-		LOG_ERR("bad LAN address configuration");
-		return -EINVAL;
+	(void)net_dhcpv4_server_stop(br);
+
+	if (net_if_config_ipv4_get(br, &ipv4) == 0) {
+		ARRAY_FOR_EACH(ipv4->unicast, i) {
+			if (ipv4->unicast[i].ipv4.is_used &&
+			    !net_ipv4_addr_cmp(&ipv4->unicast[i].ipv4.address.in_addr,
+					       &netshell_lan.addr)) {
+				(void)net_if_ipv4_addr_rm(
+					br, &ipv4->unicast[i].ipv4.address.in_addr);
+			}
+		}
 	}
 
-	if (net_if_ipv4_addr_add(br, &addr, NET_ADDR_MANUAL, 0) == NULL) {
+	if (net_if_ipv4_addr_lookup_by_iface(br, &netshell_lan.addr) == NULL &&
+	    net_if_ipv4_addr_add(br, &netshell_lan.addr, NET_ADDR_MANUAL, 0) == NULL) {
 		return -ENOMEM;
 	}
-	net_if_ipv4_set_netmask_by_addr(br, &addr, &mask);
+	net_if_ipv4_set_netmask_by_addr(br, &netshell_lan.addr, &netshell_lan.mask);
 	/* Handed out as the router option */
-	net_if_ipv4_set_gw(br, &addr);
+	net_if_ipv4_set_gw(br, &netshell_lan.addr);
+
+	net_dhcpv4_server_set_dns_address(net_ipv4_is_addr_unspecified(&netshell_lan.dns)
+						  ? &netshell_wan_dns
+						  : &netshell_lan.dns);
 
 	ret = net_if_up(br);
 	if (ret < 0 && ret != -EALREADY) {
@@ -228,10 +257,12 @@ static int lan_start(struct net_if *br)
 		return ret;
 	}
 
-	ret = net_dhcpv4_server_start(br, &pool);
+	ret = net_dhcpv4_server_start(br, &netshell_lan.pool);
 	(void)net_if_get_name(br, name, sizeof(name));
-	LOG_INF("%s: %s/%s, DHCP from %s: %d", name, CONFIG_NETSHELL_LAN_ADDR,
-		CONFIG_NETSHELL_LAN_NETMASK, CONFIG_NETSHELL_DHCP_POOL, ret);
+	LOG_INF("%s: %s/%s, DHCP from %s: %d", name,
+		net_addr_ntop(NET_AF_INET, &netshell_lan.addr, a, sizeof(a)),
+		net_addr_ntop(NET_AF_INET, &netshell_lan.mask, m, sizeof(m)),
+		net_addr_ntop(NET_AF_INET, &netshell_lan.pool, p, sizeof(p)), ret);
 
 	return ret;
 }
@@ -375,10 +406,12 @@ int main(void)
 	net_if_foreach(start_iface, NULL);
 
 #if defined(CONFIG_NETSHELL_ROUTER)
-	if (lan_bridge == NULL || lan_start(lan_bridge) < 0) {
+	netshell_config_load_lan();
+	if (lan_bridge == NULL || netshell_lan_apply(lan_bridge) < 0) {
 		LOG_ERR("LAN not started");
 	}
 #endif
+	netshell_config_apply();
 
 	if (host_key() != 0) {
 		LOG_ERR("no SSH host key");
