@@ -85,6 +85,32 @@ LOG_MODULE_REGISTER(phy_mv88e6xxx, CONFIG_PHY_LOG_LEVEL);
 #define G1_CTL2            0x1c
 #define G1_CTL2_DEVICE_NUM GENMASK(4, 0)
 
+/* Global 1 ATU (Linux global1_atu.c); the 88E6341 has the FID register */
+#define G1_ATU_FID          0x01
+#define G1_ATU_OP           0x0b
+#define G1_ATU_OP_BUSY      BIT(15)
+#define G1_ATU_OP_LOAD_DB   0x3000
+#define G1_ATU_OP_FLUSH_NS  0x2000 /* flush/move non static, all databases */
+#define G1_ATU_DATA         0x0c
+#define G1_ATU_DATA_PORTVEC GENMASK(13, 4)
+#define G1_ATU_MAC01        0x0d
+
+/* Global 1 monitor & management control, 88E6390 layout (also 88E6341) */
+#define G1_MONITOR_MGMT          0x1a
+#define G1_MONITOR_MGMT_UPDATE   BIT(15)
+#define G1_MGMT_PTR_RSVD_00_LO   0x0000 /* 01:80:c2:00:00:00..07 */
+#define G1_MGMT_PTR_RSVD_00_HI   0x0100 /* 01:80:c2:00:00:08..0f */
+#define G1_MGMT_PTR_RSVD_20_LO   0x0200 /* 01:80:c2:00:00:20..27 */
+#define G1_MGMT_PTR_RSVD_20_HI   0x0300 /* 01:80:c2:00:00:28..2f */
+#define G1_MGMT_PTR_CPU_DEST     0x3000
+#define G1_MGMT_PTR_PTP_CPU_DEST 0x3200
+#define G1_MGMT_CPU_DEST_MGMTPRI 0x00e0
+
+/* Global 2 management, 88E6352 layout */
+#define G2_MGMT_EN_0X        0x03
+#define G2_SWITCH_MGMT       0x05
+#define G2_SWITCH_MGMT_RSVD2CPU BIT(3)
+
 /* Global 2 AVB/PTP indirect access (Linux global2_avb.c) */
 #define G2_AVB_CMD           0x16
 #define G2_AVB_DATA          0x17
@@ -555,6 +581,119 @@ int mv88e6xxx_reg_rmw(const struct device *dev, uint8_t addr, uint8_t reg, uint1
 	return ret;
 }
 
+static int atu_wait(const struct mv88e6xxx_config *cfg)
+{
+	uint16_t val;
+	int ret;
+
+	for (int i = 0; i < SMI_TIMEOUT_US / 10; i++) {
+		ret = sw_read(cfg, ADDR_GLOBAL1, G1_ATU_OP, &val);
+		if (ret < 0) {
+			return ret;
+		}
+		if ((val & G1_ATU_OP_BUSY) == 0) {
+			return 0;
+		}
+		k_busy_wait(10);
+	}
+
+	return -ETIMEDOUT;
+}
+
+int mv88e6xxx_atu_load(const struct device *dev, uint16_t fid, const uint8_t mac[6],
+		       uint16_t portvec, uint8_t state)
+{
+	const struct mv88e6xxx_config *cfg = dev->config;
+	struct mv88e6xxx_data *data = dev->data;
+	int ret;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = atu_wait(cfg);
+	for (int i = 0; ret == 0 && i < 3; i++) {
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_ATU_MAC01 + i, (mac[2 * i] << 8) | mac[2 * i + 1]);
+	}
+	if (ret == 0) {
+		uint16_t d = state & 0xf;
+
+		if (state != 0) {
+			d |= FIELD_PREP(G1_ATU_DATA_PORTVEC, portvec);
+		}
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_ATU_DATA, d);
+	}
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_ATU_FID, fid);
+	}
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_ATU_OP, G1_ATU_OP_BUSY | G1_ATU_OP_LOAD_DB);
+	}
+	if (ret == 0) {
+		ret = atu_wait(cfg);
+	}
+	k_mutex_unlock(&data->lock);
+
+	return ret;
+}
+
+int mv88e6xxx_atu_flush_dynamic(const struct device *dev)
+{
+	const struct mv88e6xxx_config *cfg = dev->config;
+	struct mv88e6xxx_data *data = dev->data;
+	int ret;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = atu_wait(cfg);
+	if (ret == 0) {
+		/* Data 0: flush (not move) */
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_ATU_DATA, 0);
+	}
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_ATU_OP, G1_ATU_OP_BUSY | G1_ATU_OP_FLUSH_NS);
+	}
+	if (ret == 0) {
+		ret = atu_wait(cfg);
+	}
+	k_mutex_unlock(&data->lock);
+
+	return ret;
+}
+
+/* Reserved multicast (01:80:c2:00:00:0x, 2x: STP, LLDP, 802.1AS, ...)
+ * is trapped to the CPU instead of flooded, as Linux mgmt_rsvd2cpu();
+ * management frames go to the CPU port. With the lock held.
+ */
+static int mgmt_setup(const struct mv88e6xxx_config *cfg, const struct mv88e6xxx_data *data)
+{
+	static const uint16_t rsvd[] = {G1_MGMT_PTR_RSVD_00_LO, G1_MGMT_PTR_RSVD_00_HI,
+					G1_MGMT_PTR_RSVD_20_LO, G1_MGMT_PTR_RSVD_20_HI};
+	int ret = 0;
+
+	if (!avb_is_6390(data)) {
+		ret = sw_write(cfg, ADDR_GLOBAL2, G2_MGMT_EN_0X, 0xffff);
+		if (ret == 0) {
+			ret = sw_rmw(cfg, ADDR_GLOBAL2, G2_SWITCH_MGMT, G2_SWITCH_MGMT_RSVD2CPU,
+				     G2_SWITCH_MGMT_RSVD2CPU);
+		}
+		return ret;
+	}
+
+	for (int i = 0; ret == 0 && i < ARRAY_SIZE(rsvd); i++) {
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_MONITOR_MGMT,
+			       G1_MONITOR_MGMT_UPDATE | rsvd[i] | 0xff);
+	}
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_MONITOR_MGMT,
+			       G1_MONITOR_MGMT_UPDATE | G1_MGMT_PTR_CPU_DEST |
+				       G1_MGMT_CPU_DEST_MGMTPRI | cfg->cpu_port);
+	}
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL1, G1_MONITOR_MGMT,
+			       G1_MONITOR_MGMT_UPDATE | G1_MGMT_PTR_PTP_CPU_DEST |
+				       G1_MGMT_CPU_DEST_MGMTPRI | cfg->cpu_port);
+	}
+
+	return ret;
+}
+
 /* As Linux mv88e6xxx_set_port_mode_dsa()/_edsa() for the CPU port */
 int mv88e6xxx_dsa_enable(const struct device *dev, enum mv88e6xxx_tag tag)
 {
@@ -592,6 +731,9 @@ int mv88e6xxx_dsa_enable(const struct device *dev, enum mv88e6xxx_tag tag)
 	for (int i = 0; ret == 0 && i < cfg->num_user_ports; i++) {
 		ret = sw_rmw(cfg, ADDR_PORT(cfg->user_ports[i]), PORT_CTL2, PORT_CTL2_JUMBO_MASK,
 			     PORT_CTL2_JUMBO_2048);
+	}
+	if (ret == 0) {
+		ret = mgmt_setup(cfg, data);
 	}
 	if (ret == 0) {
 		data->dsa = true;

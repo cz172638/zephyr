@@ -10,7 +10,11 @@
  * to tagged frames once all ports exist. User port links come from their
  * PHYs (generic PHY driver on the switch's internal MDIO bus).
  *
- * Ports are standalone: every user port forwards only to the CPU port.
+ * Ports are standalone, every user port forwards only to the CPU port,
+ * until they join an Ethernet bridge: then the switch forwards between
+ * the bridged ports itself (port based VLAN map, own address database
+ * with a static entry for the bridge address on the CPU port), as Linux
+ * does for a bridge without VLAN filtering.
  *
  * With a ptp-clock on the ports (marvell,mv88e6xxx-ptp) PTP event messages
  * are time stamped by the switch: arrival time stamps are read from the
@@ -27,6 +31,8 @@ LOG_MODULE_REGISTER(dsa_mv88e6xxx, CONFIG_ETHERNET_LOG_LEVEL);
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/dsa_core.h>
 #include <zephyr/net/phy.h>
+#include <zephyr/net/net_if.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/dt-bindings/ethernet/dsa_tag_proto.h>
 
 #include "../phy/phy_marvell_mv88e6xxx.h"
@@ -134,6 +140,9 @@ struct dsa_mv88e6xxx_data {
 	const struct mv_qav_info *qav;
 	struct k_mutex qav_lock;
 	struct mv_qav_port qav_port[DSA_PORT_MAX_COUNT];
+	struct k_mutex br_lock;
+	struct net_if *bridge;
+	uint16_t br_ports;
 #if defined(MV_DSA_PTP)
 	const struct dsa_switch_context *ctx;
 	struct k_spinlock tx_lock;
@@ -597,6 +606,113 @@ static int dsa_mv88e6xxx_qav_setup(struct dsa_mv88e6xxx_data *prv)
 	return ret;
 }
 
+/* Port based VLAN map and default address database */
+#define PORT_BASE_VLAN     0x06
+#define PORT_BASE_VLAN_MAP GENMASK(10, 0)
+#define PORT_BASE_VLAN_FID GENMASK(15, 12)
+
+/* Database 0 for standalone ports, 1 for the bridge (Linux uses the same) */
+#define FID_STANDALONE 0
+#define FID_BRIDGED    1
+
+static int br_port_set(struct dsa_mv88e6xxx_data *prv, uint8_t port, uint16_t map, uint16_t fid)
+{
+	return mv88e6xxx_reg_rmw(prv->sw, MV88E6XXX_ADDR_PORT(port), PORT_BASE_VLAN,
+				 PORT_BASE_VLAN_MAP | PORT_BASE_VLAN_FID,
+				 (map & PORT_BASE_VLAN_MAP) | FIELD_PREP(PORT_BASE_VLAN_FID, fid),
+				 NULL);
+}
+
+/* Every bridged port may send to the CPU and the other bridged ports */
+static int br_update(struct dsa_mv88e6xxx_data *prv)
+{
+	int ret = 0;
+
+	for (uint8_t port = 0; ret == 0 && port < DSA_PORT_MAX_COUNT; port++) {
+		if (prv->br_ports & BIT(port)) {
+			ret = br_port_set(prv, port, BIT(prv->cpu_port) | (prv->br_ports & ~BIT(port)),
+					  FID_BRIDGED);
+		}
+	}
+
+	return ret;
+}
+
+static int dsa_mv88e6xxx_port_bridge_join(const struct device *dev, struct net_if *br)
+{
+	const struct dsa_port_config *cfg = dev->config;
+	struct dsa_switch_context *ctx = dev->data;
+	struct dsa_mv88e6xxx_data *prv = ctx->prv_data;
+	struct net_linkaddr *ll = net_if_get_link_addr(br);
+	uint8_t port = cfg->port_idx;
+	int ret;
+
+	if (cfg->ethernet_connection != NULL || port >= DSA_PORT_MAX_COUNT) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&prv->br_lock, K_FOREVER);
+
+	/* One address database for bridged ports: one bridge */
+	if (prv->bridge != NULL && prv->bridge != br) {
+		k_mutex_unlock(&prv->br_lock);
+		return -EBUSY;
+	}
+
+	prv->br_ports |= BIT(port);
+	ret = br_update(prv);
+	/* Frames from the CPU are not learned: the bridge address is static */
+	if (ret == 0 && prv->bridge == NULL && ll != NULL && ll->len == NET_ETH_ADDR_LEN) {
+		ret = mv88e6xxx_atu_load(prv->sw, FID_BRIDGED, ll->addr, BIT(prv->cpu_port),
+					 MV88E6XXX_ATU_STATE_UC_STATIC);
+	}
+	if (ret == 0) {
+		ret = mv88e6xxx_atu_flush_dynamic(prv->sw);
+	}
+
+	if (ret == 0) {
+		prv->bridge = br;
+		LOG_INF("port %u joins the bridge, ports 0x%02x", port, prv->br_ports);
+	} else {
+		prv->br_ports &= ~BIT(port);
+		(void)br_port_set(prv, port, BIT(prv->cpu_port), FID_STANDALONE);
+		(void)br_update(prv);
+		LOG_ERR("port %u: bridge offload failed (%d)", port, ret);
+	}
+
+	k_mutex_unlock(&prv->br_lock);
+
+	return ret;
+}
+
+static void dsa_mv88e6xxx_port_bridge_leave(const struct device *dev, struct net_if *br)
+{
+	const struct dsa_port_config *cfg = dev->config;
+	struct dsa_switch_context *ctx = dev->data;
+	struct dsa_mv88e6xxx_data *prv = ctx->prv_data;
+	struct net_linkaddr *ll = net_if_get_link_addr(br);
+	uint8_t port = cfg->port_idx;
+
+	k_mutex_lock(&prv->br_lock, K_FOREVER);
+
+	if (prv->bridge == br && (prv->br_ports & BIT(port)) != 0) {
+		prv->br_ports &= ~BIT(port);
+		(void)br_port_set(prv, port, BIT(prv->cpu_port), FID_STANDALONE);
+		(void)br_update(prv);
+		if (prv->br_ports == 0) {
+			if (ll != NULL && ll->len == NET_ETH_ADDR_LEN) {
+				(void)mv88e6xxx_atu_load(prv->sw, FID_BRIDGED, ll->addr, 0,
+							 MV88E6XXX_ATU_STATE_UNUSED);
+			}
+			prv->bridge = NULL;
+		}
+		(void)mv88e6xxx_atu_flush_dynamic(prv->sw);
+		LOG_INF("port %u leaves the bridge, ports 0x%02x", port, prv->br_ports);
+	}
+
+	k_mutex_unlock(&prv->br_lock);
+}
+
 static int dsa_mv88e6xxx_connect_tag_protocol(struct dsa_switch_context *ctx, int tag_proto)
 {
 	struct dsa_mv88e6xxx_data *prv = ctx->prv_data;
@@ -636,6 +752,7 @@ static int dsa_mv88e6xxx_switch_setup(const struct dsa_switch_context *ctx)
 	ret = mv88e6xxx_dsa_enable(prv->sw, prv->tag_proto == DSA_TAG_PROTO_EDSA
 						    ? MV88E6XXX_TAG_EDSA
 						    : MV88E6XXX_TAG_DSA);
+	k_mutex_init(&prv->br_lock);
 	if (ret == 0) {
 		ret = dsa_mv88e6xxx_qav_setup(prv);
 	}
@@ -713,6 +830,7 @@ static int dsa_mv88e6xxx_get_config(const struct device *dev, enum ethernet_conf
 		.phy_mode = DT_PROP_OR(port, phy_connection_type, ""),                             \
 		.tag_proto = DT_PROP_OR(port, dsa_tag_protocol, DSA_TAG_PROTO_NOTAG),              \
 		.ethernet_connection = MV_DSA_PHANDLE_DEV(port, ethernet),                         \
+		.label = DT_PROP_OR(port, label, NULL),                                            \
 		IF_ENABLED(CONFIG_NET_L2_PTP_TIMESTAMPING,                                         \
 			   (.ptp_clock = MV_DSA_PTP_CLOCK(port),)) }; \
 	DSA_PORT_INST_INIT(port, n, &dsa_mv88e6xxx_##n##_##port##_config)
@@ -735,6 +853,8 @@ static int dsa_mv88e6xxx_get_config(const struct device *dev, enum ethernet_conf
 		.set_config = dsa_mv88e6xxx_set_config,                                            \
 		.get_config = dsa_mv88e6xxx_get_config,                                            \
 		.port_phylink_change = dsa_mv88e6xxx_phylink_change,                               \
+		.port_bridge_join = dsa_mv88e6xxx_port_bridge_join,                                \
+		.port_bridge_leave = dsa_mv88e6xxx_port_bridge_leave,                              \
 		IF_ENABLED(MV_DSA_PTP, (.port_txtstamp = dsa_mv88e6xxx_port_txtstamp,)) };            \
 	static struct dsa_mv88e6xxx_data dsa_mv88e6xxx_data_##n = {                                \
 		.sw = DEVICE_DT_GET(DT_INST_PHANDLE(n, marvell_switch)),                           \

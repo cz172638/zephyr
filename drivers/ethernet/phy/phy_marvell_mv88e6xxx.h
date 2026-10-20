@@ -41,6 +41,19 @@ uint16_t mv88e6xxx_product(const struct device *dev);
 int mv88e6xxx_reg_rmw(const struct device *dev, uint8_t addr, uint8_t reg, uint16_t mask,
 		      uint16_t val, uint16_t *old);
 
+/* ATU entry states for unicast addresses */
+#define MV88E6XXX_ATU_STATE_UNUSED    0x0
+#define MV88E6XXX_ATU_STATE_UC_STATIC 0xe
+
+/* Load (or with MV88E6XXX_ATU_STATE_UNUSED purge) an address of database
+ * fid, forwarding to the ports in portvec
+ */
+int mv88e6xxx_atu_load(const struct device *dev, uint16_t fid, const uint8_t mac[6],
+		       uint16_t portvec, uint8_t state);
+
+/* Forget all learned addresses */
+int mv88e6xxx_atu_flush_dynamic(const struct device *dev);
+
 /* Register blocks behind the Global 2 AVB command/data registers */
 enum mv88e6xxx_avb_block {
 	MV88E6XXX_AVB_BLOCK_PTP = 0,
