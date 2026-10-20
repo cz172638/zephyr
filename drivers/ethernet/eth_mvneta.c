@@ -1341,12 +1341,22 @@ static int mvneta_init(const struct device *dev)
 	(DT_INST_ENUM_IDX_OR(n, phy_connection_type, 3) >= 3 &&                                    \
 	 DT_INST_ENUM_IDX_OR(n, phy_connection_type, 3) <= 6)
 
+/*
+ * Descriptors and buffers: uncached, or plain cached memory when the
+ * hardware keeps DMA coherent with the CPU caches (CCI-400).
+ */
+#ifdef CONFIG_ETH_MVNETA_DMA_COHERENT
+#define MVNETA_DMA_ATTR
+#else
+#define MVNETA_DMA_ATTR __nocache
+#endif
+
 #define MVNETA_INIT(n)                                                                             \
 	BUILD_ASSERT(MVNETA_IS_RGMII(n), "only RGMII is supported");                               \
 	PINCTRL_DT_INST_DEFINE(n);                                                                 \
 	static const struct mvneta_clk mvneta_clks_##n[] = {                                       \
 		DT_INST_FOREACH_PROP_ELEM(n, clocks, MVNETA_CLK)};                                 \
-	static struct mvneta_dma mvneta_dma_##n __nocache __aligned(64);                           \
+	static struct mvneta_dma mvneta_dma_##n MVNETA_DMA_ATTR __aligned(64);                      \
 	static void mvneta_irq_config_##n(void)                                                    \
 	{                                                                                          \
 		IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority), mvneta_isr,                 \

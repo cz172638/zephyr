@@ -60,6 +60,14 @@ config ETH_MVNETA_RX_BUDGET
 	default 16
 	range 1 1024
 
+config ETH_MVNETA_DMA_COHERENT
+	bool "DMA is cache coherent (descriptors and buffers in cached memory)"
+	help
+	  Put the rings and buffers in normal cached memory without any
+	  cache maintenance. Only correct when the NETA DMA is coherent
+	  with the CPU caches through the CCI-400; otherwise frames and
+	  descriptors get corrupted. For testing the I/O coherency.
+
 config ETH_MVNETA_TX_TIMEOUT_MS
 	int "Time to wait for a free TX descriptor [ms]"
 	default 100

@@ -3,3 +3,5 @@
 zephyr_include_directories(.)
 
 set(SOC_LINKER_SCRIPT ${ZEPHYR_BASE}/include/zephyr/arch/arm64/scripts/linker.ld CACHE INTERNAL "")
+
+zephyr_sources_ifdef(CONFIG_SOC_ARMADA37XX_CCI_SHELL cci400.c)

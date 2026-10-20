@@ -5,3 +5,11 @@ config SOC_SERIES_ARMADA37XX
 	select ARM64
 	select CPU_CORTEX_A53
 	select ARM_ARCH_TIMER if SYS_CLOCK_EXISTS
+
+config SOC_ARMADA37XX_CCI_SHELL
+	bool "CCI-400 shell"
+	depends on SOC_SERIES_ARMADA37XX && SHELL
+	default y
+	help
+	  'cci dump' and 'cci share': the CCI-400 registers (remapped by
+	  TF-A to 0xfe000000), for the I/O coherency bring-up.
