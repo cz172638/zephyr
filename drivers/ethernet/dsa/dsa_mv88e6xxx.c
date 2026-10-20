@@ -328,6 +328,24 @@ static enum ethernet_hw_caps dsa_mv88e6xxx_get_capabilities(const struct device 
 	return ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE | ETHERNET_LINK_1000BASE;
 }
 
+/* The switch does not filter on the user port addresses (standalone
+ * ports, promiscuous conduit), so a new address needs no hardware change;
+ * the Ethernet management code updates the interface.
+ */
+static int dsa_mv88e6xxx_set_config(const struct device *dev, enum ethernet_config_type type,
+				    const struct ethernet_config *config)
+{
+	const struct dsa_port_config *cfg = dev->config;
+
+	ARG_UNUSED(config);
+
+	if (type == ETHERNET_CONFIG_TYPE_MAC_ADDRESS && cfg->ethernet_connection == NULL) {
+		return 0;
+	}
+
+	return -ENOTSUP;
+}
+
 #define MV_DSA_PHANDLE_DEV(port, prop)                                                             \
 	COND_CODE_1(DT_NODE_HAS_PROP(port, prop), (DEVICE_DT_GET(DT_PHANDLE(port, prop))), (NULL))
 
@@ -358,6 +376,7 @@ static enum ethernet_hw_caps dsa_mv88e6xxx_get_capabilities(const struct device 
 		.switch_setup = dsa_mv88e6xxx_switch_setup,                                        \
 		.connect_tag_protocol = dsa_mv88e6xxx_connect_tag_protocol,                        \
 		.get_capabilities = dsa_mv88e6xxx_get_capabilities,                                \
+		.set_config = dsa_mv88e6xxx_set_config,                                            \
 		IF_ENABLED(MV_DSA_PTP, (.port_txtstamp = dsa_mv88e6xxx_port_txtstamp,)) };            \
 	static struct dsa_mv88e6xxx_data dsa_mv88e6xxx_data_##n = {                                \
 		.sw = DEVICE_DT_GET(DT_INST_PHANDLE(n, marvell_switch)),                           \
