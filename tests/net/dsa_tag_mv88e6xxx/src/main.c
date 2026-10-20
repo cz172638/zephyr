@@ -187,6 +187,8 @@ static struct net_pkt *tx_pkt(struct net_if *iface, bool vlan)
 	struct net_buf *hdr, *data;
 
 	zassert_not_null(pkt);
+	/* Best effort, not CONFIG_NET_TX_DEFAULT_PRIORITY */
+	net_pkt_set_priority(pkt, NET_PRIORITY_BE);
 	hdr = net_pkt_get_frag(pkt, 18, K_NO_WAIT);
 	data = net_pkt_get_frag(pkt, sizeof(payload) - 2, K_NO_WAIT);
 	zassert_not_null(hdr);
@@ -208,6 +210,18 @@ ZTEST(dsa_tag_mv88e6xxx, test_tx_dsa_untagged)
 	const uint8_t tag[] = {0x40, 3 << 3, 0x00, 0x00};
 	struct net_pkt *pkt = tx_pkt(if_swp3, false);
 
+	zassert_equal_ptr(tag_dsa->xmit(if_swp3, pkt), pkt);
+	check_frame(pkt, tag, sizeof(tag));
+	net_pkt_unref(pkt);
+}
+
+ZTEST(dsa_tag_mv88e6xxx, test_tx_dsa_priority)
+{
+	/* Untagged: the packet priority (voice, 5) goes into the PRI bits */
+	const uint8_t tag[] = {0x40, 3 << 3, 0xa0, 0x00};
+	struct net_pkt *pkt = tx_pkt(if_swp3, false);
+
+	net_pkt_set_priority(pkt, NET_PRIORITY_VO);
 	zassert_equal_ptr(tag_dsa->xmit(if_swp3, pkt), pkt);
 	check_frame(pkt, tag, sizeof(tag));
 	net_pkt_unref(pkt);

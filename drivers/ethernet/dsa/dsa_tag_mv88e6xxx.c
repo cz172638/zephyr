@@ -202,7 +202,8 @@ static struct net_pkt *mv_tag_xmit(struct net_if *iface, struct net_pkt *pkt, bo
 		}
 		net_buf_pull(frag, ADDRS_LEN + 2 * sizeof(uint16_t));
 	} else {
-		tag[2] = 0;
+		/* The priority picks the egress queue (Global 1 IEEE-PRI) */
+		tag[2] = (net_pkt_priority(pkt) & 0x7) << 5;
 		tag[3] = 0;
 		net_buf_pull(frag, ADDRS_LEN);
 	}

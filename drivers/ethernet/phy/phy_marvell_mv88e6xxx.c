@@ -89,7 +89,7 @@ LOG_MODULE_REGISTER(phy_mv88e6xxx, CONFIG_PHY_LOG_LEVEL);
 #define G2_AVB_CMD           0x16
 #define G2_AVB_DATA          0x17
 #define AVB_CMD_BUSY         BIT(15)
-#define AVB_CMD_BLOCK_PTP    (0 << 5)
+#define AVB_CMD_BLOCK(b)     (((b) & 0x7) << 5)
 /* 88E6352 layout */
 #define AVB6352_OP_READ      0x4000
 #define AVB6352_OP_READ_INCR 0x6000
@@ -446,7 +446,13 @@ static uint16_t avb_port(const struct mv88e6xxx_data *data, int port)
 	return (port & (l6390 ? 0x1f : 0x0f)) << 8;
 }
 
-int mv88e6xxx_avb_read(const struct device *dev, int port, uint8_t addr, uint16_t *buf, int len)
+bool mv88e6xxx_avb_is_6390(const struct device *dev)
+{
+	return avb_is_6390(dev->data);
+}
+
+int mv88e6xxx_avb_block_read(const struct device *dev, enum mv88e6xxx_avb_block block, int port,
+			     uint8_t addr, uint16_t *buf, int len)
 {
 	const struct mv88e6xxx_config *cfg = dev->config;
 	struct mv88e6xxx_data *data = dev->data;
@@ -463,7 +469,7 @@ int mv88e6xxx_avb_read(const struct device *dev, int port, uint8_t addr, uint16_
 	} else {
 		op = l6390 ? AVB6390_OP_READ_INCR : AVB6352_OP_READ_INCR;
 	}
-	op |= AVB_CMD_BUSY | avb_port(data, port) | AVB_CMD_BLOCK_PTP | (addr & 0x1f);
+	op |= AVB_CMD_BUSY | avb_port(data, port) | AVB_CMD_BLOCK(block) | (addr & 0x1f);
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 	ret = avb_wait(cfg);
@@ -481,12 +487,13 @@ int mv88e6xxx_avb_read(const struct device *dev, int port, uint8_t addr, uint16_
 	return ret;
 }
 
-int mv88e6xxx_avb_write(const struct device *dev, int port, uint8_t addr, uint16_t val)
+int mv88e6xxx_avb_block_write(const struct device *dev, enum mv88e6xxx_avb_block block, int port,
+			      uint8_t addr, uint16_t val)
 {
 	const struct mv88e6xxx_config *cfg = dev->config;
 	struct mv88e6xxx_data *data = dev->data;
 	uint16_t op = (avb_is_6390(data) ? AVB6390_OP_WRITE : AVB6352_OP_WRITE) | AVB_CMD_BUSY |
-		      avb_port(data, port) | AVB_CMD_BLOCK_PTP | (addr & 0x1f);
+		      avb_port(data, port) | AVB_CMD_BLOCK(block) | (addr & 0x1f);
 	int ret;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
@@ -521,6 +528,28 @@ static int sw_rmw(const struct mv88e6xxx_config *cfg, uint8_t addr, uint8_t reg,
 	ret = sw_read(cfg, addr, reg, &v);
 	if (ret == 0) {
 		ret = sw_write(cfg, addr, reg, (v & ~mask) | val);
+	}
+
+	return ret;
+}
+
+int mv88e6xxx_reg_rmw(const struct device *dev, uint8_t addr, uint8_t reg, uint16_t mask,
+		      uint16_t val, uint16_t *old)
+{
+	const struct mv88e6xxx_config *cfg = dev->config;
+	struct mv88e6xxx_data *data = dev->data;
+	uint16_t v;
+	int ret;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = sw_read(cfg, addr, reg, &v);
+	if (ret == 0 && mask != 0) {
+		ret = sw_write(cfg, addr, reg, (v & ~mask) | (val & mask));
+	}
+	k_mutex_unlock(&data->lock);
+
+	if (ret == 0 && old != NULL) {
+		*old = v;
 	}
 
 	return ret;

@@ -10,3 +10,11 @@ config PHY_MARVELL_MV88E6XXX
 	  Configure a Marvell Link Street switch, attached in multi-chip SMI
 	  mode, as a port expander for one MAC and report the aggregated
 	  link state of its user ports through the Ethernet PHY API.
+
+config PHY_MARVELL_MV88E6XXX_SHELL
+	bool "Shell commands for the 88E6xxx AVB/Qav registers"
+	depends on PHY_MARVELL_MV88E6XXX && SHELL
+	help
+	  "mv88e6xxx" shell command: raw read/write of the PTP, AVB, Qav
+	  and Qvb register blocks behind the Global 2 AVB command and a
+	  summary of the egress shapers.

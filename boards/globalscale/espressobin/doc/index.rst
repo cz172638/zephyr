@@ -256,6 +256,35 @@ taken at the MAC; Linux does the same, the PHY time stamps are unreliable.
 ``samples/net/ethernet/tsn-switch`` also builds with the snippet (software
 bridge over the ports, gPTP relay; its Qbv setup is not supported).
 
+Qav on the switch ports
+=======================
+
+The ``swpN`` interfaces have four egress queues with the switch's credit
+based shapers (802.1Qav), set per queue through the Ethernet management
+Qav requests, e.g. with the netshell's ``mvneta qav``, which works on any
+interface:
+
+.. code-block:: console
+
+   uart:~$ net iface                    # interface index of swpN
+   uart:~$ mvneta qav 4 3 20000000      # interface 4, queue 3, 20 Mbit/s
+   uart:~$ mvneta queues 4
+   uart:~$ mv88e6xxx qav                # shaper registers of all ports
+
+Queue N is traffic class N: the tagger puts the packet priority into the
+DSA tag and the switch's IEEE-PRI table maps it like the Zephyr priority to
+traffic class mapping for four classes. With the default strict mapping SR
+class A and B (priority 3 and 2) share queue 1; for one queue per class set
+``CONFIG_NET_TC_MAPPING_SR_CLASS_A_AND_B=y`` (needs ``CONFIG_NET_TC_TX_COUNT``
+and ``CONFIG_NET_TC_RX_COUNT`` of at least 2): class A goes to queue 3,
+class B to queue 2. A shaped port switches to strict priority between its
+queues. The hi limit comes from the idle slope and the link speed (one
+maximum frame at port rate), the rate register is in 64 kbit/s steps.
+
+The register use follows the Linux CBS offload patches (Cedric Jehasse,
+Luke Howard), there is no public documentation. ``mv88e6xxx avb`` reads
+and writes any register of the PTP, AVB, Qav and Qvb blocks.
+
 Limitations
 ***********
 
@@ -263,6 +292,8 @@ Limitations
   in software (``CONFIG_NET_ETHERNET_BRIDGE``).
 * The switch PTP clock is a software time counter: no PPS output or
   event capture (TAI GPIOs) yet.
+* Qav on the switch ports shapes per queue only: no AVB port modes or
+  stream reservation (ATU AVB entries), no Qbv.
 * The Armada 3700 NETA has a single, shared interrupt: no RSS, all RX is
   handled by one thread.
 * The board MAC address lives in the U-Boot environment only, so a

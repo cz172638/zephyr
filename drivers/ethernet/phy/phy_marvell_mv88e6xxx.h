@@ -9,6 +9,7 @@
 #ifndef ZEPHYR_DRIVERS_ETHERNET_PHY_PHY_MARVELL_MV88E6XXX_H_
 #define ZEPHYR_DRIVERS_ETHERNET_PHY_PHY_MARVELL_MV88E6XXX_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/device.h>
 
@@ -29,16 +30,57 @@ uint8_t mv88e6xxx_cpu_port(const struct device *dev);
 /* Product number, e.g. 0x341 */
 uint16_t mv88e6xxx_product(const struct device *dev);
 
-/* AVB block "port" numbers for the global PTP and TAI registers */
-#define MV88E6XXX_AVB_PORT_PTP (-1)
-#define MV88E6XXX_AVB_PORT_TAI (-2)
+/* Internal SMI device addresses, for mv88e6xxx_reg_rmw() */
+#define MV88E6XXX_ADDR_PORT(p) (0x10 + (p))
+#define MV88E6XXX_ADDR_GLOBAL1 0x1b
+#define MV88E6XXX_ADDR_GLOBAL2 0x1c
 
-/* PTP block registers through the Global 2 AVB command/data registers:
- * port is a switch port or MV88E6XXX_AVB_PORT_PTP/TAI, up to 4 words are
- * read starting at addr.
+/* Read-modify-write of a switch register under the driver lock; with
+ * mask 0 only reads. The previous value goes to old if not NULL.
  */
-int mv88e6xxx_avb_read(const struct device *dev, int port, uint8_t addr, uint16_t *buf, int len);
-int mv88e6xxx_avb_write(const struct device *dev, int port, uint8_t addr, uint16_t val);
+int mv88e6xxx_reg_rmw(const struct device *dev, uint8_t addr, uint8_t reg, uint16_t mask,
+		      uint16_t val, uint16_t *old);
+
+/* Register blocks behind the Global 2 AVB command/data registers */
+enum mv88e6xxx_avb_block {
+	MV88E6XXX_AVB_BLOCK_PTP = 0,
+	MV88E6XXX_AVB_BLOCK_AVB = 1,
+	MV88E6XXX_AVB_BLOCK_QAV = 2,
+	MV88E6XXX_AVB_BLOCK_QVB = 3,
+};
+
+/* AVB command "port" numbers: the global registers of a block (PTP, AVB
+ * and Qav global share one number) and the TAI registers
+ */
+#define MV88E6XXX_AVB_PORT_GLOBAL (-1)
+#define MV88E6XXX_AVB_PORT_PTP    MV88E6XXX_AVB_PORT_GLOBAL
+#define MV88E6XXX_AVB_PORT_TAI    (-2)
+
+/* True for the 88E6390 command layout (88E6341/6141, 88E6390 family),
+ * false for the 88E6352 one
+ */
+bool mv88e6xxx_avb_is_6390(const struct device *dev);
+
+/* Registers of an AVB block: port is a switch port or
+ * MV88E6XXX_AVB_PORT_GLOBAL/TAI, up to 4 words are read starting at addr.
+ */
+int mv88e6xxx_avb_block_read(const struct device *dev, enum mv88e6xxx_avb_block block, int port,
+			     uint8_t addr, uint16_t *buf, int len);
+int mv88e6xxx_avb_block_write(const struct device *dev, enum mv88e6xxx_avb_block block, int port,
+			      uint8_t addr, uint16_t val);
+
+/* PTP block shortcuts */
+static inline int mv88e6xxx_avb_read(const struct device *dev, int port, uint8_t addr,
+				     uint16_t *buf, int len)
+{
+	return mv88e6xxx_avb_block_read(dev, MV88E6XXX_AVB_BLOCK_PTP, port, addr, buf, len);
+}
+
+static inline int mv88e6xxx_avb_write(const struct device *dev, int port, uint8_t addr,
+				      uint16_t val)
+{
+	return mv88e6xxx_avb_block_write(dev, MV88E6XXX_AVB_BLOCK_PTP, port, addr, val);
+}
 
 /* Switch the CPU port to tagged frames; the MAC carrier then follows the
  * CPU port link instead of the user ports.

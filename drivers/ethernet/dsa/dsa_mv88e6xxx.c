@@ -26,6 +26,7 @@ LOG_MODULE_REGISTER(dsa_mv88e6xxx, CONFIG_ETHERNET_LOG_LEVEL);
 #include <zephyr/device.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/dsa_core.h>
+#include <zephyr/net/phy.h>
 #include <zephyr/dt-bindings/ethernet/dsa_tag_proto.h>
 
 #include "../phy/phy_marvell_mv88e6xxx.h"
@@ -65,6 +66,63 @@ struct mv_dsa_tx_tstamp {
 };
 #endif
 
+/* Qav block, per port: idle slope rate and hi limit of queue q */
+#define QAV_PORT_RATE(q)    ((q) << 1)
+#define QAV_PORT_HILIMIT(q) (((q) << 1) + 1)
+/* 88E6352 family only: undocumented per port shaper enable (Linux, Luke
+ * Howard's CBS series)
+ */
+#define QAV6352_PORT_CFG        0x08
+#define QAV6352_PORT_CFG_ENABLE BIT(15)
+
+/* Port egress rate control 2: scheduling, 3 = strict priority on all
+ * queues, the reset value 0 is weighted round robin 8:4:2:1
+ */
+#define PORT_EGRESS_RATE_CTL2       0x0a
+#define PORT_EGRESS_RATE_CTL2_SCHED GENMASK(13, 12)
+#define SCHED_ALL_STRICT            (3 << 12)
+
+/* Global 1 IEEE-PRI: 2 bits of queue per frame priority */
+#define G1_IEEE_PRI 0x18
+
+#define QAV_QUEUES 4
+
+/* Largest frame that can delay a shaped one, 802.1Q 34.4: maximum frame
+ * plus preamble and interframe gap, in bytes
+ */
+#define QAV_MAX_INTERFERENCE 1542
+
+/* Zephyr priority -> traffic class for four classes (net_tc_mapping.h);
+ * as the switch queue it keeps queue N = traffic class N
+ */
+#if defined(CONFIG_NET_TC_MAPPING_SR_CLASS_A_AND_B)
+#define QAV_PRIO2QUEUE {0, 0, 2, 3, 1, 1, 1, 1}
+#elif defined(CONFIG_NET_TC_MAPPING_SR_CLASS_B_ONLY)
+#define QAV_PRIO2QUEUE {0, 0, 3, 0, 1, 1, 2, 2}
+#else
+#define QAV_PRIO2QUEUE {0, 0, 1, 1, 2, 2, 3, 3}
+#endif
+
+struct mv_qav_info {
+	uint32_t rate_unit; /* bit/s per rate step */
+	uint16_t rate_mask;
+	uint16_t hilimit_mask;
+	bool port_enable;   /* 88E6352: QAV6352_PORT_CFG_ENABLE */
+};
+
+/* Linux mv88e6341_qav_info / mv88e6352_qav_info */
+static const struct mv_qav_info qav_6341 = {
+	.rate_unit = 64000, .rate_mask = 0xffff, .hilimit_mask = 0x3fff};
+static const struct mv_qav_info qav_6352 = {
+	.rate_unit = 32000, .rate_mask = 0x7fff, .hilimit_mask = 0x7fff, .port_enable = true};
+
+struct mv_qav_port {
+	uint32_t idle_slope[QAV_QUEUES]; /* bit/s */
+	uint8_t enabled;                 /* queue bitmap */
+	bool active;                     /* shaping, strict scheduling */
+	uint16_t sched;                  /* scheduling before shaping */
+};
+
 BUILD_ASSERT(!IS_ENABLED(CONFIG_DSA_TAG_PROTOCOL_MV88E6XXX) || CONFIG_DSA_TAG_SIZE >= 4,
 	     "DSA_TAG_SIZE must be 4 (DSA) or 8 (EDSA)");
 
@@ -73,6 +131,9 @@ struct dsa_mv88e6xxx_data {
 	uint8_t cpu_port;
 	int tag_proto;
 	struct dsa_tag_mv88e6xxx_data tag_data;
+	const struct mv_qav_info *qav;
+	struct k_mutex qav_lock;
+	struct mv_qav_port qav_port[DSA_PORT_MAX_COUNT];
 #if defined(MV_DSA_PTP)
 	const struct dsa_switch_context *ctx;
 	struct k_spinlock tx_lock;
@@ -273,6 +334,269 @@ static int dsa_mv88e6xxx_ptp_setup(const struct dsa_switch_context *ctx)
 }
 #endif /* MV_DSA_PTP */
 
+static const struct mv_qav_info *qav_info(uint16_t product)
+{
+	switch (product) {
+	case 0x341: /* 88E6341 */
+	case 0x141: /* 88E6141 */
+		return &qav_6341;
+	case 0x172: /* 88E6172 */
+	case 0x176: /* 88E6176 */
+	case 0x240: /* 88E6240 */
+	case 0x320: /* 88E6320 */
+	case 0x321: /* 88E6321 */
+	case 0x350: /* 88E6350 */
+	case 0x351: /* 88E6351 */
+	case 0x352: /* 88E6352 */
+		return &qav_6352;
+	default:
+		/* 88E6390 family: eight queues, scheduling elsewhere */
+		return NULL;
+	}
+}
+
+static uint64_t port_link_bps(const struct device *dev)
+{
+	const struct dsa_port_config *cfg = dev->config;
+	struct phy_link_state st = {0};
+
+	if (cfg->phy_dev != NULL && phy_get_link_state(cfg->phy_dev, &st) == 0 && st.is_up) {
+		if (PHY_LINK_IS_SPEED_10M(st.speed)) {
+			return 10000000ULL;
+		}
+		if (PHY_LINK_IS_SPEED_100M(st.speed)) {
+			return 100000000ULL;
+		}
+	}
+
+	return 1000000000ULL;
+}
+
+/* hiCredit for the queue, as 802.1Q L.3 for the highest SR class: one
+ * maximum interfering frame sent at the port rate
+ */
+static uint16_t qav_hilimit(const struct mv_qav_info *qav, uint32_t idle_slope, uint64_t link)
+{
+	uint64_t h = DIV_ROUND_UP((uint64_t)QAV_MAX_INTERFERENCE * idle_slope, link);
+
+	return CLAMP(h, 1, qav->hilimit_mask);
+}
+
+/* Program the shapers of a port from its state; with prv->qav_lock held */
+static int qav_apply(struct dsa_mv88e6xxx_data *prv, const struct device *dev, uint8_t port)
+{
+	const struct mv_qav_info *qav = prv->qav;
+	struct mv_qav_port *qp = &prv->qav_port[port];
+	uint64_t link = port_link_bps(dev);
+	bool active = false;
+	int ret = 0;
+
+	for (int q = 0; ret == 0 && q < QAV_QUEUES; q++) {
+		uint32_t bps = qp->idle_slope[q];
+		uint16_t rate = 0;
+		uint16_t hilimit = qav->hilimit_mask;
+
+		if ((qp->enabled & BIT(q)) != 0 && bps != 0) {
+			rate = CLAMP(DIV_ROUND_UP(bps, qav->rate_unit), 1, qav->rate_mask);
+			hilimit = qav_hilimit(qav, bps, link);
+			active = true;
+		}
+		/* Hi limit first, the shaper starts with the rate */
+		ret = mv88e6xxx_avb_block_write(prv->sw, MV88E6XXX_AVB_BLOCK_QAV, port,
+						QAV_PORT_HILIMIT(q), hilimit);
+		if (ret == 0) {
+			ret = mv88e6xxx_avb_block_write(prv->sw, MV88E6XXX_AVB_BLOCK_QAV, port,
+							QAV_PORT_RATE(q), rate);
+		}
+	}
+
+	if (ret == 0 && qav->port_enable) {
+		uint16_t cfg;
+
+		ret = mv88e6xxx_avb_block_read(prv->sw, MV88E6XXX_AVB_BLOCK_QAV, port,
+					       QAV6352_PORT_CFG, &cfg, 1);
+		if (ret == 0) {
+			cfg = active ? cfg | QAV6352_PORT_CFG_ENABLE
+				     : cfg & ~QAV6352_PORT_CFG_ENABLE;
+			ret = mv88e6xxx_avb_block_write(prv->sw, MV88E6XXX_AVB_BLOCK_QAV, port,
+							QAV6352_PORT_CFG, cfg);
+		}
+	}
+
+	/* Shaped queues need strict priority between the queues */
+	if (ret == 0 && active != qp->active) {
+		uint16_t old;
+
+		ret = mv88e6xxx_reg_rmw(prv->sw, MV88E6XXX_ADDR_PORT(port), PORT_EGRESS_RATE_CTL2,
+					PORT_EGRESS_RATE_CTL2_SCHED,
+					active ? SCHED_ALL_STRICT : qp->sched, &old);
+		if (ret == 0) {
+			if (active) {
+				qp->sched = old & PORT_EGRESS_RATE_CTL2_SCHED;
+			}
+			qp->active = active;
+		}
+	}
+
+	if (ret < 0) {
+		LOG_ERR("port %u: Qav setup failed (%d)", port, ret);
+	}
+
+	return ret;
+}
+
+static int qav_port(const struct device *dev, const struct ethernet_qav_param *p,
+		    struct dsa_mv88e6xxx_data **prv, uint8_t *port)
+{
+	const struct dsa_port_config *cfg = dev->config;
+	struct dsa_switch_context *ctx = dev->data;
+
+	*prv = ctx->prv_data;
+	*port = cfg->port_idx;
+
+	if ((*prv)->qav == NULL || cfg->ethernet_connection != NULL ||
+	    cfg->port_idx >= DSA_PORT_MAX_COUNT) {
+		return -ENOTSUP;
+	}
+	if (p->queue_id < 0 || p->queue_id >= QAV_QUEUES) {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int dsa_mv88e6xxx_set_qav(const struct device *dev, const struct ethernet_qav_param *p)
+{
+	struct dsa_mv88e6xxx_data *prv;
+	struct mv_qav_port *qp;
+	uint8_t port;
+	int ret = qav_port(dev, p, &prv, &port);
+
+	if (ret < 0) {
+		return ret;
+	}
+	qp = &prv->qav_port[port];
+
+	k_mutex_lock(&prv->qav_lock, K_FOREVER);
+
+	switch (p->type) {
+	case ETHERNET_QAV_PARAM_TYPE_STATUS:
+		WRITE_BIT(qp->enabled, p->queue_id, p->enabled);
+		break;
+	case ETHERNET_QAV_PARAM_TYPE_IDLE_SLOPE:
+		if (p->idle_slope > port_link_bps(dev) ||
+		    DIV_ROUND_UP(p->idle_slope, prv->qav->rate_unit) > prv->qav->rate_mask) {
+			ret = -EINVAL;
+			break;
+		}
+		qp->idle_slope[p->queue_id] = p->idle_slope;
+		break;
+	case ETHERNET_QAV_PARAM_TYPE_DELTA_BANDWIDTH:
+		if (p->delta_bandwidth > 100) {
+			ret = -EINVAL;
+			break;
+		}
+		qp->idle_slope[p->queue_id] = port_link_bps(dev) / 100 * p->delta_bandwidth;
+		break;
+	default:
+		ret = -ENOTSUP;
+		break;
+	}
+
+	if (ret == 0) {
+		ret = qav_apply(prv, dev, port);
+	}
+
+	k_mutex_unlock(&prv->qav_lock);
+
+	return ret;
+}
+
+static int dsa_mv88e6xxx_get_qav(const struct device *dev, struct ethernet_qav_param *p)
+{
+	struct dsa_mv88e6xxx_data *prv;
+	const struct mv_qav_port *qp;
+	uint16_t rate;
+	uint8_t port;
+	int ret = qav_port(dev, p, &prv, &port);
+
+	if (ret < 0) {
+		return ret;
+	}
+	qp = &prv->qav_port[port];
+
+	switch (p->type) {
+	case ETHERNET_QAV_PARAM_TYPE_STATUS:
+		p->enabled = (qp->enabled & BIT(p->queue_id)) != 0;
+		return 0;
+	case ETHERNET_QAV_PARAM_TYPE_IDLE_SLOPE:
+		p->idle_slope = qp->idle_slope[p->queue_id];
+		return 0;
+	case ETHERNET_QAV_PARAM_TYPE_OPER_IDLE_SLOPE:
+		/* What the hardware runs with, from its rate register */
+		ret = mv88e6xxx_avb_block_read(prv->sw, MV88E6XXX_AVB_BLOCK_QAV, port,
+					       QAV_PORT_RATE(p->queue_id), &rate, 1);
+		if (ret == 0) {
+			p->oper_idle_slope = (rate & prv->qav->rate_mask) * prv->qav->rate_unit;
+		}
+		return ret;
+	case ETHERNET_QAV_PARAM_TYPE_DELTA_BANDWIDTH:
+		p->delta_bandwidth = DIV_ROUND_UP((uint64_t)qp->idle_slope[p->queue_id] * 100,
+						  port_link_bps(dev));
+		return 0;
+	case ETHERNET_QAV_PARAM_TYPE_TRAFFIC_CLASS:
+		p->traffic_class = p->queue_id;
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
+}
+
+/* The hi limits depend on the link speed */
+static void dsa_mv88e6xxx_phylink_change(const struct device *phydev,
+					 struct phy_link_state *state, const struct device *dev)
+{
+	const struct dsa_port_config *cfg = dev->config;
+	struct dsa_switch_context *ctx = dev->data;
+	struct dsa_mv88e6xxx_data *prv = ctx->prv_data;
+
+	ARG_UNUSED(phydev);
+
+	if (prv->qav == NULL || !state->is_up || cfg->port_idx >= DSA_PORT_MAX_COUNT) {
+		return;
+	}
+
+	k_mutex_lock(&prv->qav_lock, K_FOREVER);
+	if (prv->qav_port[cfg->port_idx].active) {
+		(void)qav_apply(prv, dev, cfg->port_idx);
+	}
+	k_mutex_unlock(&prv->qav_lock);
+}
+
+static int dsa_mv88e6xxx_qav_setup(struct dsa_mv88e6xxx_data *prv)
+{
+	static const uint8_t prio2queue[] = QAV_PRIO2QUEUE;
+	uint16_t map = 0;
+	int ret;
+
+	k_mutex_init(&prv->qav_lock);
+	prv->qav = qav_info(mv88e6xxx_product(prv->sw));
+	if (prv->qav == NULL) {
+		return 0;
+	}
+
+	for (int prio = 0; prio < ARRAY_SIZE(prio2queue); prio++) {
+		map |= prio2queue[prio] << (2 * prio);
+	}
+	ret = mv88e6xxx_reg_rmw(prv->sw, MV88E6XXX_ADDR_GLOBAL1, G1_IEEE_PRI, 0xffff, map, NULL);
+	if (ret < 0) {
+		LOG_ERR("IEEE-PRI setup failed (%d)", ret);
+		prv->qav = NULL;
+	}
+
+	return ret;
+}
+
 static int dsa_mv88e6xxx_connect_tag_protocol(struct dsa_switch_context *ctx, int tag_proto)
 {
 	struct dsa_mv88e6xxx_data *prv = ctx->prv_data;
@@ -312,6 +636,9 @@ static int dsa_mv88e6xxx_switch_setup(const struct dsa_switch_context *ctx)
 	ret = mv88e6xxx_dsa_enable(prv->sw, prv->tag_proto == DSA_TAG_PROTO_EDSA
 						    ? MV88E6XXX_TAG_EDSA
 						    : MV88E6XXX_TAG_DSA);
+	if (ret == 0) {
+		ret = dsa_mv88e6xxx_qav_setup(prv);
+	}
 #if defined(MV_DSA_PTP)
 	if (ret == 0) {
 		ret = dsa_mv88e6xxx_ptp_setup(ctx);
@@ -323,9 +650,17 @@ static int dsa_mv88e6xxx_switch_setup(const struct dsa_switch_context *ctx)
 
 static enum ethernet_hw_caps dsa_mv88e6xxx_get_capabilities(const struct device *dev)
 {
-	ARG_UNUSED(dev);
+	const struct dsa_port_config *cfg = dev->config;
+	struct dsa_switch_context *ctx = dev->data;
+	struct dsa_mv88e6xxx_data *prv = ctx->prv_data;
+	enum ethernet_hw_caps caps =
+		ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE | ETHERNET_LINK_1000BASE;
 
-	return ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE | ETHERNET_LINK_1000BASE;
+	if (prv->qav != NULL && cfg->ethernet_connection == NULL) {
+		caps |= ETHERNET_PRIORITY_QUEUES | ETHERNET_QAV;
+	}
+
+	return caps;
 }
 
 /* The switch does not filter on the user port addresses (standalone
@@ -337,13 +672,34 @@ static int dsa_mv88e6xxx_set_config(const struct device *dev, enum ethernet_conf
 {
 	const struct dsa_port_config *cfg = dev->config;
 
-	ARG_UNUSED(config);
-
-	if (type == ETHERNET_CONFIG_TYPE_MAC_ADDRESS && cfg->ethernet_connection == NULL) {
-		return 0;
+	switch (type) {
+	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
+		return cfg->ethernet_connection == NULL ? 0 : -ENOTSUP;
+	case ETHERNET_CONFIG_TYPE_QAV_PARAM:
+		return dsa_mv88e6xxx_set_qav(dev, &config->qav_param);
+	default:
+		return -ENOTSUP;
 	}
+}
 
-	return -ENOTSUP;
+static int dsa_mv88e6xxx_get_config(const struct device *dev, enum ethernet_config_type type,
+				    struct ethernet_config *config)
+{
+	struct dsa_switch_context *ctx = dev->data;
+	struct dsa_mv88e6xxx_data *prv = ctx->prv_data;
+
+	switch (type) {
+	case ETHERNET_CONFIG_TYPE_PRIORITY_QUEUES_NUM:
+		if (prv->qav == NULL) {
+			return -ENOTSUP;
+		}
+		config->priority_queues_num = QAV_QUEUES;
+		return 0;
+	case ETHERNET_CONFIG_TYPE_QAV_PARAM:
+		return dsa_mv88e6xxx_get_qav(dev, &config->qav_param);
+	default:
+		return -ENOTSUP;
+	}
 }
 
 #define MV_DSA_PHANDLE_DEV(port, prop)                                                             \
@@ -377,6 +733,8 @@ static int dsa_mv88e6xxx_set_config(const struct device *dev, enum ethernet_conf
 		.connect_tag_protocol = dsa_mv88e6xxx_connect_tag_protocol,                        \
 		.get_capabilities = dsa_mv88e6xxx_get_capabilities,                                \
 		.set_config = dsa_mv88e6xxx_set_config,                                            \
+		.get_config = dsa_mv88e6xxx_get_config,                                            \
+		.port_phylink_change = dsa_mv88e6xxx_phylink_change,                               \
 		IF_ENABLED(MV_DSA_PTP, (.port_txtstamp = dsa_mv88e6xxx_port_txtstamp,)) };            \
 	static struct dsa_mv88e6xxx_data dsa_mv88e6xxx_data_##n = {                                \
 		.sw = DEVICE_DT_GET(DT_INST_PHANDLE(n, marvell_switch)),                           \
