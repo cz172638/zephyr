@@ -1,6 +1,6 @@
 # Zephyr na ESPRESSObin (Marvell Armada 3720): TF-A BL33 + síť přes 88E6341
 
-Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (53 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
+Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (54 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
 
 ## TL;DR
 
@@ -268,6 +268,8 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - Limity: mDNS si na každém rozhraní registruje UDP connection handler. Výchozí `CONFIG_NET_MAX_CONN=4` tak s DSA a DHCP klientem dojde a DHCP server pak selže při `bind` s `-ENOENT` (SSH stejně). Netshell má 16, router 24 (+ 32 kontextů a fd).
 - Ověřeno na desce (v5): rozhraní a názvy portů, bridge0, DHCP server, DNS z leasu na `wan` a forwarding z LAN ven (ping na 8.8.8.8, `apt update` ze Zero 3E za deskou).
 
+- Uložená konfigurace (`config save|show|erase`): LAN (adresa, maska, pool, DNS nebo `auto`), TCAM pravidla (klíč na pravidlo) a Qav všech rozhraní v settings `netshell/cfg/`. Načte se při bootu. Změny platí hned, ale trvalé jsou až po uložení, takže pravidlo, které tě odřízne, zmizí rebootem. `router lan/pool/dns/show` mění LAN za běhu. Na desce zatím neověřeno.
+
 ### 3.11 TCAM (88E6341)
 
 - Podle product briefu má Topaz TCAM pro ACL a PCL. Registry nejsou veřejně popsané.
@@ -299,7 +301,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (53 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (54 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
