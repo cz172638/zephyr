@@ -144,8 +144,14 @@ void advk_ep_hw_setup(const struct device *dev)
 	/* Direct mode, no command queue */
 	rmw(ep, ADVK_CTRL_CONFIG, ADVK_CTRL_MODE_CMD, 0);
 
-	/* The host sends the reference clock: receive it, do not drive the pins */
-	rmw(ep, ADVK_REF_CLK, ADVK_REF_CLK_TX | ADVK_REF_CLK_RX, ADVK_REF_CLK_RX);
+	/*
+	 * Reference clock: the known working endpoint setup (ESPRESSObin wiki)
+	 * keeps the RC value, TX on and RX off, with the PHY's clock output
+	 * disabled and the REFCLK lines not connected, each side runs on its
+	 * own clock. refclk_in tries the pins as input instead.
+	 */
+	rmw(ep, ADVK_REF_CLK, ADVK_REF_CLK_TX | ADVK_REF_CLK_RX,
+	    ep->refclk_in ? ADVK_REF_CLK_RX : ADVK_REF_CLK_TX);
 
 	/* Endpoint, lanes, speed; training stays off until start */
 	rmw(ep, ADVK_CTRL0,

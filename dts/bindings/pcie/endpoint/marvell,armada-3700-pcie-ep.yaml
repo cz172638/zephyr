@@ -4,9 +4,9 @@
 description: |
   Marvell Armada 3700 (Aardvark) PCIe controller in endpoint mode.
 
-  The reference clock comes from the host (the controller's REFCLK pins
-  are switched to input). The COMPHY lane is powered through the TF-A
-  SiP service MV_SIP_COMPHY_POWER_ON.
+  The COMPHY lane is powered through the TF-A SiP service
+  MV_SIP_COMPHY_POWER_ON; the PHY's 100/125 MHz clock output it enables
+  is switched off again, the endpoint runs on its own reference clock.
 
 compatible: "marvell,armada-3700-pcie-ep"
 
@@ -20,7 +20,8 @@ properties:
     required: true
     description: |
       "ctrl": controller registers, "mem": the AXI range decoded to PCIe,
-      used for outbound windows (power of two sized and aligned).
+      used for outbound windows (power of two sized and aligned),
+      "comphy": COMPHY lane 1 registers (PHY clock output).
 
   clocks:
     required: true
@@ -45,6 +46,13 @@ properties:
     default: 0
     enum: [0, 1, 2, 3]
     description: COMPHY polarity inversion, bit 0 TX, bit 1 RX.
+
+  marvell,refclk-in:
+    type: boolean
+    description: |
+      Switch the REFCLK pins to input (common clock from the host).
+      Default is the setup known to work: REFCLK not connected, the
+      PHY's clock output off, each side on its own reference.
 
   marvell,comphy-skip:
     type: boolean

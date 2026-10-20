@@ -67,7 +67,7 @@ static int fake_init(const struct device *dev)
 
 	/* reset-ish state left by a root complex user: RC, refclk out, cmd mode */
 	W(ADVK_CTRL0, ADVK_CTRL0_IS_RC | ADVK_CTRL0_LINK_TRAIN | ADVK_CTRL0_INTA);
-	W(ADVK_REF_CLK, 0x1342);
+	W(ADVK_REF_CLK, 0x1344);
 	W(ADVK_CTRL_CONFIG, ADVK_CTRL_MODE_CMD);
 	W(ADVK_OB_MATCH_LS(3), 0x12340001);
 	/* capability list: MSI at 0x50 -> PCIe at 0xc0 */
@@ -139,7 +139,7 @@ ZTEST(epc_aardvark, test_setup)
 	zassert_equal(c0 & GENMASK(31, 28), 0, "INTx deasserted");
 	zassert_equal(FIELD_GET(ADVK_CTRL0_GEN_MASK, c0), 1, "Gen2");
 	zassert_equal(FIELD_GET(ADVK_CTRL0_LANES_MASK, c0), 0, "x1");
-	zassert_equal(init_refclk, 0x1344, "refclk in, not out");
+	zassert_equal(init_refclk, 0x1342, "RC refclk setting (TX on, RX off)");
 	zassert_equal(init_mode & ADVK_CTRL_MODE_CMD, 0, "direct mode");
 	zassert_true(R(ADVK_CTRL2) & ADVK_CTRL2_OB_WIN_EN);
 	zassert_equal(init_ob3, 0, "stale window disabled");

@@ -193,8 +193,9 @@
 		 */
 		pcie_ep: pcie-ep@d0070000 {
 			compatible = "marvell,armada-3700-pcie-ep";
-			reg = <0xd0070000 0x20000>, <0xe8000000 0x1000000>;
-			reg-names = "ctrl", "mem";
+			reg = <0xd0070000 0x20000>, <0xe8000000 0x1000000>,
+			      <0xd001f000 0x400>;
+			reg-names = "ctrl", "mem", "comphy";
 			interrupts = <GIC_SPI 29 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 			/* pcie */
 			clocks = <&sb_periph_clk 13>;

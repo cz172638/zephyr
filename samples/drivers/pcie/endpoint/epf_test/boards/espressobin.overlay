@@ -3,10 +3,11 @@
  * mini-PCIe slot.
  *
  * The slot is wired as a host slot (SoC TX on PERp/n 25/23, SoC RX on
- * PETp/n 33/31), so the link needs a crossover: host TX onto PETp/n,
- * PERp/n to host RX, REFCLK from the host (pins 11/13), PERST# from the
- * host onto pin 22 (PCA9306 to MPP2_3), 3.3 V of the two sides not
- * joined. See the design document.
+ * PETp/n 33/31), so the link needs a crossover cable: host TX onto
+ * PETp/n, PERp/n to host RX, ground. REFCLK and the supplies must NOT
+ * be connected (ESPRESSObin wiki "Enabling ESPRESSObin board as PCIe
+ * Endpoint"): both sides run on their own reference clock. PERST# from
+ * the host onto pin 22 (PCA9306 to MPP2_3) is optional.
  */
 
 #include <mem.h>

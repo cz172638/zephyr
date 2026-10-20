@@ -114,6 +114,15 @@
 	(((ADVK_COMPHY_MODE_PCIE) << 12) | ((ADVK_COMPHY_SPEED_5G) << 2) | ((width) << 18) |       \
 	 ((invert) & 0x3))
 
+/*
+ * COMPHY lane 1 (PCIe/GbE0) registers, 16 bit at reg * 2. MISC_CTRL0
+ * bit 4 enables the PHY's 100/125 MHz clock output, which drives the
+ * REFCLK pins; TF-A turns it on, an endpoint must not drive the clock
+ * (ESPRESSObin wiki "Enabling ESPRESSObin board as PCIe Endpoint").
+ */
+#define ADVK_COMPHY_MISC_CTRL0       (0x4f * 2)
+#define ADVK_COMPHY_CLK100M_125M_EN  BIT(4)
+
 /* Minimal size of an outbound window */
 #define ADVK_OB_MIN_SIZE 0x10000
 
@@ -127,6 +136,8 @@ struct advk_ep {
 	size_t ob_size;
 	uint8_t num_lanes;
 	uint8_t max_speed;
+	/* REFCLK pins as input instead of the RC default (TX on, RX off) */
+	bool refclk_in;
 
 	/* private */
 	struct k_spinlock lock;

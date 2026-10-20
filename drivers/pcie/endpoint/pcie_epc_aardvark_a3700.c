@@ -33,6 +33,7 @@ struct a3700_ep_config {
 	size_t reg_size;
 	uintptr_t mem_phys;
 	size_t mem_size;
+	uintptr_t comphy_phys;
 	const struct pinctrl_dev_config *pcfg;
 	const struct device *clk_dev;
 	clock_control_subsys_t clk_id;
@@ -40,6 +41,7 @@ struct a3700_ep_config {
 	uint8_t comphy_lane;
 	uint8_t comphy_invert;
 	bool comphy_skip;
+	bool refclk_in;
 	uint8_t num_lanes;
 	uint8_t max_speed;
 	bool autostart;
@@ -51,7 +53,17 @@ struct a3700_ep_data {
 	struct k_work_delayable poll_work;
 	bool perst_asserted;
 	long comphy_ret;
+	mm_reg_t comphy;
 };
+
+/* TF-A enables the PHY clock output to the REFCLK pins; an EP must not drive it */
+static void comphy_clkout_off(const struct device *dev)
+{
+	struct a3700_ep_data *data = dev->data;
+	mem_addr_t r = data->comphy + ADVK_COMPHY_MISC_CTRL0;
+
+	sys_write16(sys_read16(r) & ~ADVK_COMPHY_CLK100M_125M_EN, r);
+}
 
 static long comphy_power_on(const struct device *dev)
 {
@@ -150,6 +162,11 @@ static int a3700_ep_init(const struct device *dev)
 		}
 	}
 
+	device_map(&data->comphy, cfg->comphy_phys, 0x400, K_MEM_CACHE_NONE);
+	if (!cfg->comphy_skip) {
+		comphy_clkout_off(dev);
+	}
+
 	device_map(&ep->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
 	device_map(&ob, cfg->mem_phys, cfg->mem_size, K_MEM_CACHE_NONE);
 	ep->ob_virt = ob;
@@ -157,6 +174,7 @@ static int a3700_ep_init(const struct device *dev)
 	ep->ob_size = cfg->mem_size;
 	ep->num_lanes = cfg->num_lanes;
 	ep->max_speed = cfg->max_speed;
+	ep->refclk_in = cfg->refclk_in;
 
 	if (cfg->perst.port != NULL) {
 		if (!gpio_is_ready_dt(&cfg->perst)) {
@@ -212,12 +230,14 @@ static DEVICE_API(pcie_epc, a3700_ep_api) = {
 		.reg_size = DT_INST_REG_SIZE_BY_NAME(n, ctrl),                                     \
 		.mem_phys = DT_INST_REG_ADDR_BY_NAME(n, mem),                                      \
 		.mem_size = DT_INST_REG_SIZE_BY_NAME(n, mem),                                      \
+		.comphy_phys = DT_INST_REG_ADDR_BY_NAME(n, comphy),                                \
 		.clk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                                  \
 		.clk_id = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, index),                   \
 		.perst = GPIO_DT_SPEC_INST_GET_OR(n, perst_gpios, {0}),                            \
 		.comphy_lane = DT_INST_PROP(n, marvell_comphy_lane),                               \
 		.comphy_invert = DT_INST_PROP(n, marvell_comphy_polarity_invert),                  \
 		.comphy_skip = DT_INST_PROP(n, marvell_comphy_skip),                               \
+		.refclk_in = DT_INST_PROP(n, marvell_refclk_in),                                   \
 		.num_lanes = DT_INST_PROP_OR(n, num_lanes, 1),                                     \
 		.max_speed = DT_INST_PROP_OR(n, max_link_speed, 2),                                \
 		.autostart = !DT_INST_PROP(n, zephyr_no_autostart),                                \
@@ -480,10 +500,43 @@ static int cmd_comphy(const struct shell *sh, size_t argc, char **argv)
 	const struct device *dev = EP_DEV;
 	struct a3700_ep_data *data = dev->data;
 
-	data->comphy_ret = comphy_power_on(dev);
-	shell_print(sh, "COMPHY power on: %ld", data->comphy_ret);
-	/* TF-A leaves the reference clock register to the PCIe driver */
-	shell_print(sh, "refclk %08x", advk_rd(advk_ep(dev), ADVK_REF_CLK));
+	if (argc < 2 || strcmp(argv[1], "on") == 0) {
+		data->comphy_ret = comphy_power_on(dev);
+		comphy_clkout_off(dev);
+		shell_print(sh, "COMPHY power on: %ld", data->comphy_ret);
+	} else if (strcmp(argv[1], "clkout") == 0) {
+		sys_write16(sys_read16(data->comphy + ADVK_COMPHY_MISC_CTRL0) |
+				    ADVK_COMPHY_CLK100M_125M_EN,
+			    data->comphy + ADVK_COMPHY_MISC_CTRL0);
+	} else if (strcmp(argv[1], "noclkout") == 0) {
+		comphy_clkout_off(dev);
+	} else if (strcmp(argv[1], "show") != 0) {
+		shell_error(sh, "on | clkout | noclkout | show");
+		return -EINVAL;
+	}
+	shell_print(sh, "misc_ctrl0 %04x (100/125M out %s), refclk reg %08x",
+		    sys_read16(data->comphy + ADVK_COMPHY_MISC_CTRL0),
+		    (sys_read16(data->comphy + ADVK_COMPHY_MISC_CTRL0) &
+		     ADVK_COMPHY_CLK100M_125M_EN) ? "on" : "off",
+		    advk_rd(advk_ep(dev), ADVK_REF_CLK));
+	return 0;
+}
+
+static int cmd_refclk(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	uint32_t v = advk_rd(ep, ADVK_REF_CLK) & ~(ADVK_REF_CLK_TX | ADVK_REF_CLK_RX);
+
+	if (strcmp(argv[1], "in") == 0) {
+		v |= ADVK_REF_CLK_RX;
+	} else if (strcmp(argv[1], "out") == 0) {
+		v |= ADVK_REF_CLK_TX;
+	} else if (strcmp(argv[1], "off") != 0) {
+		shell_error(sh, "in | out | off");
+		return -EINVAL;
+	}
+	advk_wr(ep, ADVK_REF_CLK, v);
+	shell_print(sh, "refclk %08x", advk_rd(ep, ADVK_REF_CLK));
 	return 0;
 }
 
@@ -552,7 +605,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD(start, NULL, "Enable link training", cmd_start),
 	SHELL_CMD(stop, NULL, "Disable link training", cmd_stop),
 	SHELL_CMD(setup, NULL, "Reprogram the controller (EP mode, refclk in)", cmd_setup),
-	SHELL_CMD(comphy, NULL, "Power the COMPHY lane on again", cmd_comphy),
+	SHELL_CMD_ARG(comphy, NULL, "[on|clkout|noclkout|show] COMPHY lane / clock output",
+		      cmd_comphy, 1, 1),
+	SHELL_CMD_ARG(refclk, NULL, "<in|out|off> REF_CLK pad direction (0x4814)", cmd_refclk,
+		      2, 0),
 	SHELL_CMD(intx, NULL, "Pulse INTx", cmd_intx),
 	SHELL_CMD_ARG(msi, NULL, "[n] Send MSI n (1-based)", cmd_msi, 1, 1),
 	SHELL_CMD_ARG(host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
