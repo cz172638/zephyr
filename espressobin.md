@@ -277,7 +277,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - Implementace: `phy_marvell_mv88e6xxx_tcam.c`. Tabulka pravidel se řadí podle priority (nejnižší index vyhrává) a přepisuje se celá. Na portech s pravidly se zapne 48B režim. Akce: permit (výjimka), drop, trap na CPU, redirect a mirror. Kódování registrů má test v `tests/drivers/ethernet/mv88e6xxx_tcam`.
 - Shell: `mv88e6xxx tcam add <id> <prio> <porty> <akce> [match…]`, `del`, `list`, `flush`, `dump <entry>`.
 - Zatím neznámé: akce pro QoS (QPri/FPri override) a policing na page 2. TCAM čítače jsou v MIB bank 1 (0x08–0x0b).
-- Ověřeno na desce: drop ICMP na lan0+lan1 v 48B režimu (port 0x0d = 1) zastaví ping ze Zero 3E za deskou.
+- Ověřeno na desce: drop ICMP na lan0+lan1 v 48B režimu (port 0x0d = 1) zastaví ping ze Zero 3E za deskou. Výjimka `permit proto icmp dst 192.168.10.1` s nižší prioritou funguje (ping na desku projde, na 8.8.8.8 ne), takže pořadí podle priority i match na IPv4 dst (offset 34) sedí.
 
 ## 4. Nejistoty a otevřené body
 
