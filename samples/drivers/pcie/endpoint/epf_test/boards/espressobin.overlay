@@ -41,7 +41,10 @@
 		device-id = <0x0100>;
 		class-code = <0xff0000>;
 		memory-region = <&pcie_bar_mem>;
-		/* BAR4/5 of the default set do not fit the 2 MiB carveout */
-		bar-sizes = <512 512 1024 16384 131072 0>;
+		/*
+		 * Hardware BARs: 0 (64-bit), 2 (I/O, reserved), 4 (64-bit);
+		 * BAR3 reads as unused, the driver keeps it offered.
+		 */
+		bar-sizes = <512 0 0 16384 131072 0>;
 	};
 };

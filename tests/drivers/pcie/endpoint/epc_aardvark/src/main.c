@@ -75,6 +75,10 @@ static int fake_init(const struct device *dev)
 	W(ADVK_CFG_CAP_PTR, MSI_CAP);
 	W(MSI_CAP, 0x0000c005 | ADVK_MSI_CTRL_64BIT);
 	W(ADVK_CFG_PCIE_CAP, 0x00000010);
+	/* BAR layout of the A3720 after reset */
+	W(ADVK_CFG_BAR(0), 0x4);
+	W(ADVK_CFG_BAR(2), 0x1);
+	W(ADVK_CFG_BAR(4), 0x4);
 
 	ep->reg = (mm_reg_t)regs;
 	ep->ob_virt = (uintptr_t)ob;
@@ -150,6 +154,8 @@ ZTEST(epc_aardvark, test_setup)
 	zassert_true(f->msi_capable);
 	zassert_false(f->msix_capable);
 	zassert_equal(f->align, ADVK_OB_MIN_SIZE);
+	zassert_equal(f->bar_fixed_64bit, BIT(0) | BIT(4));
+	zassert_equal(f->reserved_bar, BIT(1) | BIT(2) | BIT(5));
 
 	zassert_ok(pcie_epc_start(epc));
 	zassert_true(R(ADVK_CTRL0) & ADVK_CTRL0_LINK_TRAIN);

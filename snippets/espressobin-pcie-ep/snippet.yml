@@ -1,0 +1,10 @@
+name: espressobin-pcie-ep
+description: |
+  ESPRESSObin: the Armada 3720 PCIe controller as endpoint on the
+  mini-PCIe slot, with the pci_endpoint_test function and the advk_ep
+  shell. Needs a crossover cable without REFCLK and power.
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: espressobin-pcie-ep.overlay
+      EXTRA_CONF_FILE: espressobin-pcie-ep.conf

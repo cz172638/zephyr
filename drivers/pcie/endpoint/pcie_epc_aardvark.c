@@ -207,9 +207,29 @@ int advk_ep_init(const struct device *dev, bool autostart)
 		.max_functions = 1,
 	};
 
-	LOG_INF("%s: id %08x class %08x ctrl0 %08x ltssm %s, MSI cap 0x%02x", dev->name,
-		advk_rd(ep, ADVK_CFG_ID), advk_rd(ep, ADVK_CFG_REV_CLASS),
-		advk_rd(ep, ADVK_CTRL0), advk_ltssm_name(advk_ltssm(ep)), ep->msi_cap);
+	/*
+	 * The BAR layout is fixed by the hardware (seen on the A3720: BAR0
+	 * 64-bit memory, BAR2 I/O, BAR4 64-bit memory). Offer the memory
+	 * BARs only: I/O BARs and the upper halves of 64-bit BARs are
+	 * reserved.
+	 */
+	for (int b = 0; b < PCIE_EPC_NUM_BARS; b++) {
+		uint32_t v = advk_rd(ep, ADVK_CFG_BAR(b));
+
+		if ((v & BIT(0)) != 0) {
+			ep->features.reserved_bar |= BIT(b);
+		} else if (FIELD_GET(GENMASK(2, 1), v) == 2 && b + 1 < PCIE_EPC_NUM_BARS) {
+			ep->features.bar_fixed_64bit |= BIT(b);
+			ep->features.reserved_bar |= BIT(b + 1);
+			b++;
+		}
+	}
+
+	LOG_INF("%s: id %08x class %08x ctrl0 %08x ltssm %s, MSI cap 0x%02x, BARs 64-bit "
+		"%02x reserved %02x",
+		dev->name, advk_rd(ep, ADVK_CFG_ID), advk_rd(ep, ADVK_CFG_REV_CLASS),
+		advk_rd(ep, ADVK_CTRL0), advk_ltssm_name(advk_ltssm(ep)), ep->msi_cap,
+		ep->features.bar_fixed_64bit, ep->features.reserved_bar);
 	return 0;
 }
 
