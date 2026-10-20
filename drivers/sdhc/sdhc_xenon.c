@@ -103,7 +103,9 @@ LOG_MODULE_REGISTER(sdhc_xenon, CONFIG_SDHC_LOG_LEVEL);
 #define XENON_SAMPL_INV_QSP_PHASE  BIT(18)
 #define XENON_PHY_SLOW_MODE        BIT(29)
 #define XENON_PHY_INITIALIZATION   BIT(31)
+#define XENON_PHY_SDIO_MODE        BIT(28)
 #define XENON_PHY_FUNC_CONTROL     0x174
+#define XENON_DQ_ASYNC_MODE        BIT(4)
 #define XENON_DQ_DDR_MODE          GENMASK(15, 8)
 #define XENON_CMD_DDR_MODE         BIT(16)
 #define XENON_PHY_PAD_CONTROL      0x178
@@ -112,11 +114,21 @@ LOG_MODULE_REGISTER(sdhc_xenon, CONFIG_SDHC_LOG_LEVEL);
 #define XENON_FC_QSP_RECEN         BIT(26)
 #define XENON_OEN_QSN              BIT(28)
 #define XENON_AUTO_RECEN_CTRL      BIT(30)
+#define XENON_FC_ALL_CMOS_RECEIVER GENMASK(15, 12)
 #define XENON_PHY_PAD_CONTROL1     0x17c
 #define XENON_FC_CMD_PD            BIT(8)
 #define XENON_FC_DQ_PD             GENMASK(7, 0)
 #define XENON_FC_CMD_PU            BIT(24)
 #define XENON_FC_DQ_PU             GENMASK(23, 16)
+#define XENON_FC_QSP_PD            BIT(9)
+#define XENON_FC_QSP_PU            BIT(25)
+#define XENON_PHY_PAD_CONTROL2     0x180
+#define XENON_ZNR_MASK             0x1f
+#define XENON_ZPR_MASK             0x1f
+#define XENON_ZNR_DEF              0xf
+#define XENON_ZPR_DEF              0xf
+#define XENON_DATA_STROBE          BIT(24)
+#define XENON_RESP_STROBE          BIT(25)
 
 #define XENON_SLOT 0
 
@@ -141,6 +153,7 @@ struct xenon_config {
 	uint8_t bus_width;
 	bool non_removable;
 	bool pad_fixed_1v8;
+	bool no_1v8;
 };
 
 struct xenon_data {
@@ -224,19 +237,8 @@ static int xenon_sw_reset(const struct device *dev, uint8_t mask)
 }
 
 /* Xenon eMMC PHY (U-Boot xenon_mmc_phy_init/_set) */
-static int xenon_phy_init(const struct device *dev, enum sdhc_timing_mode timing)
+static int xenon_phy_init(const struct device *dev)
 {
-	uint32_t v = rd32(dev, XENON_PHY_TIMING_ADJUST) | XENON_SAMPL_INV_QSP_PHASE;
-
-	if (timing == SDHC_TIMING_LEGACY || timing == SDHC_TIMING_HS ||
-	    timing == SDHC_TIMING_SDR12 || timing == SDHC_TIMING_SDR25 ||
-	    timing == SDHC_TIMING_SDR50) {
-		v |= XENON_PHY_SLOW_MODE;
-	} else {
-		v &= ~XENON_PHY_SLOW_MODE;
-	}
-	wr32(dev, XENON_PHY_TIMING_ADJUST, v);
-
 	if (poll32(dev, SDHCI_CLOCK_CONTROL, SDHCI_CLOCK_INT_STABLE, SDHCI_CLOCK_INT_STABLE,
 		   K_MSEC(10)) < 0) {
 		LOG_ERR("internal clock not stable");
@@ -252,30 +254,48 @@ static int xenon_phy_init(const struct device *dev, enum sdhc_timing_mode timing
 	return 0;
 }
 
+/* eMMC 5.1 PHY setup for SD cards, as Linux xenon_emmc_phy_set() */
 static int xenon_phy_set(const struct device *dev, enum sdhc_timing_mode timing)
 {
 	bool ddr = timing == SDHC_TIMING_DDR50 || timing == SDHC_TIMING_DDR52;
 	uint16_t clk;
 
-	set32(dev, XENON_PHY_PAD_CONTROL, 0,
-	      XENON_AUTO_RECEN_CTRL | XENON_OEN_QSN | XENON_FC_QSP_RECEN | XENON_FC_CMD_RECEN |
-		      XENON_FC_DQ_RECEN);
+	/* Receivers on, all of them CMOS type */
+	set32(dev, XENON_PHY_PAD_CONTROL, XENON_AUTO_RECEN_CTRL,
+	      XENON_OEN_QSN | XENON_FC_QSP_RECEN | XENON_FC_CMD_RECEN | XENON_FC_DQ_RECEN |
+		      XENON_FC_ALL_CMOS_RECEIVER);
 	set32(dev, XENON_PHY_PAD_CONTROL1, XENON_FC_CMD_PD | XENON_FC_DQ_PD,
 	      XENON_FC_CMD_PU | XENON_FC_DQ_PU);
 
-	if (timing != SDHC_TIMING_LEGACY && timing != SDHC_TIMING_HS &&
-	    timing != SDHC_TIMING_SDR12) {
-		set32(dev, XENON_PHY_TIMING_ADJUST, 0, XENON_OUTPUT_QSN_PHASE);
+	if (timing == SDHC_TIMING_LEGACY) {
+		/* no slow mode (not requested in DT for any A3700 board) */
+		set32(dev, XENON_PHY_TIMING_ADJUST, XENON_PHY_SLOW_MODE, 0);
+		return xenon_phy_init(dev);
 	}
+
+	/* SD memory card: no SDIO mode, no slow mode */
+	set32(dev, XENON_PHY_TIMING_ADJUST, XENON_PHY_SDIO_MODE | XENON_PHY_SLOW_MODE, 0);
+
+	set32(dev, XENON_PHY_PAD_CONTROL2, (XENON_ZNR_MASK << 8) | XENON_ZPR_MASK,
+	      (XENON_ZNR_DEF << 8) | XENON_ZPR_DEF);
 
 	/* The card clock is off while the function control changes */
 	clk = rd16(dev, SDHCI_CLOCK_CONTROL);
 	wr16(dev, SDHCI_CLOCK_CONTROL, clk & ~SDHCI_CLOCK_CARD_EN);
-	set32(dev, XENON_PHY_FUNC_CONTROL, XENON_DQ_DDR_MODE | XENON_CMD_DDR_MODE,
-	      ddr ? XENON_DQ_DDR_MODE | XENON_CMD_DDR_MODE : 0);
-	wr16(dev, SDHCI_CLOCK_CONTROL, clk);
+	if (ddr) {
+		set32(dev, XENON_PHY_FUNC_CONTROL, 0,
+		      XENON_DQ_DDR_MODE | XENON_CMD_DDR_MODE | XENON_DQ_ASYNC_MODE);
+	} else {
+		set32(dev, XENON_PHY_FUNC_CONTROL, XENON_DQ_DDR_MODE | XENON_CMD_DDR_MODE,
+		      XENON_DQ_ASYNC_MODE);
+	}
+	wr16(dev, SDHCI_CLOCK_CONTROL, clk | SDHCI_CLOCK_CARD_EN);
 
-	return xenon_phy_init(dev, timing);
+	/* No data / response strobe, strobe line without pull */
+	set32(dev, XENON_SLOT_EMMC_CTRL, XENON_DATA_STROBE | XENON_RESP_STROBE, 0);
+	set32(dev, XENON_PHY_PAD_CONTROL1, XENON_FC_QSP_PD | XENON_FC_QSP_PU, 0);
+
+	return xenon_phy_init(dev);
 }
 
 static int xenon_set_clock(const struct device *dev, uint32_t hz)
@@ -461,7 +481,10 @@ static int xenon_wait_int(const struct device *dev, uint32_t bits, int timeout_m
 		st = rd32(dev, SDHCI_INT_STATUS);
 		if (st & SDHCI_INT_ERROR) {
 			wr32(dev, SDHCI_INT_STATUS, st);
-			LOG_DBG("error status 0x%08x", st);
+			LOG_DBG("error status 0x%08x, present 0x%08x, host ctl 0x%08x, clk/tmo 0x%08x, "
+				"blk 0x%08x, ctl2 0x%08x",
+				st, rd32(dev, SDHCI_PRESENT_STATE), rd32(dev, 0x28), rd32(dev, 0x2c),
+				rd32(dev, SDHCI_BLOCK_SIZE), rd32(dev, 0x3c));
 			/* command timeout error alone: no response */
 			return (st & BIT(16)) ? -ETIMEDOUT : -EIO;
 		}
@@ -548,6 +571,7 @@ static int xenon_send(const struct device *dev, struct sdhc_command *cmd, struct
 	if (dat != NULL) {
 		command |= SDHCI_CMD_DATA;
 		dat->bytes_xfered = 0;
+		wr8(dev, SDHCI_TIMEOUT_CONTROL, 0x0e);
 		/* 512 KiB SDMA boundary, unused in PIO */
 		wr16(dev, SDHCI_BLOCK_SIZE, (7 << 12) | (dat->block_size & 0xfff));
 		wr16(dev, SDHCI_BLOCK_COUNT, dat->blocks);
@@ -646,7 +670,7 @@ static void xenon_init_props(const struct device *dev)
 	uint64_t caps = rd32(dev, SDHCI_CAPABILITIES) |
 			((uint64_t)rd32(dev, SDHCI_CAPABILITIES_1) << 32);
 	struct sdhc_host_props *p = &data->props;
-	bool v18 = cfg->vqmmc != NULL || cfg->pad_fixed_1v8;
+	bool v18 = (cfg->vqmmc != NULL && !cfg->no_1v8) || cfg->pad_fixed_1v8;
 
 	memset(p, 0, sizeof(*p));
 	memcpy(&p->host_caps, &caps, sizeof(p->host_caps));
@@ -746,6 +770,10 @@ static int xenon_init(const struct device *dev)
 	data->ios.power_mode = SDHC_POWER_OFF;
 	data->ios.signal_voltage = SD_VOL_3_3_V;
 
+	LOG_DBG("%s: caps %08x %08x, PHY timing %08x pad %08x/%08x func %08x", dev->name,
+		rd32(dev, SDHCI_CAPABILITIES), rd32(dev, SDHCI_CAPABILITIES_1),
+		rd32(dev, XENON_PHY_TIMING_ADJUST), rd32(dev, XENON_PHY_PAD_CONTROL),
+		rd32(dev, XENON_PHY_PAD_CONTROL1), rd32(dev, XENON_PHY_FUNC_CONTROL));
 	LOG_INF("%s: SDHCI v%u, base clock %u Hz, card %s", dev->name,
 		(rd16(dev, SDHCI_HOST_VERSION) & 0xff) + 1, data->base_clk,
 		xenon_get_card_present(dev) ? "present" : "absent");
@@ -787,6 +815,7 @@ static DEVICE_API(sdhc, xenon_api) = {
 		.bus_width = DT_INST_PROP_OR(n, bus_width, 4),                                     \
 		.non_removable = DT_INST_PROP(n, non_removable),                                   \
 		.pad_fixed_1v8 = DT_INST_ENUM_IDX_OR(n, marvell_pad_type, 0) == 1,                 \
+		.no_1v8 = DT_INST_PROP(n, no_1_8_v),                                               \
 	};                                                                                         \
 	static struct xenon_data xenon_data_##n;                                                   \
 	DEVICE_DT_INST_DEFINE(n, xenon_init, NULL, &xenon_data_##n, &xenon_config_##n,             \

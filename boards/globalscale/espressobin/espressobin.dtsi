@@ -171,6 +171,8 @@
 	vqmmc-supply = <&vcc_sd_reg1>;
 	max-bus-freq = <50000000>;
 	power-delay-ms = <10>;
+	/* UHS voltage switch not working yet: the card refuses it */
+	no-1-8-v;
 	pinctrl-0 = <&sdio_default>;
 	pinctrl-names = "default";
 

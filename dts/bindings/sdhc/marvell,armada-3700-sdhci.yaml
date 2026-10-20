@@ -53,3 +53,9 @@ properties:
     description: |
       "sd": pads at 3.3 V, 1.8 V after a voltage switch; "fixed-1-8v":
       eMMC on 1.8 V pads.
+
+  no-1-8-v:
+    type: boolean
+    description: |
+      Do not offer 1.8 V signalling (no UHS voltage switch) even with a
+      vqmmc-supply.
