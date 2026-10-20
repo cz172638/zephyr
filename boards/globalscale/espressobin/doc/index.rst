@@ -272,6 +272,27 @@ broadcast, multicast or unknown unicast. Reserved multicast
 (01:80:c2:00:00:0x and 2x, e.g. 802.1AS, LLDP) is trapped to the CPU, never
 flooded. The netshell ``router.conf`` uses this for a small router.
 
+TCAM
+====
+
+The 88E6341 TCAM (ingress ACL) has the register layout Linux uses for the
+88E6390. With ``CONFIG_PHY_MARVELL_MV88E6XXX_TCAM`` (on in netshell), rules
+match the first 48 bytes of frames entering given ports and drop them,
+trap them to the CPU, redirect them or mirror them to other ports; a
+``permit`` rule with a lower priority value makes an exception. The key
+always has a 4 byte tag slot, so the EtherType is at 16 and the IPv4
+header at 18.
+
+.. code-block:: console
+
+   uart:~$ mv88e6xxx tcam add 1 10 lan0 drop proto icmp
+   uart:~$ mv88e6xxx tcam add 2 5 lan0 permit proto icmp dst 192.168.10.1
+   uart:~$ mv88e6xxx tcam add 3 20 wan trap proto tcp dport 22
+   uart:~$ mv88e6xxx tcam list
+   uart:~$ mv88e6xxx tcam del 1
+
+Rules live in RAM; QoS and policing actions of the TCAM are not known yet.
+
 Qav on the switch ports
 =======================
 
@@ -306,8 +327,8 @@ Limitations
 
 * One hardware bridge per switch, without VLAN filtering; frames the CPU
   sends into the bridge go out every bridged port (no forward-tagged TX).
-* The 88E6341 TCAM (ACL, QoS, policing) is not used yet; ``mv88e6xxx tcam``
-  reads entries assuming the undocumented 88E6390 layout.
+* TCAM: only destination port actions (drop, trap, redirect, mirror);
+  rules are not kept across reboots.
 * The switch PTP clock is a software time counter: no PPS output or
   event capture (TAI GPIOs) yet.
 * Qav on the switch ports shapes per queue only: no AVB port modes or
