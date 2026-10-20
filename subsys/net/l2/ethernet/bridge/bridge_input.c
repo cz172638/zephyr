@@ -8,6 +8,9 @@
 LOG_MODULE_REGISTER(net_eth_bridge_input, CONFIG_NET_ETHERNET_BRIDGE_LOG_LEVEL);
 
 #include <zephyr/net/ethernet_bridge.h>
+#if defined(CONFIG_NET_DSA)
+#include <zephyr/net/dsa_core.h>
+#endif
 #include <zephyr/net/net_log.h>
 
 #if defined(CONFIG_NET_ETHERNET_BRIDGE_FDB)
@@ -40,10 +43,15 @@ static void eth_bridge_fdb_forward_handler(struct eth_bridge_fdb_entry *entry, v
 
 	data->match = true;
 
-	/* Forward per FDB entry */
+	/* Forward per FDB entry, unless the switch did */
 	if (!net_if_flag_is_set(entry->iface, NET_IF_UP)) {
 		return;
 	}
+#if defined(CONFIG_NET_DSA)
+	if (dsa_port_fwd_offloaded(orig_iface, entry->iface)) {
+		return;
+	}
+#endif
 
 	out_pkt = net_pkt_clone(pkt, K_NO_WAIT);
 	if (out_pkt == NULL) {

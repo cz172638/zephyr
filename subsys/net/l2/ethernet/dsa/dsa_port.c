@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <string.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(net_dsa_port, CONFIG_NET_DSA_LOG_LEVEL);
 
@@ -93,8 +94,13 @@ static void dsa_port_iface_init(struct net_if *iface)
 	uint8_t mac_addr[6] = {0};
 	int ret;
 
-	/* Set interface name */
-	snprintk(name, sizeof(name), "swp%u", dsa_iface_idx);
+	/* Set interface name: the port label if given, as Linux does */
+	if (cfg->label != NULL) {
+		strncpy(name, cfg->label, sizeof(name) - 1);
+		name[sizeof(name) - 1] = '\0';
+	} else {
+		snprintk(name, sizeof(name), "swp%u", dsa_iface_idx);
+	}
 	dsa_iface_idx++;
 	net_if_set_name(iface, name);
 
@@ -201,3 +207,87 @@ const struct ethernet_api dsa_eth_api = {
 	.set_config = dsa_set_config,
 	.get_config = dsa_get_config,
 };
+
+/* The port device of a DSA user port interface, or NULL */
+static const struct device *dsa_user_port_dev(struct net_if *iface)
+{
+	struct ethernet_context *eth_ctx;
+
+	if (iface == NULL || net_if_l2(iface) != &NET_L2_GET_NAME(ETHERNET)) {
+		return NULL;
+	}
+	eth_ctx = net_if_l2_data(iface);
+	if (eth_ctx->dsa_port != DSA_USER_PORT || eth_ctx->dsa_switch_ctx == NULL) {
+		return NULL;
+	}
+
+	return net_if_get_device(iface);
+}
+
+int dsa_port_bridge_join(struct net_if *iface, struct net_if *br)
+{
+	const struct device *dev = dsa_user_port_dev(iface);
+	const struct dsa_port_config *cfg;
+	struct dsa_switch_context *ctx;
+	int ret;
+
+	if (dev == NULL) {
+		return -EINVAL;
+	}
+	cfg = dev->config;
+	ctx = dev->data;
+	if (ctx->dapi->port_bridge_join == NULL || cfg->port_idx >= DSA_PORT_MAX_COUNT) {
+		return -ENOTSUP;
+	}
+
+	ret = ctx->dapi->port_bridge_join(dev, br);
+	if (ret == 0) {
+		ctx->bridge_offload[cfg->port_idx] = br;
+		LOG_INF("%s: bridge forwarding offloaded to the switch",
+			net_if_get_device(iface)->name);
+	}
+
+	return ret;
+}
+
+void dsa_port_bridge_leave(struct net_if *iface, struct net_if *br)
+{
+	const struct device *dev = dsa_user_port_dev(iface);
+	const struct dsa_port_config *cfg;
+	struct dsa_switch_context *ctx;
+
+	if (dev == NULL) {
+		return;
+	}
+	cfg = dev->config;
+	ctx = dev->data;
+	if (cfg->port_idx >= DSA_PORT_MAX_COUNT || ctx->bridge_offload[cfg->port_idx] != br) {
+		return;
+	}
+
+	ctx->bridge_offload[cfg->port_idx] = NULL;
+	if (ctx->dapi->port_bridge_leave != NULL) {
+		ctx->dapi->port_bridge_leave(dev, br);
+	}
+}
+
+bool dsa_port_fwd_offloaded(struct net_if *from, struct net_if *to)
+{
+	const struct device *a = dsa_user_port_dev(from);
+	const struct device *b = dsa_user_port_dev(to);
+	const struct dsa_port_config *ca, *cb;
+	struct dsa_switch_context *ctx;
+
+	if (a == NULL || b == NULL || a->data != b->data) {
+		return false;
+	}
+	ctx = a->data;
+	ca = a->config;
+	cb = b->config;
+	if (ca->port_idx >= DSA_PORT_MAX_COUNT || cb->port_idx >= DSA_PORT_MAX_COUNT) {
+		return false;
+	}
+
+	return ctx->bridge_offload[ca->port_idx] != NULL &&
+	       ctx->bridge_offload[ca->port_idx] == ctx->bridge_offload[cb->port_idx];
+}

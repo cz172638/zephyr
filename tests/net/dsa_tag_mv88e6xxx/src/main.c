@@ -353,4 +353,59 @@ ZTEST(dsa_tag_mv88e6xxx, test_rx_ptp_hook)
 	ctx.tagger_data = NULL;
 }
 
+static int joins;
+static struct net_if *joined_br;
+
+static int fake_bridge_join(const struct device *dev, struct net_if *br)
+{
+	joins++;
+	joined_br = br;
+	return 0;
+}
+
+static void fake_bridge_leave(const struct device *dev, struct net_if *br)
+{
+	joins--;
+}
+
+static struct dsa_api fake_dapi = {
+	.port_bridge_join = fake_bridge_join,
+	.port_bridge_leave = fake_bridge_leave,
+};
+
+ZTEST(dsa_tag_mv88e6xxx, test_bridge_offload)
+{
+	/* Any interface pointer serves as the bridge for the core helpers */
+	struct net_if *br = if_conduit;
+	struct ethernet_context *e2 = net_if_l2_data(if_swp2);
+	struct ethernet_context *e3 = net_if_l2_data(if_swp3);
+
+	ctx.dapi = &fake_dapi;
+	e2->dsa_port = DSA_USER_PORT;
+	e2->dsa_switch_ctx = &ctx;
+	e3->dsa_port = DSA_USER_PORT;
+	e3->dsa_switch_ctx = &ctx;
+
+	zassert_false(dsa_port_fwd_offloaded(if_swp2, if_swp3));
+	zassert_ok(dsa_port_bridge_join(if_swp2, br));
+	/* Only one port in the bridge: software still forwards */
+	zassert_false(dsa_port_fwd_offloaded(if_swp2, if_swp3));
+	zassert_ok(dsa_port_bridge_join(if_swp3, br));
+	zassert_equal(joins, 2);
+	zassert_equal_ptr(joined_br, br);
+	zassert_true(dsa_port_fwd_offloaded(if_swp2, if_swp3));
+	zassert_true(dsa_port_fwd_offloaded(if_swp3, if_swp2));
+	/* Not a user port, or no port */
+	zassert_false(dsa_port_fwd_offloaded(if_conduit, if_swp2));
+	zassert_false(dsa_port_fwd_offloaded(NULL, if_swp2));
+
+	dsa_port_bridge_leave(if_swp3, br);
+	zassert_equal(joins, 1);
+	zassert_false(dsa_port_fwd_offloaded(if_swp2, if_swp3));
+	dsa_port_bridge_leave(if_swp2, br);
+	zassert_equal(joins, 0);
+
+	ctx.dapi = NULL;
+}
+
 ZTEST_SUITE(dsa_tag_mv88e6xxx, NULL, setup, NULL, NULL, NULL);

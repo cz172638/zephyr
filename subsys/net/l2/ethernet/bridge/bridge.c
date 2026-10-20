@@ -17,6 +17,9 @@ LOG_MODULE_REGISTER(net_eth_bridge, CONFIG_NET_ETHERNET_BRIDGE_LOG_LEVEL);
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/virtual.h>
 #include <zephyr/net/ethernet_bridge.h>
+#if defined(CONFIG_NET_DSA)
+#include <zephyr/net/dsa_core.h>
+#endif
 #if defined(CONFIG_NET_ETHERNET_BRIDGE_FDB)
 #include <zephyr/net/ethernet_bridge_fdb.h>
 #endif
@@ -189,6 +192,12 @@ int eth_bridge_iface_add(struct net_if *br, struct net_if *iface)
 	}
 
 #endif
+#if defined(CONFIG_NET_DSA)
+	if (eth_ctx->dsa_port == DSA_USER_PORT) {
+		/* Let the switch forward between its bridged ports, if it can */
+		(void)dsa_port_bridge_join(iface, br);
+	}
+#endif
 	NET_DBG("iface %d added to bridge %d", net_if_get_by_iface(iface),
 		net_if_get_by_iface(br));
 
@@ -255,6 +264,11 @@ int eth_bridge_iface_remove(struct net_if *br, struct net_if *iface)
 
 	unlock_bridge(ctx);
 
+#if defined(CONFIG_NET_DSA)
+	if (found) {
+		dsa_port_bridge_leave(iface, br);
+	}
+#endif
 	NET_DBG("iface %d removed from bridge %d", net_if_get_by_iface(iface),
 		net_if_get_by_iface(br));
 
@@ -545,6 +559,18 @@ static struct net_pkt *bridge_resolve_local_dst(struct net_if *bridge, struct ne
 #endif /* CONFIG_NET_IPV4 && CONFIG_NET_ARP */
 }
 
+static inline bool bridge_fwd_offloaded(struct net_if *from, struct net_if *to)
+{
+#if defined(CONFIG_NET_DSA)
+	return dsa_port_fwd_offloaded(from, to);
+#else
+	ARG_UNUSED(from);
+	ARG_UNUSED(to);
+
+	return false;
+#endif
+}
+
 /*
  * For direct TX, send pkt to all ifaces.
  * For forward TX (pkt from an original iface), send to all other ifaces.
@@ -580,19 +606,27 @@ static enum net_verdict bridge_iface_send_process(struct net_if *iface,
 	/* Get interface number to forward */
 	ARRAY_FOR_EACH(ctx->eth_iface, i) {
 		if (ctx->eth_iface[i] != NULL && ctx->eth_iface[i] != orig_iface) {
-			/* Skip it if not up */
-			if (!net_if_flag_is_set(ctx->eth_iface[i], NET_IF_UP)) {
+			/* Skip it if not up or if the switch forwarded it already */
+			if (!net_if_flag_is_set(ctx->eth_iface[i], NET_IF_UP) ||
+			    bridge_fwd_offloaded(orig_iface, ctx->eth_iface[i])) {
 				continue;
 			}
 			fwd_iface_num++;
 		}
 	}
 
+	if (fwd_iface_num == 0) {
+		unlock_bridge(ctx);
+		net_pkt_unref(pkt);
+		return NET_OK;
+	}
+
 	/* Forward pkt to other interfaces */
 	ARRAY_FOR_EACH(ctx->eth_iface, i) {
 		if (ctx->eth_iface[i] != NULL && ctx->eth_iface[i] != orig_iface) {
-			/* Skip it if not up */
-			if (!net_if_flag_is_set(ctx->eth_iface[i], NET_IF_UP)) {
+			/* Skip it if not up or if the switch forwarded it already */
+			if (!net_if_flag_is_set(ctx->eth_iface[i], NET_IF_UP) ||
+			    bridge_fwd_offloaded(orig_iface, ctx->eth_iface[i])) {
 				continue;
 			}
 

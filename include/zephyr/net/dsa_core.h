@@ -89,6 +89,9 @@ struct dsa_switch_context {
 
 	/** DSA tagger data provided by instance when connecting to tag protocol */
 	void *tagger_data;
+
+	/** Bridge whose forwarding the switch does, per user port */
+	struct net_if *bridge_offload[DSA_PORT_MAX_COUNT];
 };
 
 /**
@@ -136,6 +139,16 @@ struct dsa_api {
 	int (*get_config)(const struct device *dev,
 			  enum ethernet_config_type type,
 			  struct ethernet_config *config);
+
+	/**
+	 * The user port joins an Ethernet bridge: let the switch forward
+	 * between the ports of the bridge. Returns 0 if the switch does so,
+	 * the bridge then does not forward between these ports itself.
+	 */
+	int (*port_bridge_join)(const struct device *dev, struct net_if *br);
+
+	/** The user port leaves the bridge it joined */
+	void (*port_bridge_leave)(const struct device *dev, struct net_if *br);
 };
 
 /**
@@ -161,6 +174,8 @@ struct dsa_port_config {
 	 */
 	const struct device *ptp_clock;
 #endif
+	/** Interface name (devicetree "label"), NULL for swpN */
+	const char *label;
 	/** Instance specific config */
 	void *prv_config;
 };
@@ -206,6 +221,22 @@ struct net_if *dsa_recv(struct net_if *iface, struct net_pkt *pkt);
  *  - 0 if ok, < 0 if error
  */
 int dsa_eth_init(struct net_if *iface);
+
+/*
+ * Bridge forwarding offload, called by the Ethernet bridge for DSA user
+ * ports joining and leaving it.
+ *
+ * Returns:
+ *  - 0 if the switch forwards between the bridged ports, < 0 if not
+ */
+int dsa_port_bridge_join(struct net_if *iface, struct net_if *br);
+void dsa_port_bridge_leave(struct net_if *iface, struct net_if *br);
+
+/*
+ * True if the switch already forwards frames from one user port to the
+ * other (both in the same offloaded bridge), so software must not.
+ */
+bool dsa_port_fwd_offloaded(struct net_if *from, struct net_if *to);
 
 /* Ethernet APIs definition for switch ports */
 extern const struct ethernet_api dsa_eth_api;
