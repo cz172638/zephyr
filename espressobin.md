@@ -1,6 +1,6 @@
 # Zephyr na ESPRESSObin (Marvell Armada 3720): TF-A BL33 + síť přes 88E6341
 
-Stav k 2026-10-16. Zephyr `main` @ `124121fbb`, větev `espressobin` (12 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
+Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (40 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
 
 ## TL;DR
 
@@ -219,7 +219,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 - `eth0` je conduit: promiskuitní, bez IP. `swp0` je CPU port (bez IP), `swp1`–`swp3` jsou porty switche 1–3. Popisky se liší podle verze desky: v5 má port 1 `wan`, 2 `lan0`, 3 `lan1`; v7 má port 1 `lan1`, 2 `lan0`, 3 `wan` (stejně jako v Linuxu).
 - Driver `marvell,mv88e6085` zůstává PHY conduitu. V DSA režimu přepne CPU port do frame mode DSA nebo EDSA, nastaví u EDSA EtherType `0xdada`, rámce do 2048 B na všech portech a číslo zařízení 0. Carrier conduitu pak sleduje link CPU portu.
 - PHY uživatelských portů obsluhuje generický `phy_mii` na interní MDIO switche (`marvell,mv88e6xxx-mdio`, Global 2 SMI PHY, adresy 0x11–0x13).
-- Tagger `dsa_tag_mv88e6xxx.c` vychází z Linuxu `tag_dsa.c`. Na TX posílá FROM_CPU na port rozhraní, na RX bere TO_CPU a FORWARD (FRAME2REG a trunky zahazuje). 802.1Q hlavičku skládá do tagu a zpět. Test je v `tests/net/dsa_tag_mv88e6xxx` (native_sim, 9 případů).
+- Tagger `dsa_tag_mv88e6xxx.c` vychází z Linuxu `tag_dsa.c`. Na TX posílá FROM_CPU na port rozhraní, na RX bere TO_CPU a FORWARD (FRAME2REG a trunky zahazuje). 802.1Q hlavičku skládá do tagu a zpět. Test je v `tests/net/dsa_tag_mv88e6xxx` (native_sim/native/64, 11 případů).
 - Snippet používá 4bajtový DSA tag. Pro EDSA nastav `dsa-tag-protocol = <DSA_TAG_PROTO_EDSA>` a `CONFIG_DSA_TAG_SIZE=8`.
 - mvneta: přidán promiskuitní režim (`UNI_PROMISC_MODE` + celá unicast tabulka) a do maximální délky RX rámce se počítá `CONFIG_DSA_TAG_SIZE`.
 - netshell spouští DHCP na každém uživatelském portu a každé rozhraní má vlastní stabilní MAC v settings (`netshell/mac<idx>`). Conduit si drží MAC kvůli unikátnímu hostname.
@@ -239,6 +239,17 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 - Protistrana: Linux s `ptp4l -f gPTP.cfg -i <iface> -m` (linuxptp, profil 802.1AS) a NIC s HW časovými značkami.
 - Na hardwaru zatím neověřeno.
 
+### 3.9 Qav na portech switche
+
+- Registry nejsou veřejně zdokumentované. Postup převzat z linuxových patchů pro CBS offload (Cedric Jehasse, v7, 2026-06; Luke Howard, MQPRIO/CBS, 2026-05, strom `PADL/linux` větev `rpi-6.18.y-xebros-rmu`). V upstream Linuxu zatím nejsou.
+- Přístup přes Global 2 AVB 0x16/0x17, blok v bitech 7:5 (0 PTP, 1 AVB, 2 Qav, 3 Qvb). Port registry Qav: `RATE(q)` = 2q, `HILIMIT(q)` = 2q+1. Globální registry bloku jsou na portu 0x1f (layout 6390) nebo 0xf (6352).
+- 88E6341 (`mv88e6341_qav_info`): rate po 64 kbit/s (16 bitů), hi limit 14 bitů, 4 fronty. Plánování front je stejné jako u 6352: port reg 0x0a bity 13:12, 3 = všechny fronty strict, 0 = WRR 8:4:2:1. 88E6352: rate po 32 kbit/s (15 bitů) a navíc nezdokumentovaný enable bit 15 v Qav port reg 0x08 (jen u Luka Howarda).
+- Zephyr: `swpN` hlásí 4 prioritní fronty a `ETHERNET_QAV`. Qav požadavky (status, idle slope, delta bandwidth) se přes `set_config` převádějí na rate a hi limit. Hi limit = 1542 B × idle slope / rychlost linky (jeden maximální rušivý rámec), přepočítá se při změně linky. Shaped port přejde na strict, po vypnutí se vrátí původní plánování.
+- Priorita → fronta: tagger zapisuje `net_pkt_priority` do PRI v tagu (netagované FROM_CPU rámce). Global 1 IEEE-PRI (0x18) se nastaví podle mapování Zephyru pro 4 třídy, takže fronta N = traffic class N. Při výchozím strict mapování sdílí SR třídy A i B frontu 1. `CONFIG_NET_TC_MAPPING_SR_CLASS_A_AND_B` (vyžaduje TX/RX TC ≥ 2) pošle třídu A do fronty 3 a B do fronty 2.
+- Shell: `mvneta qav <iface> <q> <b/s|off>` (obecný, přes net_mgmt), `mv88e6xxx qav [port]` (dump rate/hilimit, AVB port cfg, plánování, IEEE-PRI), `mv88e6xxx avb <blok> <port|g|tai> <addr> [val]` (libovolný registr bloků, 4 slova).
+- Bez AVB režimů portu (`PORT_AVB_CFG` 15:14), bez rezervací v ATU (MAC_AVB) a bez izochronních pointerů. Podle Cedrikova patche to pro shaping nestačí. Na hardwaru neověřeno; test: `zperf` UDP s prioritou do shaped fronty, rychlost se má zastavit na idle slope.
+- Poznámka k `PADL/linux`: `mv88e6xxx_avb_enable()` nemá `return 0` před chybovými labely, takže po úspěchu všechno zase vrátí.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
@@ -253,13 +264,14 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 8. **Jednotky token bucketu.** Vyřešeno měřením: limiter počítá bajty L2 rámce včetně FCS (bez preambule a IFG), 10 kb/s na jednotku refillu.
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
-   - DSA: bridge offload (porty jsou zatím standalone), PPS/event capture (TAI GPIO), Qav na portech switche (AVB blok QAV), Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
+   - DSA: bridge offload (porty jsou zatím standalone), PPS/event capture (TAI GPIO), AVB režimy portů a SRP rezervace, Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
    - eth1 přes SGMII (COMPHY), I2C, GPIO, Xenon SDHCI (microSD/eMMC), USB, PCIe,
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (37 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (40 commitů nad `124121fbb`) + `gh-pages`
+- `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
 
