@@ -363,6 +363,11 @@ Na desce po resetu (výpis `advk_ep dump cfg`):
 - Capability: PM 0x80 → MSI 0x90 (64bit, 16 vektorů) → MSI-X 0xb0 (16 vektorů, tabulka BAR0+0, PBA BAR0+0x10000) → PCIe 0xc0 (endpoint, link cap Gen2 x1). Rozšířené: AER 0x100 → DSN 0x150 → 0x240.
 - Po resetu `CTRL0` = 0x18382, tedy GEN_SEL 2.
 
+**Otevřené: boot s logem jen přes shell.**
+- Image s EP, kde je shell jediný log backend, po BL31 nic nevypíše a nenaběhne (sample `epf_test` i router).
+- Stejný image s `LOG_PRINTK=n` + `LOG_BACKEND_UART=y` naběhne celý. Router: `-DEXTRA_CONF_FILE=router.conf;gptp.conf;pcie-ep-uartlog.conf`.
+- Příčina zatím není známá. Podezřelé je, že EP při POST_KERNEL něco loguje do bufferu shell backendu, ještě než shell existuje.
+
 Pořadí ladění:
 1. LTSSM se musí dostat z `detect-quiet`. Když zůstane v `detect`, chybí RX terminace / křížení TX.
 2. Pak `polling` → `config` → `L0`.
@@ -392,7 +397,7 @@ Pořadí ladění:
 
 - `zephyr-espressobin.bundle`: Zephyr `espressobin` (62 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-pcie-ep.bin` (+ `uart-images-pcie-ep.tgz.bin`): sample `epf_test`, PCIe endpoint + shell `advk_ep`, `CPU_1000_DDR_800`
-- `flash-image-router-v5-gptp-ep.bin`: router v5 + gPTP + PCIe endpoint (snippet `espressobin-pcie-ep`: `-S espressobin-pcie-ep`), `CPU_1000_DDR_800`
+- `flash-image-router-v5-gptp-ep.bin`: router v5 + gPTP + PCIe endpoint (snippet `espressobin-pcie-ep`: `-S espressobin-pcie-ep`, + `pcie-ep-uartlog.conf`), `CPU_1000_DDR_800`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
