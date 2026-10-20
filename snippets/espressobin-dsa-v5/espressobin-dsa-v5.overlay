@@ -1,0 +1,19 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * ESPRESSObin up to v5 front labels, as Linux armada-3720-espressobin.dtsi
+ */
+
+&switch0port1 {
+	label = "wan";
+};
+
+&switch0port2 {
+	label = "lan0";
+};
+
+&switch0port3 {
+	label = "lan1";
+};

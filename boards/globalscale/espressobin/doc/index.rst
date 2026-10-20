@@ -256,6 +256,22 @@ taken at the MAC; Linux does the same, the PHY time stamps are unreliable.
 ``samples/net/ethernet/tsn-switch`` also builds with the snippet (software
 bridge over the ports, gPTP relay; its Qbv setup is not supported).
 
+Port names and bridging
+=======================
+
+``-S espressobin-dsa-v5`` or ``-S espressobin-dsa-v7`` after
+``espressobin-dsa`` names the interfaces after the front labels (the DT
+``label`` of the port, as in Linux) instead of ``swpN``.
+
+User ports that join an Ethernet bridge (``CONFIG_NET_ETHERNET_BRIDGE``)
+are switched in hardware: the driver puts them into one port based VLAN
+group with their own address database and a static entry for the bridge
+address on the CPU port, and the bridge then does not forward between
+them in software. Frames still reach the CPU when they are for the bridge,
+broadcast, multicast or unknown unicast. Reserved multicast
+(01:80:c2:00:00:0x and 2x, e.g. 802.1AS, LLDP) is trapped to the CPU, never
+flooded. The netshell ``router.conf`` uses this for a small router.
+
 Qav on the switch ports
 =======================
 
@@ -288,8 +304,10 @@ and writes any register of the PTP, AVB, Qav and Qvb blocks.
 Limitations
 ***********
 
-* DSA ports are standalone (no bridging in the switch); bridging is done
-  in software (``CONFIG_NET_ETHERNET_BRIDGE``).
+* One hardware bridge per switch, without VLAN filtering; frames the CPU
+  sends into the bridge go out every bridged port (no forward-tagged TX).
+* The 88E6341 TCAM (ACL, QoS, policing) is not used yet; ``mv88e6xxx tcam``
+  reads entries assuming the undocumented 88E6390 layout.
 * The switch PTP clock is a software time counter: no PPS output or
   event capture (TAI GPIOs) yet.
 * Qav on the switch ports shapes per queue only: no AVB port modes or

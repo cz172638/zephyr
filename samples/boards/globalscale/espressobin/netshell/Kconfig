@@ -17,3 +17,39 @@ config NETSHELL_PASSWORD
 config NETSHELL_HOST_KEY_BITS
 	int "RSA host key size"
 	default 2048
+
+config NETSHELL_ROUTER
+	bool "Router: wan uplink, bridged lan ports with a DHCP server"
+	depends on NET_DSA && NET_ETHERNET_BRIDGE && NET_DHCPV4_SERVER && NET_IPV4_FORWARDING
+	help
+	  The DSA port named NETSHELL_WAN_IFACE gets an address with DHCP,
+	  the ports whose names start with NETSHELL_LAN_PREFIX join the
+	  first bridge, which gets NETSHELL_LAN_ADDR and a DHCP server.
+	  IPv4 is forwarded between them without NAT. Name the ports with
+	  the espressobin-dsa-v5 or espressobin-dsa-v7 snippet.
+
+if NETSHELL_ROUTER
+
+config NETSHELL_WAN_IFACE
+	string "Uplink interface"
+	default "wan"
+
+config NETSHELL_LAN_PREFIX
+	string "Name prefix of the bridged interfaces"
+	default "lan"
+
+config NETSHELL_LAN_ADDR
+	string "LAN (bridge) address"
+	default "192.168.10.1"
+
+config NETSHELL_LAN_NETMASK
+	string "LAN netmask"
+	default "255.255.255.0"
+
+config NETSHELL_DHCP_POOL
+	string "First address handed out by the DHCP server"
+	default "192.168.10.100"
+	help
+	  CONFIG_NET_DHCPV4_SERVER_ADDR_COUNT consecutive addresses.
+
+endif

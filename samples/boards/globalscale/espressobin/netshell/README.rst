@@ -44,6 +44,28 @@ gets DHCP and a stable MAC address; ``eth0`` only carries the tagged
 frames. Adding ``-DEXTRA_CONF_FILE=gptp.conf`` runs gPTP on the three ports
 with the switch's time stamps (``net gptp``).
 
+Router
+======
+
+.. code-block:: console
+
+   west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v7 \
+      samples/boards/globalscale/espressobin/netshell -- -DEXTRA_CONF_FILE=router.conf
+
+The second snippet names the ports after the front labels
+(``espressobin-dsa-v5`` for v5 and older). ``wan`` gets an address with
+DHCP. ``lan0`` and ``lan1`` join ``bridge0``: the switch forwards between
+them itself, the bridge gets ``CONFIG_NETSHELL_LAN_ADDR`` (192.168.10.1/24)
+and runs a DHCP server from ``CONFIG_NETSHELL_DHCP_POOL``, handing itself
+out as the router. IPv4 is forwarded between ``wan`` and the LAN without
+NAT, so the upstream router needs a route to the LAN, e.g. on Linux:
+
+.. code-block:: console
+
+   ip route add 192.168.10.0/24 via <wan address of the board>
+
+``net bridge`` and ``net route`` show the state.
+
 Using
 *****
 

@@ -14,12 +14,20 @@
  *
  * With DSA (espressobin-dsa snippet) every switch port is its own
  * interface: each one gets a stable MAC address and DHCP.
+ *
+ * As a router (router.conf, ports named by espressobin-dsa-v5/-v7) the
+ * wan port gets DHCP, the lan ports form a bridge, switched in hardware,
+ * with a static address and a DHCP server, and IPv4 is forwarded between
+ * the two (no NAT: the upstream router needs a route to the LAN).
  */
 
 #include <stdio.h>
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/dhcpv4.h>
+#include <zephyr/net/dhcpv4_server.h>
+#include <zephyr/net/ethernet_bridge.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/ethernet_mgmt.h>
 #include <zephyr/net/net_mgmt.h>
@@ -110,9 +118,74 @@ static void stable_mac(struct net_if *iface)
 		mac[3], mac[4], mac[5]);
 }
 
+#if defined(CONFIG_NETSHELL_ROUTER)
+static struct net_if *lan_bridge;
+
+static void find_bridge(struct eth_bridge_iface_context *br, void *user_data)
+{
+	struct net_if **found = user_data;
+
+	if (*found == NULL) {
+		*found = br->iface;
+	}
+}
+
+/* Bridge MAC address, kept like the port ones; set while the bridge is
+ * down and before the ports join (the switch gets it as a static entry)
+ */
+static void bridge_mac(struct net_if *br)
+{
+	struct net_linkaddr *ll = net_if_get_link_addr(br);
+	uint8_t mac[NET_ETH_ADDR_LEN];
+	struct setting_read r = {.buf = mac, .len = sizeof(mac)};
+
+	(void)settings_load_subtree_direct("netshell/brmac", setting_read_cb, &r);
+	if (!r.found) {
+		(void)settings_save_one("netshell/brmac", ll->addr, NET_ETH_ADDR_LEN);
+		return;
+	}
+	(void)net_if_set_link_addr(br, mac, sizeof(mac), NET_LINK_ETHERNET);
+}
+
+static int lan_start(struct net_if *br)
+{
+	struct net_in_addr addr, mask, pool;
+	char name[CONFIG_NET_INTERFACE_NAME_LEN + 1];
+	int ret;
+
+	if (net_addr_pton(NET_AF_INET, CONFIG_NETSHELL_LAN_ADDR, &addr) < 0 ||
+	    net_addr_pton(NET_AF_INET, CONFIG_NETSHELL_LAN_NETMASK, &mask) < 0 ||
+	    net_addr_pton(NET_AF_INET, CONFIG_NETSHELL_DHCP_POOL, &pool) < 0) {
+		LOG_ERR("bad LAN address configuration");
+		return -EINVAL;
+	}
+
+	if (net_if_ipv4_addr_add(br, &addr, NET_ADDR_MANUAL, 0) == NULL) {
+		return -ENOMEM;
+	}
+	net_if_ipv4_set_netmask_by_addr(br, &addr, &mask);
+	/* Handed out as the router option */
+	net_if_ipv4_set_gw(br, &addr);
+
+	ret = net_if_up(br);
+	if (ret < 0 && ret != -EALREADY) {
+		LOG_ERR("bridge up: %d (no lan port?)", ret);
+		return ret;
+	}
+
+	ret = net_dhcpv4_server_start(br, &pool);
+	(void)net_if_get_name(br, name, sizeof(name));
+	LOG_INF("%s: %s/%s, DHCP from %s: %d", name, CONFIG_NETSHELL_LAN_ADDR,
+		CONFIG_NETSHELL_LAN_NETMASK, CONFIG_NETSHELL_DHCP_POOL, ret);
+
+	return ret;
+}
+#endif /* CONFIG_NETSHELL_ROUTER */
+
 /* Interfaces that carry IP: all but a DSA conduit and the DSA CPU port.
  * The conduit (eth0, the default interface) still keeps its MAC address:
- * the unique hostname is derived from it.
+ * the unique hostname is derived from it. As a router the lan ports join
+ * the bridge instead.
  */
 static void start_iface(struct net_if *iface, void *user_data)
 {
@@ -133,6 +206,21 @@ static void start_iface(struct net_if *iface, void *user_data)
 	}
 #endif
 	stable_mac(iface);
+
+#if defined(CONFIG_NETSHELL_ROUTER)
+	char name[CONFIG_NET_INTERFACE_NAME_LEN + 1];
+
+	if (net_if_get_name(iface, name, sizeof(name)) > 0 && lan_bridge != NULL &&
+	    strncmp(name, CONFIG_NETSHELL_LAN_PREFIX, strlen(CONFIG_NETSHELL_LAN_PREFIX)) == 0) {
+		int ret = eth_bridge_iface_add(lan_bridge, iface);
+
+		LOG_INF("%s: bridged (%d)", name, ret);
+		return;
+	}
+	if (strcmp(name, CONFIG_NETSHELL_WAN_IFACE) != 0) {
+		LOG_WRN("%s: neither wan nor lan, using DHCP", name);
+	}
+#endif
 	net_dhcpv4_start(iface);
 }
 
@@ -215,7 +303,20 @@ int main(void)
 		LOG_ERR("settings unavailable, host key and MAC will not persist");
 	}
 
+#if defined(CONFIG_NETSHELL_ROUTER)
+	net_eth_bridge_foreach(find_bridge, &lan_bridge);
+	if (lan_bridge != NULL) {
+		bridge_mac(lan_bridge);
+	}
+#endif
+
 	net_if_foreach(start_iface, NULL);
+
+#if defined(CONFIG_NETSHELL_ROUTER)
+	if (lan_bridge == NULL || lan_start(lan_bridge) < 0) {
+		LOG_ERR("LAN not started");
+	}
+#endif
 
 	if (host_key() != 0) {
 		LOG_ERR("no SSH host key");

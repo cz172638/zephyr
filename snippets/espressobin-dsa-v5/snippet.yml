@@ -1,0 +1,8 @@
+name: espressobin-dsa-v5
+description: |
+  ESPRESSObin v5 and older: name the DSA interfaces after the front
+  labels (port 1 wan, 2 lan0, 3 lan1). Use after espressobin-dsa.
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: espressobin-dsa-v5.overlay
