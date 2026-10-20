@@ -125,14 +125,24 @@ int pm_system_reset(unsigned char reset_type)
 		return -EINVAL;
 	}
 
-	if ((reset_type == SYS_WARM_RESET) &&
-	    (!psci_features_check(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2)))) {
-		ret = psci_data.invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2), 0, 0, 0);
-	} else if (reset_type == SYS_COLD_RESET) {
-		ret = psci_data.invoke_psci_fn(PSCI_FN_NATIVE(0_2, SYSTEM_RESET), 0, 0, 0);
-	} else {
+	if (reset_type != SYS_WARM_RESET && reset_type != SYS_COLD_RESET) {
 		LOG_ERR("Invalid system reset type issued");
 		return -EINVAL;
+	}
+
+	/*
+	 * A warm reset needs SYSTEM_RESET2 (PSCI 1.1). Without it fall back
+	 * to SYSTEM_RESET, as Linux psci_sys_reset() does, rather than not
+	 * resetting at all.
+	 */
+	if ((reset_type == SYS_WARM_RESET) &&
+	    (psci_features_check(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2)) == 0)) {
+		ret = psci_data.invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2), 0, 0, 0);
+	} else {
+		if (reset_type == SYS_WARM_RESET) {
+			LOG_WRN("SYSTEM_RESET2 not supported, doing a cold reset");
+		}
+		ret = psci_data.invoke_psci_fn(PSCI_FN_NATIVE(0_2, SYSTEM_RESET), 0, 0, 0);
 	}
 
 	return psci_to_dev_err(ret);
