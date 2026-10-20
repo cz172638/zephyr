@@ -396,6 +396,12 @@ Pořadí ladění:
    - AHCI na SATA (COMPHY lane 2, `sata@d00e0000`),
    - QoS v Topazu dodělat: TCAM akce pro QPri/FPri override a policing (page 2), mapování priorit,
    - CCI-400: IO koherence pro DMA (NETA, SDHC, AHCI, PCIe),
+   - DMA:
+     - SDHC ADMA2 (teď PIO),
+     - SPI NOR (teď PIO přes FIFO),
+     - NETA bez kopie (buffery jsou dnes `__nocache` a kopírují se do `net_pkt`),
+     - PCIe EP přes vlastní DMA engine řadiče (teď CPU kopie přes OB okna),
+     - AHCI od začátku s DMA,
    - eth1 přes SGMII (COMPHY), I2C, UHS/DMA pro SD, USB, PCIe RC; PCIe EP: inbound/BARy (3.13),
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
