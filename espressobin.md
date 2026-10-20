@@ -393,6 +393,9 @@ Pořadí ladění:
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
    - DSA: TCAM, VLAN-aware bridge, forward-tagged TX do bridge, NAT, PPS/event capture (TAI GPIO), AVB režimy portů a SRP rezervace, Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
+   - AHCI na SATA (COMPHY lane 2, `sata@d00e0000`),
+   - QoS v Topazu dodělat: TCAM akce pro QPri/FPri override a policing (page 2), mapování priorit,
+   - CCI-400: IO koherence pro DMA (NETA, SDHC, AHCI, PCIe),
    - eth1 přes SGMII (COMPHY), I2C, UHS/DMA pro SD, USB, PCIe RC; PCIe EP: inbound/BARy (3.13),
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
