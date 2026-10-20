@@ -22,6 +22,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/crc.h>
+#include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epf.h>
@@ -93,6 +94,8 @@ struct epf_test_data {
 	struct k_work_delayable cmd_work;
 	struct pcie_epc_bar bar[PCIE_EPC_NUM_BARS];
 	volatile uint8_t *regs;
+	/* CPU view of the memory-region (mapped on MMU targets) */
+	uintptr_t mem_virt;
 	bool bme;
 	bool link;
 	uint8_t chunk[CONFIG_PCIE_EPF_TEST_CHUNK] __aligned(8);
@@ -361,13 +364,13 @@ static int epf_test_setup_bars(const struct device *dev)
 		}
 		next = base + sz;
 
-		memset((void *)base, 0, sz);
+		memset((void *)(d->mem_virt + (base - cfg->mem_base)), 0, sz);
 		d->bar[b] = (struct pcie_epc_bar){
 			.barno = b,
 			.flags = PCIE_EPC_BAR_MEM32,
 			.phys = pcie_epc_cpu_to_axi(cfg->epc, base),
 			.size = sz,
-			.virt = (void *)base,
+			.virt = (void *)(d->mem_virt + (base - cfg->mem_base)),
 		};
 		ret = pcie_epc_set_bar(cfg->epc, cfg->func, &d->bar[b]);
 		if (ret != 0) {
@@ -424,6 +427,13 @@ static int epf_test_init(const struct device *dev)
 	if (ret != 0) {
 		return ret;
 	}
+
+#ifdef CONFIG_MMU
+	/* The carveout is outside the kernel image, nothing maps it */
+	device_map((mm_reg_t *)&d->mem_virt, cfg->mem_base, cfg->mem_size, K_MEM_CACHE_NONE);
+#else
+	d->mem_virt = cfg->mem_base;
+#endif
 
 	ret = epf_test_setup_bars(dev);
 	if (ret != 0) {
