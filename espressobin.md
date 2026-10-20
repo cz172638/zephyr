@@ -288,7 +288,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - SDHC driver `drivers/sdhc/sdhc_xenon.c`: SDHCI v3, polling a PIO, auto CMD12. Nastavení Xenon slotu (vypnutí ACG při initu, enable slotu, parallel transfer, vypnutí retuningu, maskování cmd conflict) a eMMC PHY (pad control, pull-upy, QSN phase, init PHY po změně hodin) podle U-Boot `xenon_sdhci.c`. Základní hodiny z clock driveru (NB mmc), jinak z capabilities.
 - Netshell `sdcard.conf`: disk `SD`, FatFs (west modul `fatfs`), `fs mount fat /SD:`.
 - Zatím jen 3,3 V (HS do 50 MHz). UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou.
-- **Na desce nefunguje (odloženo):** obraz s SD (`flash-image-sd-dbg.bin`) se ze SPI NOR zacyklí po BL31 bez jakéhokoli výstupu Zephyru, a to i s `LOG_MODE_IMMEDIATE`. Padá tedy před konzolí: GPIO driver (PRE_KERNEL_1, priorita 40 < UART), nebo už před initem. Velikost obrazu to není (OBMI 937 KB v 4MB oblasti od 0x04100000). Dál: bootovat přes UART (`mox-imager -E`) a bisekovat (jen GPIO / GPIO + regulator / celé SDHC).
+- **Boot loop vyřešen:** GPIO driver měl `DEVICE_MMIO_ROM/RAM` až za `gpio_driver_config/data`. Mapování proto bralo `port_pin_mask` (0xf) jako fyzickou adresu a v PRE_KERNEL_1 skončilo `k_panic`, dřív než se zapnula konzole. Oprava: pojmenovaný MMIO region (`758bb21cd`). Router + SD (`flash-image-router-v5-sd.bin`) naběhne, `sdhc_xenon: SDHCI v3, base clock 400 MHz, card present`.
 
 ### 3.13 PCIe endpoint (Aardvark)
 
