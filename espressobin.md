@@ -287,7 +287,10 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - GPIO driver `marvell,armada-3700-gpio` (výstup 0x00, vstup 0x10, hodnoty 0x18). NB má 36 pinů, banka 1 je samostatný uzel na base+4. Bez přerušení.
 - SDHC driver `drivers/sdhc/sdhc_xenon.c`: SDHCI v3, polling a PIO, auto CMD12. Nastavení Xenon slotu (vypnutí ACG při initu, enable slotu, parallel transfer, vypnutí retuningu, maskování cmd conflict) a eMMC PHY (pad control, pull-upy, QSN phase, init PHY po změně hodin) podle U-Boot `xenon_sdhci.c`. Základní hodiny z clock driveru (NB mmc), jinak z capabilities.
 - Netshell `sdcard.conf`: disk `SD`, FatFs (west modul `fatfs`), `fs mount fat /SD:`.
-- Zatím jen 3,3 V (HS do 50 MHz). UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou.
+- Zatím jen 3,3 V (HS do 50 MHz), `no-1-8-v` v board dtsi. Karta si řekne o 1,8 V a přepnutí (CMD11) pak odmítne. UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou.
+- Data šla až s nastavením eMMC 5.1 PHY podle Linuxu `xenon_emmc_phy_set()`: CMOS receivery (`0xF000` v pad control), žádné `AUTO_RECEN`, pro SD žádný slow mode ani `SAMPL_INV_QSP_PHASE`, `DQ_ASYNC_MODE`, ZNR/ZPR 0xf. Do té doby karta na DAT0 nikdy neodpověděla, ani na 400 kHz: data timeout u ACMD51.
+- **Ověřeno na desce:** 16GB SDHC (MID 0x3), `fs mount fat /SD:` přes `FS_FATFS_MOUNT_MKFS` kartu zformátoval a připojil.
+- `fs mount` potřebuje kernel heap (`HEAP_MEM_POOL_SIZE`, je v `sdcard.conf`).
 - **Boot loop vyřešen:** GPIO driver měl `DEVICE_MMIO_ROM/RAM` až za `gpio_driver_config/data`. Mapování proto bralo `port_pin_mask` (0xf) jako fyzickou adresu a v PRE_KERNEL_1 skončilo `k_panic`, dřív než se zapnula konzole. Oprava: pojmenovaný MMIO region (`758bb21cd`). Router + SD (`flash-image-router-v5-sd.bin`) naběhne, `sdhc_xenon: SDHCI v3, base clock 400 MHz, card present`.
 
 ### 3.13 PCIe endpoint (Aardvark)
@@ -398,6 +401,7 @@ Pořadí ladění:
 - `zephyr-espressobin.bundle`: Zephyr `espressobin` (62 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-pcie-ep.bin` (+ `uart-images-pcie-ep.tgz.bin`): sample `epf_test`, PCIe endpoint + shell `advk_ep`, `CPU_1000_DDR_800`
 - `flash-image-router-v5-gptp-ep.bin`: router v5 + gPTP + PCIe endpoint (snippet `espressobin-pcie-ep`: `-S espressobin-pcie-ep`, + `pcie-ep-uartlog.conf`), `CPU_1000_DDR_800`
+- `flash-image-router-v5-sd.bin`: router v5 + gPTP + microSD (`sdcard.conf`), `CPU_1000_DDR_800`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
