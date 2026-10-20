@@ -283,6 +283,16 @@ static enum net_verdict ipv4_route_packet(struct net_pkt *pkt,
 
 		if (route != NULL) {
 			net_pkt_set_iface(pkt, route->iface);
+		} else {
+			/* Via the default router: send on its interface, not
+			 * back out of the one the packet came in on.
+			 */
+			struct net_if_router *router =
+				net_if_ipv4_router_find_default(NULL, &dst_ip);
+
+			if (router != NULL) {
+				net_pkt_set_iface(pkt, router->iface);
+			}
 		}
 
 		if (IS_ENABLED(CONFIG_NET_IPV4_FORWARDING) &&

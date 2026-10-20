@@ -765,6 +765,61 @@ static void test_route_ipv4_forward_ttl_expired_drops(void)
 	zassert_ok(net_route_ipv4_del(route), "Forwarding route del failed");
 }
 
+/* No route matches: forward via the default router, out of its interface */
+static void test_route_ipv4_forward_via_default_router(void)
+{
+	struct net_if_router *router;
+	struct net_pkt *pkt;
+	struct net_eth_hdr *eth;
+	struct net_ipv4_hdr *hdr;
+	struct net_eth_addr src_lladdr = { { 0x02, 0x00, 0x5e, 0x00, 0x53, 0x23 } };
+
+	Z_TEST_SKIP_IFNDEF(CONFIG_NET_IPV4_FORWARDING);
+
+	router = net_if_ipv4_router_add(my_iface_alt, &gateway_addr_alt, true, 0);
+	zassert_not_null(router, "Default router add failed");
+
+	net_arp_update(my_iface_alt, &gateway_addr_alt, &gateway_lladdr_alt, true);
+
+	reset_send_state();
+	drain_wait_data();
+
+	pkt = net_pkt_alloc_with_buffer(my_iface,
+					sizeof(struct net_eth_hdr) +
+					sizeof(struct net_ipv4_hdr),
+					NET_AF_UNSPEC, 0, K_NO_WAIT);
+	zassert_not_null(pkt, "Forwarding packet alloc failed");
+
+	eth = (struct net_eth_hdr *)net_buf_add(pkt->buffer, sizeof(struct net_eth_hdr));
+	memcpy(eth->dst.addr, net_if_get_link_addr(my_iface)->addr, sizeof(eth->dst.addr));
+	memcpy(eth->src.addr, src_lladdr.addr, sizeof(eth->src.addr));
+	eth->type = net_htons(NET_ETH_PTYPE_IP);
+
+	hdr = (struct net_ipv4_hdr *)net_buf_add(pkt->buffer, sizeof(struct net_ipv4_hdr));
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->vhl = 0x45;
+	hdr->ttl = 2U;
+	hdr->proto = NET_IPPROTO_UDP;
+	hdr->len = net_htons(sizeof(struct net_ipv4_hdr));
+	net_ipv4_addr_copy_raw(hdr->src, forward_src_addr.s4_addr);
+	net_ipv4_addr_copy_raw(hdr->dst, offlink_dest_addr.s4_addr);
+	hdr->chksum = ipv4_header_checksum(hdr);
+
+	zassert_ok(net_recv_data(my_iface, pkt), "Forwarding receive failed");
+	zassert_ok(k_sem_take(&wait_data, WAIT_TIME), "Forwarded packet was not sent");
+
+	zassert_equal_ptr(sent_iface, my_iface_alt,
+			  "Packet not sent out of the default router interface");
+	zassert_true(sent_forwarding, "Packet should be marked forwarded");
+	zassert_true(sent_ll_resolve_addr_set &&
+		     net_ipv4_addr_cmp(&sent_ll_resolve_addr, &gateway_addr_alt),
+		     "Packet not resolved via the default router");
+	zassert_equal(sent_ipv4_ttl, 1U, "Forwarded IPv4 packet should decrement TTL");
+
+	net_arp_clear_cache(my_iface_alt);
+	zassert_true(net_if_ipv4_router_rm(router), "Default router rm failed");
+}
+
 static void test_route_ipv4_forward_onlink_packet_between_ifaces(void)
 {
 	struct net_pkt *pkt;
@@ -1008,6 +1063,7 @@ ZTEST(route_test_suite, test_route)
 	test_route_ipv4_select_src_iface_uses_explicit_route();
 	test_route_ipv4_forward_ttl_expired_drops();
 	test_route_ipv4_forward_packet_between_ifaces();
+	test_route_ipv4_forward_via_default_router();
 	test_route_ipv4_forward_onlink_packet_between_ifaces();
 	test_route_ipv4_forward_onlink_ttl_expired_drops();
 }
