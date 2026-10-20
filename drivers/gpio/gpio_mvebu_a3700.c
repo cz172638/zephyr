@@ -20,29 +20,36 @@
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/device_mmio.h>
 
+#define DEV_CFG(dev)  ((const struct a3700_gpio_config *)(dev)->config)
+#define DEV_DATA(dev) ((struct a3700_gpio_data *)(dev)->data)
+
 #define GPIO_OUTPUT_EN  0x00
 #define GPIO_INPUT_VAL  0x10
 #define GPIO_OUTPUT_VAL 0x18
 
+/*
+ * gpio_driver_config/data must come first for the GPIO core, so the MMIO
+ * region is a named one (plain DEVICE_MMIO_ROM/RAM must be first).
+ */
 struct a3700_gpio_config {
 	struct gpio_driver_config common;
-	DEVICE_MMIO_ROM;
+	DEVICE_MMIO_NAMED_ROM(reg_base);
 };
 
 struct a3700_gpio_data {
 	struct gpio_driver_data common;
-	DEVICE_MMIO_RAM;
+	DEVICE_MMIO_NAMED_RAM(reg_base);
 	struct k_spinlock lock;
 };
 
 static inline uint32_t rd(const struct device *dev, uint32_t reg)
 {
-	return sys_read32(DEVICE_MMIO_GET(dev) + reg);
+	return sys_read32(DEVICE_MMIO_NAMED_GET(dev, reg_base) + reg);
 }
 
 static inline void wr(const struct device *dev, uint32_t reg, uint32_t val)
 {
-	sys_write32(val, DEVICE_MMIO_GET(dev) + reg);
+	sys_write32(val, DEVICE_MMIO_NAMED_GET(dev, reg_base) + reg);
 }
 
 static void rmw(const struct device *dev, uint32_t reg, uint32_t mask, uint32_t val)
@@ -116,7 +123,16 @@ static int a3700_gpio_port_toggle_bits(const struct device *dev, gpio_port_pins_
 
 static int a3700_gpio_init(const struct device *dev)
 {
-	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
+	if (IS_ENABLED(CONFIG_GPIO_MVEBU_A3700_TRACE)) {
+		printk("a3700_gpio: %s map\n", dev->name);
+	}
+	DEVICE_MMIO_NAMED_MAP(dev, reg_base, K_MEM_CACHE_NONE);
+	if (IS_ENABLED(CONFIG_GPIO_MVEBU_A3700_TRACE)) {
+		printk("a3700_gpio: %s at 0x%lx\n", dev->name,
+		       (unsigned long)DEVICE_MMIO_NAMED_GET(dev, reg_base));
+		printk("a3700_gpio: out_en %08x\n", rd(dev, GPIO_OUTPUT_EN));
+		printk("a3700_gpio: in %08x\n", rd(dev, GPIO_INPUT_VAL));
+	}
 	return 0;
 }
 
@@ -132,7 +148,7 @@ static DEVICE_API(gpio, a3700_gpio_api) = {
 #define A3700_GPIO_INIT(n)                                                                         \
 	static const struct a3700_gpio_config a3700_gpio_config_##n = {                            \
 		.common = {.port_pin_mask = GPIO_PORT_PIN_MASK_FROM_DT_INST(n)},                   \
-		DEVICE_MMIO_ROM_INIT(DT_DRV_INST(n)),                                              \
+		DEVICE_MMIO_NAMED_ROM_INIT(reg_base, DT_DRV_INST(n)),                                              \
 	};                                                                                         \
 	static struct a3700_gpio_data a3700_gpio_data_##n;                                         \
 	DEVICE_DT_INST_DEFINE(n, a3700_gpio_init, NULL, &a3700_gpio_data_##n,                      \

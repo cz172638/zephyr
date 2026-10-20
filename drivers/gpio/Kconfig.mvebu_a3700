@@ -7,3 +7,10 @@ config GPIO_MVEBU_A3700
 	depends on DT_HAS_MARVELL_ARMADA_3700_GPIO_ENABLED
 	help
 	  GPIO of the Armada 3700 north and south bridges, without interrupts.
+
+config GPIO_MVEBU_A3700_TRACE
+	bool "printk in the init"
+	depends on GPIO_MVEBU_A3700
+	help
+	  Bring-up: needs GPIO_INIT_PRIORITY above CONSOLE_INIT_PRIORITY to
+	  be visible.
