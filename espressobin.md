@@ -287,7 +287,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - GPIO driver `marvell,armada-3700-gpio` (výstup 0x00, vstup 0x10, hodnoty 0x18). NB má 36 pinů, banka 1 je samostatný uzel na base+4. Bez přerušení.
 - SDHC driver `drivers/sdhc/sdhc_xenon.c`: SDHCI v3, polling a PIO, auto CMD12. Nastavení Xenon slotu (vypnutí ACG při initu, enable slotu, parallel transfer, vypnutí retuningu, maskování cmd conflict) a eMMC PHY (pad control, pull-upy, QSN phase, init PHY po změně hodin) podle U-Boot `xenon_sdhci.c`. Základní hodiny z clock driveru (NB mmc), jinak z capabilities.
 - Netshell `sdcard.conf`: disk `SD`, FatFs (west modul `fatfs`), `fs mount fat /SD:`.
-- Zatím jen 3,3 V (HS do 50 MHz), `no-1-8-v` v board dtsi. Karta si řekne o 1,8 V a přepnutí (CMD11) pak odmítne. UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou.
+- Zatím jen 3,3 V (HS do 50 MHz), `no-1-8-v` v board dtsi. Karta si řekne o 1,8 V a přepnutí (CMD11) pak odmítne. UHS (1,8 V přes regulátor) a DMA zatím nejsou. eMMC na desce osazené není, `sdhci0` zůstává vypnutý.
 - Data šla až s nastavením eMMC 5.1 PHY podle Linuxu `xenon_emmc_phy_set()`: CMOS receivery (`0xF000` v pad control), žádné `AUTO_RECEN`, pro SD žádný slow mode ani `SAMPL_INV_QSP_PHASE`, `DQ_ASYNC_MODE`, ZNR/ZPR 0xf. Do té doby karta na DAT0 nikdy neodpověděla, ani na 400 kHz: data timeout u ACMD51.
 - **Ověřeno na desce:** 16GB SDHC (MID 0x3), `fs mount fat /SD:` přes `FS_FATFS_MOUNT_MKFS` kartu zformátoval a připojil.
 - `fs mount` potřebuje kernel heap (`HEAP_MEM_POOL_SIZE`, je v `sdcard.conf`).
@@ -393,7 +393,7 @@ Pořadí ladění:
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
    - DSA: TCAM, VLAN-aware bridge, forward-tagged TX do bridge, NAT, PPS/event capture (TAI GPIO), AVB režimy portů a SRP rezervace, Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
-   - eth1 přes SGMII (COMPHY), I2C, eMMC a UHS/DMA pro SD, USB, PCIe RC; PCIe EP: inbound/BARy (3.13),
+   - eth1 přes SGMII (COMPHY), I2C, UHS/DMA pro SD, USB, PCIe RC; PCIe EP: inbound/BARy (3.13),
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
@@ -402,6 +402,7 @@ Pořadí ladění:
 - `flash-image-pcie-ep.bin` (+ `uart-images-pcie-ep.tgz.bin`): sample `epf_test`, PCIe endpoint + shell `advk_ep`, `CPU_1000_DDR_800`
 - `flash-image-router-v5-gptp-ep.bin`: router v5 + gPTP + PCIe endpoint (snippet `espressobin-pcie-ep`: `-S espressobin-pcie-ep`, + `pcie-ep-uartlog.conf`), `CPU_1000_DDR_800`
 - `flash-image-router-v5-sd.bin`: router v5 + gPTP + microSD (`sdcard.conf`), `CPU_1000_DDR_800`
+- `flash-image-router-v5-sd-ep.bin`: router v5 + gPTP + microSD + PCIe EP (`router.conf;gptp.conf;sdcard.conf;pcie-ep-uartlog.conf`, `-S espressobin-pcie-ep`), `CPU_1000_DDR_800`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
