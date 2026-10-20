@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SDHC_XENON
+	bool "Marvell Xenon SDHC (Armada 3700)"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_SDHCI_ENABLED
+	select SDHC_SUPPORTS_NATIVE_MODE
+	select SDHC_SUPPORTS_UHS
+	help
+	  Polled PIO driver for the Xenon SD host controller of the Armada
+	  3700 (microSD and eMMC slots).
