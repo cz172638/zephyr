@@ -266,7 +266,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - DNS: Zephyr nemá forwarder. DHCP server rozdává DNS server z leasu na `wan` (option callback na option 6, nové API `net_dhcpv4_server_set_dns_address()` s testem v `tests/net/dhcpv4/server`).
 - Forwarding přes výchozí router: DHCP klient v Zephyru nastaví jen bránu rozhraní a výchozí router nepřidá, takže forwarding z LAN ven nenašel cestu. Netshell router přidává router z option 3 leasu na `wan`. Navíc `ipv4_route_packet()` při routování přes výchozí router nechával paketu vstupní rozhraní. Opraveno, test `test_route_ipv4_forward_via_default_router` v `tests/net/route/ipv4` bez opravy padá.
 - Limity: mDNS si na každém rozhraní registruje UDP connection handler. Výchozí `CONFIG_NET_MAX_CONN=4` tak s DSA a DHCP klientem dojde a DHCP server pak selže při `bind` s `-ENOENT` (SSH stejně). Netshell má 16, router 24 (+ 32 kontextů a fd).
-- Na hardwaru: rozhraní, názvy portů a bridge0 ověřeny, DHCP server po opravě limitů funguje, DNS z wan zatím neověřeno.
+- Ověřeno na desce (v5): rozhraní a názvy portů, bridge0, DHCP server, DNS z leasu na `wan` a forwarding z LAN ven (ping na 8.8.8.8, `apt update` ze Zero 3E za deskou).
 
 ### 3.11 TCAM (88E6341)
 
