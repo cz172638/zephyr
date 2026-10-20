@@ -287,7 +287,8 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - GPIO driver `marvell,armada-3700-gpio` (výstup 0x00, vstup 0x10, hodnoty 0x18). NB má 36 pinů, banka 1 je samostatný uzel na base+4. Bez přerušení.
 - SDHC driver `drivers/sdhc/sdhc_xenon.c`: SDHCI v3, polling a PIO, auto CMD12. Nastavení Xenon slotu (vypnutí ACG při initu, enable slotu, parallel transfer, vypnutí retuningu, maskování cmd conflict) a eMMC PHY (pad control, pull-upy, QSN phase, init PHY po změně hodin) podle U-Boot `xenon_sdhci.c`. Základní hodiny z clock driveru (NB mmc), jinak z capabilities.
 - Netshell `sdcard.conf`: disk `SD`, FatFs (west modul `fatfs`), `fs mount fat /SD:`.
-- Zatím jen 3,3 V (HS do 50 MHz). UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou. Na desce neověřeno.
+- Zatím jen 3,3 V (HS do 50 MHz). UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou.
+- **Na desce nefunguje (odloženo):** obraz s SD (`flash-image-sd-dbg.bin`) se ze SPI NOR zacyklí po BL31 bez jakéhokoli výstupu Zephyru, a to i s `LOG_MODE_IMMEDIATE`. Padá tedy před konzolí: GPIO driver (PRE_KERNEL_1, priorita 40 < UART), nebo už před initem. Velikost obrazu to není (OBMI 937 KB v 4MB oblasti od 0x04100000). Dál: bootovat přes UART (`mox-imager -E`) a bisekovat (jen GPIO / GPIO + regulator / celé SDHC).
 
 ## 4. Nejistoty a otevřené body
 
