@@ -49,6 +49,8 @@ static struct test_dhcpv4_server_ctx {
 	 * the server reply to carry option 114.
 	 */
 	bool request_captive_portal;
+	/* When true, ask for the DNS server option (6) */
+	bool request_dns;
 } test_ctx;
 
 struct test_lease_count {
@@ -210,7 +212,11 @@ static void client_prepare_test_msg(
 	}
 
 	net_pkt_write_u8(pkt, DHCPV4_OPTIONS_REQ_LIST);
-	if (test_ctx.request_captive_portal) {
+	if (test_ctx.request_dns) {
+		net_pkt_write_u8(pkt, 2);
+		net_pkt_write_u8(pkt, DHCPV4_OPTIONS_SUBNET_MASK);
+		net_pkt_write_u8(pkt, DHCPV4_OPTIONS_DNS_SERVER);
+	} else if (test_ctx.request_captive_portal) {
 		net_pkt_write_u8(pkt, 2);
 		net_pkt_write_u8(pkt, DHCPV4_OPTIONS_SUBNET_MASK);
 		net_pkt_write_u8(pkt, DHCPV4_OPTIONS_CAPTIVE_PORTAL);
@@ -1102,6 +1108,30 @@ ZTEST(dhcpv4_server_tests, test_request_captive_portal)
 }
 #endif /* CONFIG_NET_DHCPV4_SERVER_OPTION_CAPTIVE_PORTAL */
 
+/* A DNS server address set at runtime is handed out, clearing it falls
+ * back to CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS (empty: no option).
+ */
+ZTEST(dhcpv4_server_tests, test_discover_runtime_dns)
+{
+	struct net_in_addr dns = {{{192, 0, 2, 53}}};
+
+	test_ctx.request_dns = true;
+
+	net_dhcpv4_server_set_dns_address(&dns);
+	client_send_discover();
+	verify_offer(false);
+	verify_option(test_ctx.pkt, DHCPV4_OPTIONS_DNS_SERVER, dns.s4_addr, sizeof(dns));
+	test_pkt_free();
+
+	net_dhcpv4_server_set_dns_address(NULL);
+	client_send_discover();
+	verify_offer(false);
+	if (strlen(CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS) == 0) {
+		verify_no_option(test_ctx.pkt, DHCPV4_OPTIONS_DNS_SERVER);
+	}
+	test_pkt_free();
+}
+
 static void dhcpv4_server_tests_before(void *fixture)
 {
 	ARG_UNUSED(fixture);
@@ -1113,6 +1143,7 @@ static void dhcpv4_server_tests_before(void *fixture)
 	test_ctx.lease_time = NO_LEASE_TIME;
 	test_ctx.send_echo_reply = false;
 	test_ctx.request_captive_portal = false;
+	test_ctx.request_dns = false;
 	memset(&test_ctx.assigned_ip, 0, sizeof(test_ctx.assigned_ip));
 
 	net_dhcpv4_server_start(test_ctx.iface, &test_base_addr);

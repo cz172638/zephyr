@@ -420,6 +420,15 @@ static uint8_t *dhcpv4_encode_router_option(uint8_t *buf, size_t *buflen,
 	return buf + DHCPV4_OPTIONS_ROUTER_SIZE;
 }
 
+/* Set at runtime, overrides CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS */
+static struct net_in_addr runtime_dns_address;
+
+static bool dhcpv4_server_has_dns(void)
+{
+	return !net_ipv4_is_addr_unspecified(&runtime_dns_address) ||
+	       strlen(CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS) != 0;
+}
+
 static uint8_t *dhcpv4_encode_dns_server_option(uint8_t *buf, size_t *buflen)
 {
 	struct net_in_addr dns_address;
@@ -428,7 +437,10 @@ static uint8_t *dhcpv4_encode_dns_server_option(uint8_t *buf, size_t *buflen)
 		return NULL;
 	}
 
-	if (net_addr_pton(NET_AF_INET, CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS, &dns_address)) {
+	if (!net_ipv4_is_addr_unspecified(&runtime_dns_address)) {
+		dns_address = runtime_dns_address;
+	} else if (net_addr_pton(NET_AF_INET, CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS,
+				 &dns_address)) {
 		LOG_ERR("Invalid DNS server address: %s",
 			CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS);
 		return NULL;
@@ -602,7 +614,7 @@ static uint8_t *dhcpv4_encode_requested_params(
 			break;
 
 		case DHCPV4_OPTIONS_DNS_SERVER:
-			if (strlen(CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS) == 0) {
+			if (!dhcpv4_server_has_dns()) {
 				break;
 			}
 
@@ -1661,6 +1673,17 @@ static void dhcpv4_server_cb(struct net_socket_service_event *evt)
 
 NET_SOCKET_SERVICE_SYNC_DEFINE_STATIC(dhcpv4_server, dhcpv4_server_cb,
 				      CONFIG_NET_DHCPV4_SERVER_INSTANCES);
+
+void net_dhcpv4_server_set_dns_address(const struct net_in_addr *addr)
+{
+	k_mutex_lock(&server_lock, K_FOREVER);
+	if (addr != NULL) {
+		runtime_dns_address = *addr;
+	} else {
+		runtime_dns_address.s_addr = NET_INADDR_ANY;
+	}
+	k_mutex_unlock(&server_lock);
+}
 
 int net_dhcpv4_server_start(struct net_if *iface, struct net_in_addr *base_addr)
 {

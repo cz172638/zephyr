@@ -93,6 +93,17 @@ int net_dhcpv4_server_start(struct net_if *iface, struct net_in_addr *base_addr)
 int net_dhcpv4_server_stop(struct net_if *iface);
 
 /**
+ *  @brief Set the DNS server address handed out by all DHCPv4 servers
+ *
+ *  @details Overrides CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS, e.g. with
+ *  the DNS server a router learned on its uplink. NULL or the unspecified
+ *  address goes back to the Kconfig value.
+ *
+ *  @param addr DNS server address, or NULL
+ */
+void net_dhcpv4_server_set_dns_address(const struct net_in_addr *addr);
+
+/**
  * @typedef net_dhcpv4_lease_cb_t
  * @brief Callback used while iterating over active DHCPv4 address leases
  *
