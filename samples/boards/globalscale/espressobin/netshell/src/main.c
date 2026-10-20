@@ -170,6 +170,38 @@ static void wan_dns_handler(struct net_dhcpv4_option_callback *cb, size_t length
 		net_addr_ntop(NET_AF_INET, &dns, str, sizeof(str)), name);
 }
 
+/* The DHCP client only sets the interface gateway, forwarding needs a
+ * default router: the router option of the wan lease
+ */
+static uint8_t wan_gw[4];
+static struct net_dhcpv4_option_callback wan_gw_cb;
+static struct net_if_router *wan_router;
+
+static void wan_gw_handler(struct net_dhcpv4_option_callback *cb, size_t length,
+			   enum net_dhcpv4_msg_type msg_type, struct net_if *iface)
+{
+	char name[CONFIG_NET_INTERFACE_NAME_LEN + 1];
+	struct net_in_addr gw;
+	char str[NET_IPV4_ADDR_LEN];
+
+	if (length < sizeof(wan_gw) || msg_type != NET_DHCPV4_MSG_TYPE_ACK ||
+	    net_if_get_name(iface, name, sizeof(name)) < 0 ||
+	    strcmp(name, CONFIG_NETSHELL_WAN_IFACE) != 0) {
+		return;
+	}
+
+	memcpy(gw.s4_addr, wan_gw, sizeof(wan_gw));
+	if (wan_router != NULL) {
+		if (net_ipv4_addr_cmp(net_if_router_ipv4(wan_router), &gw)) {
+			return;
+		}
+		(void)net_if_ipv4_router_rm(wan_router);
+	}
+	wan_router = net_if_ipv4_router_add(iface, &gw, true, 0);
+	LOG_INF("default router %s on %s%s", net_addr_ntop(NET_AF_INET, &gw, str, sizeof(str)),
+		name, wan_router == NULL ? " failed" : "");
+}
+
 static int lan_start(struct net_if *br)
 {
 	struct net_in_addr addr, mask, pool;
@@ -330,6 +362,9 @@ int main(void)
 	net_dhcpv4_init_option_callback(&wan_dns_cb, wan_dns_handler, 6 /* DNS server */, wan_dns,
 					sizeof(wan_dns));
 	(void)net_dhcpv4_add_option_callback(&wan_dns_cb);
+	net_dhcpv4_init_option_callback(&wan_gw_cb, wan_gw_handler, 3 /* router */, wan_gw,
+					sizeof(wan_gw));
+	(void)net_dhcpv4_add_option_callback(&wan_gw_cb);
 
 	net_eth_bridge_foreach(find_bridge, &lan_bridge);
 	if (lan_bridge != NULL) {
