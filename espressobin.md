@@ -263,7 +263,8 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - 88E6341: přemostěné porty mají společný port based VLAN map (0x06 bity 10:0) a FID 1, standalone porty FID 0, jako Linux bez VLAN filteringu. MAC bridge je statický záznam v ATU na CPU portu, protože rámce FROM_CPU se neučí (ATU FID je v G1 reg 0x01, Luke Howard 2026-07). Při změně členství se smažou naučené adresy.
 - Rezervovaný multicast 01:80:C2:00:00:0x a 2x (STP, LLDP, 802.1AS) se v DSA režimu trapuje na CPU (G1 0x1a pointery 0x00–0x03 = 0xff, CPU_DEST a PTP_CPU_DEST = port 0 s mgmt prioritou). Mezi přemostěnými porty se neflooduje.
 - Test `test_bridge_offload` v `tests/net/dsa_tag_mv88e6xxx`, upstream `tests/net/bridge` dál prochází.
-- Na hardwaru neověřeno.
+- Limity: mDNS si na každém rozhraní registruje UDP connection handler. Výchozí `CONFIG_NET_MAX_CONN=4` tak s DSA a DHCP klientem dojde a DHCP server pak selže při `bind` s `-ENOENT` (SSH stejně). Netshell má 16, router 24 (+ 32 kontextů a fd).
+- Na hardwaru: rozhraní, názvy portů a bridge0 ověřeny, DHCP server po opravě limitů zatím ne.
 
 ### 3.11 TCAM (88E6341)
 
