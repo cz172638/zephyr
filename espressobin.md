@@ -1,6 +1,6 @@
 # Zephyr na ESPRESSObin (Marvell Armada 3720): TF-A BL33 + síť přes 88E6341
 
-Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (51 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
+Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (53 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
 
 ## TL;DR
 
@@ -270,9 +270,14 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 
 ### 3.11 TCAM (88E6341)
 
-- Podle product briefu má Topaz TCAM pro ACL a PCL. Registry nejsou nikde popsané. Linux (`tcam.c`, 2026) je umí jen pro 6390/6393 (SMI adresa 0x1f; op 0x00: busy bit 15, 1 flush all, 2 flush, 3 load, 4 get next, 5 read; page v bitech 11:10, entry v 7:0; page 0 = 22 B match, page 1 = 26 B, page 2 = akce; port 0x0d bity 1:0 = režim 48/96 B).
-- Sonda: `mv88e6xxx tcam <entry> [smi addr]` přečte 3 stránky (registry 0x00–0x1f po každém READ) a port 0x0d. `mv88e6xxx reg <addr> <reg> [val]` je obecný přístup k registrům.
-- Plán podle výsledku: ACL (drop/trap podle L2–L4), QoS (fronta/priorita podle matche, navazuje na Qav), policing a mirror/trap na CPU.
+- Podle product briefu má Topaz TCAM pro ACL a PCL. Registry nejsou veřejně popsané.
+- Čtení na desce potvrdilo layout jako v Linuxu `tcam.c` pro 6390/6393: SMI 0x1f, op registr (busy 15, 1 flush all, 2 flush, 3 load, 4 get next, 5 read; page v bitech 11:10, entry 7:0). Flushnutá entry má keys1 = `0x00ff` (data bez masky, nikdy nematchne). Port reg 0x0d bity 1:0 jsou po resetu 0 (TCAM vypnutý).
+- Klíč má 48 B (page 0: keys1/keys2 se SPV a frame type, bajty 0–21 v reg 6–27; page 1: bajty 22–47 v reg 2–27). Registry jsou ve tvaru maska << 8 | data. Akce je na page 2: ACT3 (reg 4, bit 11 DPV valid, DPV 10:0) a ACT5 (reg 6, režim DPV 15:14: AND/OR/replace).
+- Klíč má vždy 4B slot pro tag: EtherType na 16, IPv4 od 18 (protokol 27, src 30, dst 34, L4 porty 38/40 bez IP options).
+- Implementace: `phy_marvell_mv88e6xxx_tcam.c`. Tabulka pravidel se řadí podle priority (nejnižší index vyhrává) a přepisuje se celá. Na portech s pravidly se zapne 48B režim. Akce: permit (výjimka), drop, trap na CPU, redirect a mirror. Kódování registrů má test v `tests/drivers/ethernet/mv88e6xxx_tcam`.
+- Shell: `mv88e6xxx tcam add <id> <prio> <porty> <akce> [match…]`, `del`, `list`, `flush`, `dump <entry>`.
+- Zatím neznámé: akce pro QoS (QPri/FPri override) a policing na page 2. TCAM čítače jsou v MIB bank 1 (0x08–0x0b).
+- Na desce: čtení ověřeno, zápis pravidel zatím ne (test: drop ICMP na lan0).
 
 ## 4. Nejistoty a otevřené body
 
@@ -294,7 +299,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (51 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (53 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
