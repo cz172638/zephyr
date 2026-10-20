@@ -14,6 +14,8 @@
 #include <zephyr/net/dsa_core.h>
 #include <zephyr/net/dsa_tag.h>
 
+#include "../../../../drivers/ethernet/dsa/dsa_tag_mv88e6xxx.h"
+
 static const uint8_t addrs[12] = {
 	0x02, 0x11, 0x22, 0x33, 0x44, 0x55, /* DA */
 	0x02, 0x66, 0x77, 0x88, 0x99, 0xaa, /* SA */
@@ -253,6 +255,88 @@ ZTEST(dsa_tag_mv88e6xxx, test_roundtrip_edsa_vlan)
 	zassert_equal_ptr(tag_edsa->recv(if_conduit, pkt), if_swp3);
 	check_frame(pkt, vtag, sizeof(vtag));
 	net_pkt_unref(pkt);
+}
+
+static struct {
+	int calls;
+	uint8_t port;
+	uint8_t msg;
+	uint16_t seq;
+	struct net_pkt *pkt;
+} rx_ts;
+
+static void fake_rx_tstamp(const struct dsa_switch_context *c, uint8_t port, struct net_pkt *pkt,
+			   uint8_t msg_type, uint16_t seq_id)
+{
+	rx_ts.calls++;
+	rx_ts.port = port;
+	rx_ts.msg = msg_type;
+	rx_ts.seq = seq_id;
+	rx_ts.pkt = pkt;
+}
+
+static struct dsa_tag_mv88e6xxx_data tag_data = {.rx_tstamp = fake_rx_tstamp};
+
+/* DA SA tag 88f7 + 34 byte PTP header */
+static struct net_pkt *rx_ptp(const uint8_t *tag, size_t tlen, bool vlan, uint8_t msg, uint16_t seq)
+{
+	uint8_t hdr[34] = {0};
+	const uint8_t vtag[] = {0x81, 0x00, 0x00, 0x05};
+	const uint8_t etype[] = {0x88, 0xf7};
+	struct net_pkt *pkt =
+		net_pkt_rx_alloc_with_buffer(if_conduit, 96, NET_AF_UNSPEC, 0, K_NO_WAIT);
+
+	hdr[0] = 0x10 | msg; /* transportSpecific 1 (802.1AS) */
+	hdr[1] = 0x02;
+	hdr[30] = seq >> 8;
+	hdr[31] = seq & 0xff;
+
+	zassert_not_null(pkt);
+	zassert_ok(net_pkt_write(pkt, addrs, sizeof(addrs)));
+	zassert_ok(net_pkt_write(pkt, tag, tlen));
+	if (vlan) {
+		zassert_ok(net_pkt_write(pkt, vtag, sizeof(vtag)));
+	}
+	zassert_ok(net_pkt_write(pkt, etype, sizeof(etype)));
+	zassert_ok(net_pkt_write(pkt, hdr, sizeof(hdr)));
+	return pkt;
+}
+
+ZTEST(dsa_tag_mv88e6xxx, test_rx_ptp_hook)
+{
+	const uint8_t fwd2[] = {0xc0, 2 << 3, 0x00, 0x00};
+	const uint8_t trap3[] = {0x00, 3 << 3, 0x00, 0x00};
+	struct net_pkt *pkt;
+
+	ctx.tagger_data = &tag_data;
+	memset(&rx_ts, 0, sizeof(rx_ts));
+
+	/* Sync on port 2 */
+	pkt = rx_ptp(fwd2, sizeof(fwd2), false, 0, 0x1234);
+	zassert_equal_ptr(tag_dsa->recv(if_conduit, pkt), if_swp2);
+	zassert_equal(rx_ts.calls, 1);
+	zassert_equal(rx_ts.port, 2);
+	zassert_equal(rx_ts.msg, 0);
+	zassert_equal(rx_ts.seq, 0x1234);
+	zassert_equal_ptr(rx_ts.pkt, pkt);
+	net_pkt_unref(pkt);
+
+	/* Pdelay_Resp behind an 802.1Q header on port 3 */
+	pkt = rx_ptp(trap3, sizeof(trap3), true, 3, 0xbeef);
+	zassert_equal_ptr(tag_dsa->recv(if_conduit, pkt), if_swp3);
+	zassert_equal(rx_ts.calls, 2);
+	zassert_equal(rx_ts.port, 3);
+	zassert_equal(rx_ts.msg, 3);
+	zassert_equal(rx_ts.seq, 0xbeef);
+	net_pkt_unref(pkt);
+
+	/* Follow_Up is a general message: no time stamp */
+	pkt = rx_ptp(fwd2, sizeof(fwd2), false, 8, 1);
+	zassert_equal_ptr(tag_dsa->recv(if_conduit, pkt), if_swp2);
+	zassert_equal(rx_ts.calls, 2);
+	net_pkt_unref(pkt);
+
+	ctx.tagger_data = NULL;
 }
 
 ZTEST_SUITE(dsa_tag_mv88e6xxx, NULL, setup, NULL, NULL, NULL);

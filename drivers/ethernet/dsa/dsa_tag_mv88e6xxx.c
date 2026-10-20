@@ -29,6 +29,8 @@ LOG_MODULE_REGISTER(dsa_tag_mv88e6xxx, CONFIG_NET_DSA_LOG_LEVEL);
 #include <zephyr/net/dsa_tag.h>
 #include <zephyr/sys/byteorder.h>
 
+#include "dsa_tag_mv88e6xxx.h"
+
 #define DSA_HLEN       4
 #define EDSA_HLEN      8
 #define EDSA_ETHERTYPE 0xdada
@@ -47,6 +49,43 @@ LOG_MODULE_REGISTER(dsa_tag_mv88e6xxx, CONFIG_NET_DSA_LOG_LEVEL);
 #define TO_CPU_CODE(t) (((t)[1] & 0x6) | (((t)[2] >> 4) & 1))
 
 #define CODE_FRAME2REG 1
+
+#define ETH_P_1588       0x88f7
+#define PTP_HDR_LEN      34
+#define PTP_SEQ_ID_OFF   30
+#define PTP_MSG_PDLY_RES 3
+
+#if defined(CONFIG_NET_L2_PTP_TIMESTAMPING)
+/* PTP event message on L2: let the switch driver attach the time stamp */
+static void mv_tag_rx_ptp(const struct dsa_switch_context *ctx, uint8_t port, struct net_pkt *pkt)
+{
+	const struct dsa_tag_mv88e6xxx_data *td = ctx->tagger_data;
+	struct net_buf *frag = pkt->frags;
+	size_t off = ADDRS_LEN;
+	uint16_t type;
+	uint8_t msg;
+
+	if (td == NULL || td->rx_tstamp == NULL || frag->len < off + 2) {
+		return;
+	}
+
+	type = sys_get_be16(&frag->data[off]);
+	if (type == NET_ETH_PTYPE_VLAN && frag->len >= off + 6) {
+		off += 4;
+		type = sys_get_be16(&frag->data[off]);
+	}
+	off += 2;
+
+	if (type != ETH_P_1588 || frag->len < off + PTP_HDR_LEN) {
+		return;
+	}
+
+	msg = frag->data[off] & 0x0f;
+	if (msg <= PTP_MSG_PDLY_RES) {
+		td->rx_tstamp(ctx, port, pkt, msg, sys_get_be16(&frag->data[off + PTP_SEQ_ID_OFF]));
+	}
+}
+#endif
 
 static struct net_if *mv_tag_recv(struct net_if *iface, struct net_pkt *pkt, bool edsa)
 {
@@ -110,6 +149,10 @@ static struct net_if *mv_tag_recv(struct net_if *iface, struct net_pkt *pkt, boo
 		memmove(&data[drop], data, ADDRS_LEN);
 		net_buf_pull(frag, drop);
 	}
+
+#if defined(CONFIG_NET_L2_PTP_TIMESTAMPING)
+	mv_tag_rx_ptp(ctx, port, pkt);
+#endif
 
 	return dst;
 }
