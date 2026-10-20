@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  PTP clock (TAI) of a Marvell 88E6xxx switch. Must be a child of the
+  marvell,mv88e6085 switch node; DSA ports refer to it with ptp-clock.
+
+compatible: "marvell,mv88e6xxx-ptp"
+
+include: base.yaml

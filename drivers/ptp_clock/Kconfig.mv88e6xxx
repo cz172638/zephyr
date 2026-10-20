@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config PTP_CLOCK_MV88E6XXX
+	bool "Marvell 88E6xxx switch PTP clock"
+	default y
+	depends on DT_HAS_MARVELL_MV88E6XXX_PTP_ENABLED
+	depends on PHY_MARVELL_MV88E6XXX
+	select NET_L2_PTP_TIMESTAMPING
+	help
+	  PTP clock of a Marvell 88E6xxx switch: a software time counter on
+	  top of the free running 32 bit TAI counter, as in Linux. Port
+	  time stamps are read by the DSA driver.

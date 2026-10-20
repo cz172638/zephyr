@@ -85,6 +85,24 @@ LOG_MODULE_REGISTER(phy_mv88e6xxx, CONFIG_PHY_LOG_LEVEL);
 #define G1_CTL2            0x1c
 #define G1_CTL2_DEVICE_NUM GENMASK(4, 0)
 
+/* Global 2 AVB/PTP indirect access (Linux global2_avb.c) */
+#define G2_AVB_CMD           0x16
+#define G2_AVB_DATA          0x17
+#define AVB_CMD_BUSY         BIT(15)
+#define AVB_CMD_BLOCK_PTP    (0 << 5)
+/* 88E6352 layout */
+#define AVB6352_OP_READ      0x4000
+#define AVB6352_OP_READ_INCR 0x6000
+#define AVB6352_OP_WRITE     0x3000
+#define AVB6352_PORT_TAI     0xe
+#define AVB6352_PORT_PTP     0xf
+/* 88E6390/6341 layout */
+#define AVB6390_OP_READ      0x0000
+#define AVB6390_OP_READ_INCR 0x4000
+#define AVB6390_OP_WRITE     0x6000
+#define AVB6390_PORT_TAI     0x1e
+#define AVB6390_PORT_PTP     0x1f
+
 /* Global 2 SMI PHY access */
 #define G2_SMI_PHY_CMD  0x18
 #define G2_SMI_PHY_DATA 0x19
@@ -109,6 +127,8 @@ struct mv88e6xxx_data {
 	struct k_work_delayable monitor;
 	/* DSA tagging on the CPU port, carrier = CPU port link */
 	bool dsa;
+	/* Product number (port register 3, bits 15:4) */
+	uint16_t product;
 };
 
 static int mc_wait(const struct mv88e6xxx_config *cfg)
@@ -370,6 +390,121 @@ int mv88e6xxx_phy_write(const struct device *dev, uint8_t phy, uint8_t reg, uint
 	return ret;
 }
 
+uint16_t mv88e6xxx_product(const struct device *dev)
+{
+	struct mv88e6xxx_data *data = dev->data;
+
+	return data->product;
+}
+
+/* 88E6341/6141 and the 6390 family use the 6390 AVB command layout */
+static bool avb_is_6390(const struct mv88e6xxx_data *data)
+{
+	switch (data->product) {
+	case 0x341:
+	case 0x141:
+	case 0x390:
+	case 0x190:
+	case 0x191:
+	case 0x290:
+	case 0x393:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int avb_wait(const struct mv88e6xxx_config *cfg)
+{
+	uint16_t val;
+	int ret;
+
+	for (int i = 0; i < SMI_TIMEOUT_US / 10; i++) {
+		ret = sw_read(cfg, ADDR_GLOBAL2, G2_AVB_CMD, &val);
+		if (ret < 0) {
+			return ret;
+		}
+		if ((val & AVB_CMD_BUSY) == 0) {
+			return 0;
+		}
+		k_busy_wait(10);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static uint16_t avb_port(const struct mv88e6xxx_data *data, int port)
+{
+	bool l6390 = avb_is_6390(data);
+
+	if (port == MV88E6XXX_AVB_PORT_TAI) {
+		port = l6390 ? AVB6390_PORT_TAI : AVB6352_PORT_TAI;
+	} else if (port == MV88E6XXX_AVB_PORT_PTP) {
+		port = l6390 ? AVB6390_PORT_PTP : AVB6352_PORT_PTP;
+	}
+
+	return (port & (l6390 ? 0x1f : 0x0f)) << 8;
+}
+
+int mv88e6xxx_avb_read(const struct device *dev, int port, uint8_t addr, uint16_t *buf, int len)
+{
+	const struct mv88e6xxx_config *cfg = dev->config;
+	struct mv88e6xxx_data *data = dev->data;
+	bool l6390 = avb_is_6390(data);
+	uint16_t op;
+	int ret;
+
+	/* The hardware snapshots at most four words */
+	if (len < 1 || len > 4) {
+		return -EINVAL;
+	}
+	if (len == 1) {
+		op = l6390 ? AVB6390_OP_READ : AVB6352_OP_READ;
+	} else {
+		op = l6390 ? AVB6390_OP_READ_INCR : AVB6352_OP_READ_INCR;
+	}
+	op |= AVB_CMD_BUSY | avb_port(data, port) | AVB_CMD_BLOCK_PTP | (addr & 0x1f);
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = avb_wait(cfg);
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL2, G2_AVB_CMD, op);
+	}
+	if (ret == 0) {
+		ret = avb_wait(cfg);
+	}
+	for (int i = 0; ret == 0 && i < len; i++) {
+		ret = sw_read(cfg, ADDR_GLOBAL2, G2_AVB_DATA, &buf[i]);
+	}
+	k_mutex_unlock(&data->lock);
+
+	return ret;
+}
+
+int mv88e6xxx_avb_write(const struct device *dev, int port, uint8_t addr, uint16_t val)
+{
+	const struct mv88e6xxx_config *cfg = dev->config;
+	struct mv88e6xxx_data *data = dev->data;
+	uint16_t op = (avb_is_6390(data) ? AVB6390_OP_WRITE : AVB6352_OP_WRITE) | AVB_CMD_BUSY |
+		      avb_port(data, port) | AVB_CMD_BLOCK_PTP | (addr & 0x1f);
+	int ret;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = avb_wait(cfg);
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL2, G2_AVB_DATA, val);
+	}
+	if (ret == 0) {
+		ret = sw_write(cfg, ADDR_GLOBAL2, G2_AVB_CMD, op);
+	}
+	if (ret == 0) {
+		ret = avb_wait(cfg);
+	}
+	k_mutex_unlock(&data->lock);
+
+	return ret;
+}
+
 uint8_t mv88e6xxx_cpu_port(const struct device *dev)
 {
 	const struct mv88e6xxx_config *cfg = dev->config;
@@ -469,8 +604,9 @@ static int mv88e6xxx_init(const struct device *dev)
 		LOG_ERR("no switch at SMI address %u (%d)", cfg->sw_addr, ret);
 		return ret;
 	}
-	LOG_INF("switch product 0x%03lx rev %u at SMI address %u",
-		FIELD_GET(PORT_SWITCH_ID_PROD, id), id & 0xf, cfg->sw_addr);
+	data->product = FIELD_GET(PORT_SWITCH_ID_PROD, id);
+	LOG_INF("switch product 0x%03x rev %u at SMI address %u", data->product, id & 0xf,
+		cfg->sw_addr);
 
 	/* User ports may only talk to the CPU port */
 	for (int i = 0; i < cfg->num_user_ports; i++) {

@@ -26,6 +26,20 @@ int mv88e6xxx_phy_write(const struct device *dev, uint8_t phy, uint8_t reg, uint
 
 uint8_t mv88e6xxx_cpu_port(const struct device *dev);
 
+/* Product number, e.g. 0x341 */
+uint16_t mv88e6xxx_product(const struct device *dev);
+
+/* AVB block "port" numbers for the global PTP and TAI registers */
+#define MV88E6XXX_AVB_PORT_PTP (-1)
+#define MV88E6XXX_AVB_PORT_TAI (-2)
+
+/* PTP block registers through the Global 2 AVB command/data registers:
+ * port is a switch port or MV88E6XXX_AVB_PORT_PTP/TAI, up to 4 words are
+ * read starting at addr.
+ */
+int mv88e6xxx_avb_read(const struct device *dev, int port, uint8_t addr, uint16_t *buf, int len);
+int mv88e6xxx_avb_write(const struct device *dev, int port, uint8_t addr, uint16_t val);
+
 /* Switch the CPU port to tagged frames; the MAC carrier then follows the
  * CPU port link instead of the user ports.
  */
