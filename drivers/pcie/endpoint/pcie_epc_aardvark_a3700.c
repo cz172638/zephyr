@@ -1,0 +1,564 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Armada 3700 glue of the Aardvark endpoint: peripheral clock, COMPHY
+ * lane 1 through the TF-A SiP service, the outbound memory window,
+ * link polling, optional PERST# input and a bring-up shell.
+ */
+
+#define DT_DRV_COMPAT marvell_armada_3700_pcie_ep
+
+#include <stdlib.h>
+#include <string.h>
+
+#include <zephyr/arch/arm64/arm-smccc.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pinctrl.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
+#include <zephyr/sys/barrier.h>
+#include <zephyr/sys/device_mmio.h>
+
+#include "pcie_epc_aardvark.h"
+
+LOG_MODULE_REGISTER(pcie_epc_a3700, CONFIG_PCIE_EP_LOG_LEVEL);
+
+struct a3700_ep_config {
+	uintptr_t reg_phys;
+	size_t reg_size;
+	uintptr_t mem_phys;
+	size_t mem_size;
+	const struct pinctrl_dev_config *pcfg;
+	const struct device *clk_dev;
+	clock_control_subsys_t clk_id;
+	struct gpio_dt_spec perst;
+	uint8_t comphy_lane;
+	uint8_t comphy_invert;
+	bool comphy_skip;
+	uint8_t num_lanes;
+	uint8_t max_speed;
+	bool autostart;
+};
+
+struct a3700_ep_data {
+	struct advk_ep_data base; /* must be first */
+	const struct device *dev;
+	struct k_work_delayable poll_work;
+	bool perst_asserted;
+	long comphy_ret;
+};
+
+static long comphy_power_on(const struct device *dev)
+{
+	const struct a3700_ep_config *cfg = dev->config;
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(ADVK_SIP_COMPHY_POWER_ON, cfg->comphy_lane,
+		      ADVK_COMPHY_PARAM(cfg->comphy_invert, cfg->num_lanes), 0, 0, 0, 0, 0, &res);
+	return (long)res.a0;
+}
+
+static void perst_poll(const struct device *dev)
+{
+	const struct a3700_ep_config *cfg = dev->config;
+	struct a3700_ep_data *data = dev->data;
+	struct pcie_epc_data *core = dev->data;
+	int v;
+
+	if (cfg->perst.port == NULL) {
+		return;
+	}
+
+	v = gpio_pin_get_dt(&cfg->perst);
+	if (v < 0 || (v != 0) == data->perst_asserted) {
+		return;
+	}
+
+	data->perst_asserted = v != 0;
+	if (data->perst_asserted) {
+		LOG_INF("%s: PERST# asserted", dev->name);
+		advk_ep_stop(dev);
+		pcie_epc_notify(dev, PCIE_EPC_EVT_PERST_ASSERT, 0);
+	} else {
+		LOG_INF("%s: PERST# deasserted", dev->name);
+		if (core->started) {
+			advk_ep_start(dev);
+		}
+		pcie_epc_notify(dev, PCIE_EPC_EVT_PERST_DEASSERT, 0);
+	}
+}
+
+static void poll_handler(struct k_work *work)
+{
+	struct k_work_delayable *dw = k_work_delayable_from_work(work);
+	struct a3700_ep_data *data = CONTAINER_OF(dw, struct a3700_ep_data, poll_work);
+
+	perst_poll(data->dev);
+	advk_ep_poll(data->dev, k_uptime_get_32());
+	k_work_schedule(dw, K_MSEC(CONFIG_PCIE_EPC_AARDVARK_POLL_MS));
+}
+
+static int a3700_ep_start(const struct device *dev)
+{
+	struct a3700_ep_data *data = dev->data;
+
+	/* with PERST# wired, training starts on its deassertion */
+	if (data->perst_asserted) {
+		return 0;
+	}
+	return advk_ep_start(dev);
+}
+
+static int a3700_ep_init(const struct device *dev)
+{
+	const struct a3700_ep_config *cfg = dev->config;
+	struct a3700_ep_data *data = dev->data;
+	struct advk_ep *ep = advk_ep(dev);
+	mm_reg_t ob;
+	int ret;
+
+	data->dev = dev;
+
+	/* PCIE1_RESETn is an output of the controller: GPIO in EP mode */
+	if (cfg->pcfg != NULL) {
+		ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
+		if (ret != 0) {
+			return ret;
+		}
+	}
+
+	if (!device_is_ready(cfg->clk_dev)) {
+		return -ENODEV;
+	}
+	ret = clock_control_on(cfg->clk_dev, cfg->clk_id);
+	if (ret != 0) {
+		LOG_ERR("clock on failed (%d)", ret);
+		return ret;
+	}
+
+	if (!cfg->comphy_skip) {
+		data->comphy_ret = comphy_power_on(dev);
+		if (data->comphy_ret != 0) {
+			/* keep going: the registers are reachable for the shell */
+			LOG_ERR("COMPHY lane %u PCIe power on failed (%ld)", cfg->comphy_lane,
+				data->comphy_ret);
+		}
+	}
+
+	device_map(&ep->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
+	device_map(&ob, cfg->mem_phys, cfg->mem_size, K_MEM_CACHE_NONE);
+	ep->ob_virt = ob;
+	ep->ob_phys = cfg->mem_phys;
+	ep->ob_size = cfg->mem_size;
+	ep->num_lanes = cfg->num_lanes;
+	ep->max_speed = cfg->max_speed;
+
+	if (cfg->perst.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->perst)) {
+			return -ENODEV;
+		}
+		ret = gpio_pin_configure_dt(&cfg->perst, GPIO_INPUT);
+		if (ret != 0) {
+			return ret;
+		}
+		data->perst_asserted = gpio_pin_get_dt(&cfg->perst) > 0;
+	}
+
+	ret = advk_ep_init(dev, cfg->autostart);
+	if (ret != 0) {
+		return ret;
+	}
+
+	k_work_init_delayable(&data->poll_work, poll_handler);
+	k_work_schedule(&data->poll_work, K_MSEC(CONFIG_PCIE_EPC_AARDVARK_POLL_MS));
+
+	LOG_INF("%s: x%u Gen%u, OB 0x%lx+0x%zx, comphy %ld%s", dev->name, cfg->num_lanes,
+		cfg->max_speed, (unsigned long)cfg->mem_phys, cfg->mem_size, data->comphy_ret,
+		cfg->perst.port != NULL ? ", PERST# on GPIO" : "");
+	return 0;
+}
+
+static DEVICE_API(pcie_epc, a3700_ep_api) = {
+	.start = a3700_ep_start,
+	.stop = advk_ep_stop,
+	.write_header = advk_ep_write_header,
+	.set_bar = advk_ep_set_bar,
+	.clear_bar = advk_ep_clear_bar,
+	.map_addr = advk_ep_map_addr,
+	.unmap_addr = advk_ep_unmap_addr,
+	.set_msi = advk_ep_set_msi,
+	.get_msi = advk_ep_get_msi,
+	.raise_irq = advk_ep_raise_irq,
+	.cfg_read = advk_ep_cfg_read,
+	.cfg_write = advk_ep_cfg_write,
+	.get_features = advk_ep_get_features,
+	.link_up = advk_ep_link_up,
+	.cpu_to_axi = advk_ep_cpu_to_axi,
+};
+
+#define A3700_EP_HAS_PINCTRL(n) DT_INST_PINCTRL_HAS_NAME(n, default)
+
+#define A3700_EP_DEFINE(n)                                                                         \
+	IF_ENABLED(A3700_EP_HAS_PINCTRL(n), (PINCTRL_DT_INST_DEFINE(n);))                         \
+	static const struct a3700_ep_config a3700_ep_cfg_##n = {                                   \
+		.pcfg = COND_CODE_1(A3700_EP_HAS_PINCTRL(n), (PINCTRL_DT_INST_DEV_CONFIG_GET(n)),  \
+				    (NULL)),                                                       \
+		.reg_phys = DT_INST_REG_ADDR_BY_NAME(n, ctrl),                                     \
+		.reg_size = DT_INST_REG_SIZE_BY_NAME(n, ctrl),                                     \
+		.mem_phys = DT_INST_REG_ADDR_BY_NAME(n, mem),                                      \
+		.mem_size = DT_INST_REG_SIZE_BY_NAME(n, mem),                                      \
+		.clk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                                  \
+		.clk_id = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, index),                   \
+		.perst = GPIO_DT_SPEC_INST_GET_OR(n, perst_gpios, {0}),                            \
+		.comphy_lane = DT_INST_PROP(n, marvell_comphy_lane),                               \
+		.comphy_invert = DT_INST_PROP(n, marvell_comphy_polarity_invert),                  \
+		.comphy_skip = DT_INST_PROP(n, marvell_comphy_skip),                               \
+		.num_lanes = DT_INST_PROP_OR(n, num_lanes, 1),                                     \
+		.max_speed = DT_INST_PROP_OR(n, max_link_speed, 2),                                \
+		.autostart = !DT_INST_PROP(n, zephyr_no_autostart),                                \
+	};                                                                                         \
+	static struct a3700_ep_data a3700_ep_data_##n;                                             \
+	DEVICE_DT_INST_DEFINE(n, a3700_ep_init, NULL, &a3700_ep_data_##n, &a3700_ep_cfg_##n,       \
+			      POST_KERNEL, CONFIG_PCIE_EPC_INIT_PRIORITY, &a3700_ep_api);
+
+DT_INST_FOREACH_STATUS_OKAY(A3700_EP_DEFINE)
+
+#ifdef CONFIG_PCIE_EPC_AARDVARK_SHELL
+
+#define EP_DEV DEVICE_DT_INST_GET(0)
+
+static int parse_u(const struct shell *sh, const char *s, unsigned long long *v)
+{
+	char *end;
+
+	*v = strtoull(s, &end, 0);
+	if (*end != '\0') {
+		shell_error(sh, "bad number '%s'", s);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static void dump_words(const struct shell *sh, struct advk_ep *ep, uint32_t off, uint32_t len)
+{
+	off &= ~3U;
+	for (uint32_t o = off; o < off + len && o < ADVK_REG_SPACE; o += 16) {
+		shell_fprintf(sh, SHELL_NORMAL, "%05x:", o);
+		for (uint32_t i = 0; i < 16 && o + i < off + len; i += 4) {
+			shell_fprintf(sh, SHELL_NORMAL, " %08x", advk_rd(ep, o + i));
+		}
+		shell_fprintf(sh, SHELL_NORMAL, "\n");
+	}
+}
+
+static int cmd_status(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = EP_DEV;
+	struct advk_ep *ep = advk_ep(dev);
+	struct a3700_ep_data *data = dev->data;
+	struct pcie_epc_data *core = dev->data;
+	uint32_t lnk = advk_rd(ep, ADVK_CFG_LNKCTL_STA) >> 16;
+	uint8_t s = advk_ltssm(ep);
+
+	shell_print(sh, "ltssm      0x%02x %s, link %s, started %d, perst %s", s,
+		    advk_ltssm_name(s), advk_ltssm_is_up(s) ? "up" : "down", core->started,
+		    data->perst_asserted ? "asserted" : "-");
+	shell_print(sh, "lnksta     %04x: Gen%u x%u", lnk, lnk & 0xf, (lnk >> 4) & 0x3f);
+	shell_print(sh, "id         %08x  cmd/sts %08x  class %08x  ssid %08x",
+		    advk_rd(ep, ADVK_CFG_ID), advk_rd(ep, ADVK_CFG_CMD_STATUS),
+		    advk_rd(ep, ADVK_CFG_REV_CLASS), advk_rd(ep, ADVK_CFG_SSID));
+	shell_print(sh, "lmi vendor %08x  lmi cfg %08x", advk_rd(ep, ADVK_LMI_VENDOR_ID),
+		    advk_rd(ep, ADVK_LMI_CFG));
+	shell_print(sh, "ctrl0      %08x  ctrl2 %08x  refclk %08x  mode %08x",
+		    advk_rd(ep, ADVK_CTRL0), advk_rd(ep, ADVK_CTRL2), advk_rd(ep, ADVK_REF_CLK),
+		    advk_rd(ep, ADVK_CTRL_CONFIG));
+	shell_print(sh, "isr0       %08x  isr1 %08x  host int %08x  msg log %08x",
+		    advk_rd(ep, ADVK_ISR0), advk_rd(ep, ADVK_ISR1),
+		    advk_rd(ep, ADVK_HOST_INT_STATUS), advk_rd(ep, ADVK_MSG_LOG));
+	for (int b = 0; b < PCIE_EPC_NUM_BARS; b++) {
+		shell_print(sh, "BAR%d       %08x  wanted 0x%zx @ 0x%llx", b,
+			    advk_rd(ep, ADVK_CFG_BAR(b)), ep->bar[b].size,
+			    (unsigned long long)ep->bar[b].phys);
+	}
+	if (ep->msi_cap != 0) {
+		shell_print(sh, "MSI @%02x    %08x %08x %08x %08x", ep->msi_cap,
+			    advk_rd(ep, ep->msi_cap), advk_rd(ep, ep->msi_cap + 4),
+			    advk_rd(ep, ep->msi_cap + 8), advk_rd(ep, ep->msi_cap + 12));
+	} else {
+		shell_print(sh, "MSI        no capability found");
+	}
+	for (int w = 0; w < ADVK_OB_WIN_COUNT; w++) {
+		if (ep->ob_cpu[w] != 0) {
+			shell_print(sh, "OB%d        cpu 0x%lx match %08x remap %08x%08x mask %08x",
+				    w, (unsigned long)ep->ob_cpu[w],
+				    advk_rd(ep, ADVK_OB_MATCH_LS(w)),
+				    advk_rd(ep, ADVK_OB_REMAP_MS(w)),
+				    advk_rd(ep, ADVK_OB_REMAP_LS(w)),
+				    advk_rd(ep, ADVK_OB_MASK_LS(w)));
+		}
+	}
+	shell_print(sh, "events     up %u down %u hot-reset %u reprogrammed %u, comphy %ld",
+		    ep->link_ups, ep->link_downs, ep->hot_resets, ep->reapplies,
+		    data->comphy_ret);
+	return 0;
+}
+
+static int cmd_hist(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+
+	for (int i = 1; i <= ADVK_LTSSM_HIST; i++) {
+		int k = (ep->hist_head + i) % ADVK_LTSSM_HIST;
+
+		if (ep->hist[k].ms != 0) {
+			shell_print(sh, "%8u ms  0x%02x %s", ep->hist[k].ms, ep->hist[k].state,
+				    advk_ltssm_name(ep->hist[k].state));
+		}
+	}
+	return 0;
+}
+
+static int cmd_trace(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long ms = 100;
+	struct {
+		uint8_t s;
+		uint32_t us;
+	} t[64];
+	int n = 0;
+	uint32_t t0 = k_cycle_get_32();
+	uint32_t end_us;
+	uint8_t last = 0xff;
+
+	if (argc > 1 && parse_u(sh, argv[1], &ms) != 0) {
+		return -EINVAL;
+	}
+	end_us = (uint32_t)MIN(ms, 10000ULL) * 1000U;
+
+	for (;;) {
+		uint32_t us = k_cyc_to_us_floor32(k_cycle_get_32() - t0);
+		uint8_t s = advk_ltssm(ep);
+
+		if (s != last && n < ARRAY_SIZE(t)) {
+			t[n].s = s;
+			t[n].us = us;
+			n++;
+			last = s;
+		}
+		if (us >= end_us) {
+			break;
+		}
+		k_busy_wait(5);
+	}
+
+	for (int i = 0; i < n; i++) {
+		shell_print(sh, "%8u us  0x%02x %s", t[i].us, t[i].s, advk_ltssm_name(t[i].s));
+	}
+	if (n == ARRAY_SIZE(t)) {
+		shell_print(sh, "(truncated)");
+	}
+	return 0;
+}
+
+static const struct {
+	const char *name;
+	uint32_t off;
+	uint32_t len;
+} regions[] = {
+	{"cfg", 0x0, 0x200},	{"ctrl", 0x4800, 0xa0},	   {"ob", 0x4c00, 0x100},
+	{"lmi", 0x6000, 0x200}, {"core", 0x18000, 0x40}, {"irq", 0x1b000, 0x20},
+};
+
+static int cmd_dump(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long off, len = 0x40;
+
+	if (argc < 2) {
+		for (int i = 0; i < ARRAY_SIZE(regions); i++) {
+			shell_print(sh, "-- %s", regions[i].name);
+			dump_words(sh, ep, regions[i].off, regions[i].len);
+		}
+		return 0;
+	}
+	for (int i = 0; i < ARRAY_SIZE(regions); i++) {
+		if (strcmp(argv[1], regions[i].name) == 0) {
+			dump_words(sh, ep, regions[i].off, regions[i].len);
+			return 0;
+		}
+	}
+	if (parse_u(sh, argv[1], &off) != 0 || (argc > 2 && parse_u(sh, argv[2], &len) != 0)) {
+		return -EINVAL;
+	}
+	if (off >= ADVK_REG_SPACE) {
+		shell_error(sh, "offset beyond 0x%x", ADVK_REG_SPACE);
+		return -EINVAL;
+	}
+	dump_words(sh, ep, off, len);
+	return 0;
+}
+
+static int cmd_rd(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long long off;
+
+	if (parse_u(sh, argv[1], &off) != 0 || off >= ADVK_REG_SPACE) {
+		return -EINVAL;
+	}
+	shell_print(sh, "%05llx: %08x", off & ~3ULL, advk_rd(advk_ep(EP_DEV), off & ~3U));
+	return 0;
+}
+
+static int cmd_wr(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long off, val;
+
+	if (parse_u(sh, argv[1], &off) != 0 || parse_u(sh, argv[2], &val) != 0 ||
+	    off >= ADVK_REG_SPACE) {
+		return -EINVAL;
+	}
+	advk_wr(ep, off & ~3U, (uint32_t)val);
+	shell_print(sh, "%05llx: %08x", off & ~3ULL, advk_rd(ep, off & ~3U));
+	return 0;
+}
+
+/* Which bits of a register can be changed: write the inverse, read, restore */
+static int cmd_probe(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long off, len = 4;
+
+	if (parse_u(sh, argv[1], &off) != 0 || (argc > 2 && parse_u(sh, argv[2], &len) != 0) ||
+	    off >= ADVK_REG_SPACE) {
+		return -EINVAL;
+	}
+
+	for (uint32_t o = off & ~3U; o < off + len && o < ADVK_REG_SPACE; o += 4) {
+		uint32_t orig = advk_rd(ep, o);
+		uint32_t inv, ones, zeros;
+
+		advk_wr(ep, o, ~orig);
+		inv = advk_rd(ep, o);
+		advk_wr(ep, o, UINT32_MAX);
+		ones = advk_rd(ep, o);
+		advk_wr(ep, o, 0);
+		zeros = advk_rd(ep, o);
+		advk_wr(ep, o, orig);
+		shell_print(sh, "%05x: %08x  rw %08x  ~ %08x  1s %08x  0s %08x  now %08x", o, orig,
+			    inv ^ orig, inv, ones, zeros, advk_rd(ep, o));
+	}
+	return 0;
+}
+
+static int cmd_start(const struct shell *sh, size_t argc, char **argv)
+{
+	return pcie_epc_start(EP_DEV);
+}
+
+static int cmd_stop(const struct shell *sh, size_t argc, char **argv)
+{
+	pcie_epc_stop(EP_DEV);
+	return 0;
+}
+
+static int cmd_setup(const struct shell *sh, size_t argc, char **argv)
+{
+	advk_ep_hw_setup(EP_DEV);
+	shell_print(sh, "controller reprogrammed, training off; header/BARs need the EPF again");
+	return 0;
+}
+
+static int cmd_comphy(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = EP_DEV;
+	struct a3700_ep_data *data = dev->data;
+
+	data->comphy_ret = comphy_power_on(dev);
+	shell_print(sh, "COMPHY power on: %ld", data->comphy_ret);
+	/* TF-A leaves the reference clock register to the PCIe driver */
+	shell_print(sh, "refclk %08x", advk_rd(advk_ep(dev), ADVK_REF_CLK));
+	return 0;
+}
+
+static int cmd_intx(const struct shell *sh, size_t argc, char **argv)
+{
+	return pcie_epc_raise_irq(EP_DEV, 0, PCIE_EPC_IRQ_INTX, 0);
+}
+
+static int cmd_msi(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long long n = 1;
+	int ret;
+
+	if (argc > 1 && parse_u(sh, argv[1], &n) != 0) {
+		return -EINVAL;
+	}
+	ret = pcie_epc_raise_irq(EP_DEV, 0, PCIE_EPC_IRQ_MSI, (uint16_t)n);
+	if (ret != 0) {
+		shell_error(sh, "MSI %llu: %d", n, ret);
+	}
+	return ret;
+}
+
+/* Read (or write one word of) host memory through an outbound window */
+static int cmd_host(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = EP_DEV;
+	struct pcie_epc_host_map map;
+	unsigned long long addr, arg = 64;
+	bool write = argc > 2 && argv[2][0] == '=';
+	int ret;
+
+	if (parse_u(sh, argv[1], &addr) != 0 ||
+	    (argc > 2 && parse_u(sh, argv[2] + (write ? 1 : 0), &arg) != 0)) {
+		return -EINVAL;
+	}
+
+	ret = pcie_epc_map_host(dev, 0, addr, write ? 4 : MIN(arg, 4096ULL), &map);
+	if (ret != 0) {
+		shell_error(sh, "map 0x%llx: %d", addr, ret);
+		return ret;
+	}
+	if (write) {
+		sys_write32((uint32_t)arg, (mem_addr_t)map.ptr);
+		barrier_dmem_fence_full();
+		shell_print(sh, "0x%llx <- %08x, reads %08x", addr, (uint32_t)arg,
+			    sys_read32((mem_addr_t)map.ptr));
+	} else {
+		shell_hexdump(sh, (const uint8_t *)map.ptr, MIN(arg, 4096ULL));
+	}
+	pcie_epc_unmap_host(dev, &map);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_advk_ep, SHELL_CMD(status, NULL, "Link, header, BARs, windows, events", cmd_status),
+	SHELL_CMD(hist, NULL, "LTSSM history of the link poll", cmd_hist),
+	SHELL_CMD_ARG(trace, NULL, "[ms] Busy-poll LTSSM transitions (default 100)", cmd_trace,
+		      1, 1),
+	SHELL_CMD_ARG(dump, NULL, "[cfg|ctrl|ob|lmi|core|irq|<off> [len]] Register dump",
+		      cmd_dump, 1, 2),
+	SHELL_CMD_ARG(rd, NULL, "<off> Read a controller register", cmd_rd, 2, 0),
+	SHELL_CMD_ARG(wr, NULL, "<off> <val> Write a controller register", cmd_wr, 3, 0),
+	SHELL_CMD_ARG(probe, NULL, "<off> [len] Writable bits (writes, then restores!)",
+		      cmd_probe, 2, 1),
+	SHELL_CMD(start, NULL, "Enable link training", cmd_start),
+	SHELL_CMD(stop, NULL, "Disable link training", cmd_stop),
+	SHELL_CMD(setup, NULL, "Reprogram the controller (EP mode, refclk in)", cmd_setup),
+	SHELL_CMD(comphy, NULL, "Power the COMPHY lane on again", cmd_comphy),
+	SHELL_CMD(intx, NULL, "Pulse INTx", cmd_intx),
+	SHELL_CMD_ARG(msi, NULL, "[n] Send MSI n (1-based)", cmd_msi, 1, 1),
+	SHELL_CMD_ARG(host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
+		      1),
+	SHELL_SUBCMD_SET_END);
+
+SHELL_CMD_REGISTER(advk_ep, &sub_advk_ep, "Armada 3700 PCIe endpoint", NULL);
+
+#endif /* CONFIG_PCIE_EPC_AARDVARK_SHELL */

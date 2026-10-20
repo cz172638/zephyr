@@ -1,0 +1,33 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config PCIE_EPC_AARDVARK
+	bool "Marvell Armada 3700 (Aardvark) endpoint controller"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_PCIE_EP_ENABLED
+	depends on ARM64
+	select PCIE_EPC
+	help
+	  The Armada 3700 PCIe controller in endpoint mode, its reset
+	  default. Header, outbound windows, MSI and link events; BAR
+	  sizing and inbound translation are undocumented and left at the
+	  reset defaults.
+
+if PCIE_EPC_AARDVARK
+
+config PCIE_EPC_AARDVARK_POLL_MS
+	int "Link poll period [ms]"
+	default 20
+	help
+	  The controller interrupt sources of endpoint mode are not known,
+	  link state, bus master enable and PERST# are polled.
+
+config PCIE_EPC_AARDVARK_SHELL
+	bool "Bring-up shell (advk_ep)"
+	default y
+	depends on SHELL
+	help
+	  Register dumps, writable bit probing, LTSSM tracing, INTx/MSI
+	  and host memory access through an outbound window.
+
+endif # PCIE_EPC_AARDVARK

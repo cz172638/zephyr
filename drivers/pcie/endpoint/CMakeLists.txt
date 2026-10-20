@@ -11,4 +11,8 @@ zephyr_library_sources_ifdef(
   )
 
 zephyr_library_sources_ifdef(CONFIG_PCIE_EPC pcie_epc_core.c)
+zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_AARDVARK
+  pcie_epc_aardvark.c
+  pcie_epc_aardvark_a3700.c
+  )
 add_subdirectory_ifdef(CONFIG_PCIE_EPC functions)

@@ -188,6 +188,23 @@
 			status = "disabled";
 		};
 
+		/* PCIe in endpoint mode; mem: AXI range decoded to PCIe for
+		 * outbound windows (0xe8000000..0xefffffff, power of two used)
+		 */
+		pcie_ep: pcie-ep@d0070000 {
+			compatible = "marvell,armada-3700-pcie-ep";
+			reg = <0xd0070000 0x20000>, <0xe8000000 0x1000000>;
+			reg-names = "ctrl", "mem";
+			interrupts = <GIC_SPI 29 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			/* pcie */
+			clocks = <&sb_periph_clk 13>;
+			num-lanes = <1>;
+			max-link-speed = <2>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		gic: interrupt-controller@d1d00000 {
 			compatible = "arm,gic-v3", "arm,gic";
 			reg = <0xd1d00000 0x10000>, /* GICD */
@@ -245,6 +262,15 @@
 			marvell,bridge = <A37XX_SB>;
 			marvell,mask = <A37XX_SB_RGMII>;
 			marvell,value = <0>;
+		};
+	};
+
+	/* PCIe endpoint: PCIE1_RESETn (MPP2_3) as GPIO, PERST# comes in */
+	pcie_ep_default: pcie_ep_default {
+		pcie1 {
+			marvell,bridge = <A37XX_SB>;
+			marvell,mask = <A37XX_SB_PCIE1>;
+			marvell,value = <A37XX_SB_PCIE1>;
 		};
 	};
 

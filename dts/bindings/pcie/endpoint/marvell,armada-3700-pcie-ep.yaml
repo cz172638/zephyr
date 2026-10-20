@@ -1,0 +1,51 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 3700 (Aardvark) PCIe controller in endpoint mode.
+
+  The reference clock comes from the host (the controller's REFCLK pins
+  are switched to input). The COMPHY lane is powered through the TF-A
+  SiP service MV_SIP_COMPHY_POWER_ON.
+
+compatible: "marvell,armada-3700-pcie-ep"
+
+include: [pcie-ep-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: |
+      "ctrl": controller registers, "mem": the AXI range decoded to PCIe,
+      used for outbound windows (power of two sized and aligned).
+
+  clocks:
+    required: true
+
+  interrupts:
+    description: Controller interrupt (not used yet, the driver polls).
+
+  perst-gpios:
+    type: phandle-array
+    description: |
+      PERST# from the host. The controller's PCIE_RESETn pin is an output,
+      so it has to come in through a GPIO. Without it training is enabled
+      once and the link state is polled.
+
+  marvell,comphy-lane:
+    type: int
+    default: 1
+    description: COMPHY lane carrying PCIe (lane 1 on the A3720).
+
+  marvell,comphy-polarity-invert:
+    type: int
+    default: 0
+    enum: [0, 1, 2, 3]
+    description: COMPHY polarity inversion, bit 0 TX, bit 1 RX.
+
+  marvell,comphy-skip:
+    type: boolean
+    description: Do not call the COMPHY SiP service (debugging).
