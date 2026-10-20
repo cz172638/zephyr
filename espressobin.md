@@ -1,6 +1,6 @@
 # Zephyr na ESPRESSObin (Marvell Armada 3720): TF-A BL33 + síť přes 88E6341
 
-Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (40 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
+Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (43 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
 
 ## TL;DR
 
@@ -219,7 +219,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 - `eth0` je conduit: promiskuitní, bez IP. `swp0` je CPU port (bez IP), `swp1`–`swp3` jsou porty switche 1–3. Popisky se liší podle verze desky: v5 má port 1 `wan`, 2 `lan0`, 3 `lan1`; v7 má port 1 `lan1`, 2 `lan0`, 3 `wan` (stejně jako v Linuxu).
 - Driver `marvell,mv88e6085` zůstává PHY conduitu. V DSA režimu přepne CPU port do frame mode DSA nebo EDSA, nastaví u EDSA EtherType `0xdada`, rámce do 2048 B na všech portech a číslo zařízení 0. Carrier conduitu pak sleduje link CPU portu.
 - PHY uživatelských portů obsluhuje generický `phy_mii` na interní MDIO switche (`marvell,mv88e6xxx-mdio`, Global 2 SMI PHY, adresy 0x11–0x13).
-- Tagger `dsa_tag_mv88e6xxx.c` vychází z Linuxu `tag_dsa.c`. Na TX posílá FROM_CPU na port rozhraní, na RX bere TO_CPU a FORWARD (FRAME2REG a trunky zahazuje). 802.1Q hlavičku skládá do tagu a zpět. Test je v `tests/net/dsa_tag_mv88e6xxx` (native_sim/native/64, 11 případů).
+- Tagger `dsa_tag_mv88e6xxx.c` vychází z Linuxu `tag_dsa.c`. Na TX posílá FROM_CPU na port rozhraní, na RX bere TO_CPU a FORWARD (FRAME2REG a trunky zahazuje). 802.1Q hlavičku skládá do tagu a zpět. Test je v `tests/net/dsa_tag_mv88e6xxx` (native_sim/native/64, 12 případů).
 - Snippet používá 4bajtový DSA tag. Pro EDSA nastav `dsa-tag-protocol = <DSA_TAG_PROTO_EDSA>` a `CONFIG_DSA_TAG_SIZE=8`.
 - mvneta: přidán promiskuitní režim (`UNI_PROMISC_MODE` + celá unicast tabulka) a do maximální délky RX rámce se počítá `CONFIG_DSA_TAG_SIZE`.
 - netshell spouští DHCP na každém uživatelském portu a každé rozhraní má vlastní stabilní MAC v settings (`netshell/mac<idx>`). Conduit si drží MAC kvůli unikátnímu hostname.
@@ -250,6 +250,27 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 - Bez AVB režimů portu (`PORT_AVB_CFG` 15:14), bez rezervací v ATU (MAC_AVB) a bez izochronních pointerů. Podle Cedrikova patche to pro shaping nestačí. Na hardwaru neověřeno; test: `zperf` UDP s prioritou do shaped fronty, rychlost se má zastavit na idle slope.
 - Poznámka k `PADL/linux`: `mv88e6xxx_avb_enable()` nemá `return 0` před chybovými labely, takže po úspěchu všechno zase vrátí.
 
+### 3.10 Router a HW bridge (netshell `router.conf`)
+
+```sh
+west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v7 \
+  samples/boards/globalscale/espressobin/netshell -- -DEXTRA_CONF_FILE=router.conf
+```
+
+- Názvy portů: snippety `espressobin-dsa-v5` a `espressobin-dsa-v7` nastaví DT `label` portů (jako Linux `armada-3720-espressobin.dtsi` a `-v7.dts`). DSA core pak pojmenuje rozhraní podle labelu, jinak zůstává `swpN`.
+- `wan` dostane DHCP. `lan0` a `lan1` jdou do `bridge0` s 192.168.10.1/24, na kterém běží DHCP server (pool od .100, 32 adres, router option = bridge). IPv4 forwarding je bez NAT, upstream proto potřebuje routu na 192.168.10.0/24 přes WAN adresu desky. MAC bridge je stabilní v settings (`netshell/brmac`).
+- Offload: do DSA API přibyly `port_bridge_join`/`port_bridge_leave`. Zephyr bridge mezi porty, mezi kterými už forwarduje switch, nic nepřeposílá (flood ani FDB) a nevznikají duplikáty.
+- 88E6341: přemostěné porty mají společný port based VLAN map (0x06 bity 10:0) a FID 1, standalone porty FID 0, jako Linux bez VLAN filteringu. MAC bridge je statický záznam v ATU na CPU portu, protože rámce FROM_CPU se neučí (ATU FID je v G1 reg 0x01, Luke Howard 2026-07). Při změně členství se smažou naučené adresy.
+- Rezervovaný multicast 01:80:C2:00:00:0x a 2x (STP, LLDP, 802.1AS) se v DSA režimu trapuje na CPU (G1 0x1a pointery 0x00–0x03 = 0xff, CPU_DEST a PTP_CPU_DEST = port 0 s mgmt prioritou). Mezi přemostěnými porty se neflooduje.
+- Test `test_bridge_offload` v `tests/net/dsa_tag_mv88e6xxx`, upstream `tests/net/bridge` dál prochází.
+- Na hardwaru neověřeno.
+
+### 3.11 TCAM (88E6341)
+
+- Podle product briefu má Topaz TCAM pro ACL a PCL. Registry nejsou nikde popsané. Linux (`tcam.c`, 2026) je umí jen pro 6390/6393 (SMI adresa 0x1f; op 0x00: busy bit 15, 1 flush all, 2 flush, 3 load, 4 get next, 5 read; page v bitech 11:10, entry v 7:0; page 0 = 22 B match, page 1 = 26 B, page 2 = akce; port 0x0d bity 1:0 = režim 48/96 B).
+- Sonda: `mv88e6xxx tcam <entry> [smi addr]` přečte 3 stránky (registry 0x00–0x1f po každém READ) a port 0x0d. `mv88e6xxx reg <addr> <reg> [val]` je obecný přístup k registrům.
+- Plán podle výsledku: ACL (drop/trap podle L2–L4), QoS (fronta/priorita podle matche, navazuje na Qav), policing a mirror/trap na CPU.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
@@ -264,13 +285,14 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa samples/boards/globa
 8. **Jednotky token bucketu.** Vyřešeno měřením: limiter počítá bajty L2 rámce včetně FCS (bez preambule a IFG), 10 kb/s na jednotku refillu.
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
-   - DSA: bridge offload (porty jsou zatím standalone), PPS/event capture (TAI GPIO), AVB režimy portů a SRP rezervace, Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
+   - DSA: TCAM, VLAN-aware bridge, forward-tagged TX do bridge, NAT, PPS/event capture (TAI GPIO), AVB režimy portů a SRP rezervace, Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
    - eth1 přes SGMII (COMPHY), I2C, GPIO, Xenon SDHCI (microSD/eMMC), USB, PCIe,
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (40 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (43 commitů nad `124121fbb`) + `gh-pages`
+- `flash-image-router-v7.bin`, `flash-image-router-v5.bin`: netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
 - `flash-image.bin`, `uart-images.tgz.bin`: TF-A + WTMI + Zephyr `dhcpv4_client` (SMP, 8 TX / 4 RX fronty, VLAN, shell `mvneta`), `CPU_800_DDR_800`, `DDR_TOPOLOGY=2`, SPI NOR
