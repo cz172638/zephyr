@@ -290,6 +290,80 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - Zatím jen 3,3 V (HS do 50 MHz). UHS (1,8 V přes regulátor), DMA a eMMC slot zatím nejsou.
 - **Na desce nefunguje (odloženo):** obraz s SD (`flash-image-sd-dbg.bin`) se ze SPI NOR zacyklí po BL31 bez jakéhokoli výstupu Zephyru, a to i s `LOG_MODE_IMMEDIATE`. Padá tedy před konzolí: GPIO driver (PRE_KERNEL_1, priorita 40 < UART), nebo už před initem. Velikost obrazu to není (OBMI 937 KB v 4MB oblasti od 0x04100000). Dál: bootovat přes UART (`mox-imager -E`) a bisekovat (jen GPIO / GPIO + regulator / celé SDHC).
 
+### 3.13 PCIe endpoint (Aardvark)
+
+Řadič PCIe A3720 je po resetu v EP módu (`CTRL0.IS_RC` = 0). Driver `drivers/pcie/endpoint/pcie_epc_aardvark.c` (+ glue `pcie_epc_aardvark_a3700.c`) implementuje `pcie_epc` API z větve `pcie-epc-k3`, nad ním běží funkce `zephyr,pcie-epf-test` kompatibilní s Linuxovým `pci_endpoint_test`. Sample `samples/drivers/pcie/endpoint/epf_test`.
+
+- Uzel `pcie-ep@d0070000` v `armada3720.dtsi` (disabled):
+  - `ctrl` 0xd0070000+0x20000,
+  - `mem` 0xe8000000+16 MiB pro outbound okna (A3720 má na PCIe pevně 0xe8000000–0xefffffff),
+  - SPI 29, SB clock 13 (`pcie`, gate bit 14).
+- Init:
+  - pinctrl `pcie_ep_default` (SB skupina `pcie1` = GPIO, protože `PCIE1_RESETn` je výstup řadiče),
+  - clock on,
+  - COMPHY lane 1 přes TF-A SiP `MV_SIP_COMPHY_POWER_ON` (0x82000001, parametr 0x4600c = PCIe, 5G, x1),
+  - direct mód (0x18000),
+  - po SiP volání vypnout výstup 100/125 MHz z PHY (COMPHY lane 1 `MISC_CTRL0` 0xd001f09e, bit 4). TF-A ho zapne, U-Boot recept z wiki ho pro EP vyhazuje.
+  - `REF_CLK` (0x4814): stejně jako RC (TX 1, RX 0). S vypnutým výstupem PHY se na piny nic nedostane. `marvell,refclk-in` (nebo `advk_ep refclk in`) zkusí piny jako vstup.
+  - `CTRL0`: EP, x1, Gen2, training vypnutý do `pcie_epc_start()`,
+  - `CTRL2.OB_WIN_EN`, outbound okna smazaná, všechna přerušení maskovaná.
+- Známé z Linuxového RC driveru a použité:
+  - vendor ID override v LMI 0x6044 (erratum 4.1, horních 16 bitů je subsystem vendor),
+  - zapisovatelný class code (0x08),
+  - LTSSM v LMI 0x6000 bity 29:24 (L0 = 0x10),
+  - outbound okna 0x4c00 (8 × 0x20: match | enable, remap, maska ~(size−1), akce MEM). Okna mají min. 64 KiB, mocnina dvou, zarovnaná.
+- MSI: driver najde MSI capability v seznamu od 0x34 a pošle zápis dat (data | vektor−1) na adresu z capability přes outbound okno, stejně jako Cadence EP.
+- Události: polling po 20 ms (`CONFIG_PCIE_EPC_AARDVARK_POLL_MS`).
+  - LTSSM L0 → `LINK_UP`/`LINK_DOWN`, 0x27 → `HOT_RESET`, `CMD.MASTER` → `BME`.
+  - Volitelně PERST# přes `perst-gpios`. To potřebuje `CONFIG_GPIO=y`, a GPIO je podezřelé z boot loopu SD obrazu (3.12), proto je v samplu vypnuté.
+  - Když core po hot resetu / link down zapomene registry (pozná se podle class code), driver je naprogramuje znovu (`reprogrammed` ve `status`).
+- **Nezdokumentované, najít na desce:**
+  - velikost BARů a inbound překlad. `set_bar` požadavek jen zapamatuje a vypíše `BARn ... not programmed`, host uvidí výchozí BARy z resetu. Linux říká, že v RC módu je na 0x10–0x34 „něco úplně jiného“.
+  - INTx: odhad, že jsou to bity 28–31 `CTRL0` (`LEGACY_INTA..D`, RC driver je jen definuje),
+  - zdroje přerušení v EP módu (bit 23 `EP_STATUS` v 0x1b000).
+- PHY bere referenci z krystalu (TF-A krok 8: `REF_FREF_SEL` 25/40 MHz), host má vlastní 100 MHz. Je to tedy oddělená reference (SRNS), tak to dělá i wiki. Když host jede se SSC, link nemusí naběhnout a pomůže zkusit Gen1 (`max-link-speed = <1>`).
+- **Ověřeno jinde:** ESPRESSObin wiki [Enabling ESPRESSObin board as PCIe Endpoint](https://wiki.espressobin.net/tiki-index.php?page=Enabling+ESPRESSObin+board+as+PCIe+Endpoint). Postup:
+  - stock Linux `pcie_advk.c` bez nastavení `IS_RC`,
+  - U-Boot `comphy_a3700.c` bez `rb_clk100m_125m_en`,
+  - host (U-Boot `pci`) viděl `1b4b:0100`, class Mass storage 0x0104.
+  
+  Výchozí BARy z resetu tedy host vidí a vyjmenuje.
+
+**Zapojení.** Mini-PCIe slot na ESPRESSObinu je hostitelský: TX SoC jde na PERp/n slotu (piny 25/23, příjem karty), RX SoC na PETp/n (33/31, vysílání karty), REFCLK a PERST# jsou výstupy. Kabel od downstream portu switche v docku nese také „hostitelskou“ stranu. Je proto potřeba křížení, jako PCIe x1 crossover kabel z wiki. Wiki píše, že kabel „MUST NOT have clock and power signals connected“, jinak hrozí poškození desky.
+- TX hosta (pár, který by šel na PERp/n karty) → PETp/n slotu (33/31) = RX SoC; PERp/n slotu (25/23) = TX SoC → RX hosta. Polarita v páru se natrénuje sama, AC vazební kondenzátory musí být na TX straně každého směru (u hosta i u A3720 jsou na desce),
+- REFCLK (piny 11/13) **nezapojovat**,
+- PERST# hosta → pin 22 (přes PCA9306 na MPP2_3; zatím jen informativně, bez `perst-gpios`),
+- GND společná, 3,3 V / 12 V **nespojovat**, každá strana z vlastního zdroje.
+
+**Postup na desce** (`flash-image-pcie-ep.bin`, konzole):
+
+```
+advk_ep status          # ltssm, lnksta, ID/class, CTRL0, REF_CLK, ISR, BARy, MSI cap
+advk_ep dump            # cfg 0x0-0x200, ctrl 0x4800, ob 0x4c00, lmi 0x6000, core, irq
+advk_ep trace 2000      # přechody LTSSM po dobu 2 s (busy-poll 5 us)
+advk_ep hist            # historie LTSSM z pollingu
+advk_ep probe 0x10 0x18 # zapisovatelné bity BAR0-5 (zapíše a vrátí původní hodnotu)
+advk_ep stop / start / setup / comphy
+advk_ep intx | msi 1
+advk_ep host <pci addr> [len|=val]   # čtení/zápis paměti hosta přes OB okno
+```
+
+Na hostu (Linux):
+
+```sh
+echo 1 > /sys/bus/pci/rescan
+lspci -nn -vvv -d 11ab:     # BARy (výchozí velikosti z resetu), MSI cap, LnkSta
+echo "11ab 0100" > /sys/bus/pci/drivers/pci-endpoint-test/new_id
+pcitest -i 1 -m 1           # MSI; pcitest -l = INTx; -r/-w/-c -s 4096 = DMA přes OB okna
+```
+
+Pořadí ladění:
+1. LTSSM se musí dostat z `detect-quiet`. Když zůstane v `detect`, chybí RX terminace / křížení TX.
+2. Pak `polling` → `config` → `L0`.
+3. Host vidí `11ab:0100` s class 0xff0000.
+4. MSI/INTx.
+5. Inbound (BARy). Postup: `lspci` ukáže výchozí velikosti, po přiřazení adres hostem zkusit `devmem` na BAR a hledat, kam v AXI se zápis promítne. Pomůžou `advk_ep dump lmi` před a po.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
@@ -305,12 +379,13 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 9. **Frekvence jádra GbE a časovač refillu.** `DIV_SEL1` bit 14 je na desce 0, `gbe0_core` = 250 MHz. Časovač refillu ale běží 2× rychleji: podle Linuxova vzorce limiter pouští dvojnásobek (5 Mb/s → 10,06 Mb/s). Driver proto programuje `REFILL_NUM_CLK` pro 2× takt (`MVNETA_REFILL_CLK_MULT`). Bucket je jeden maximální rámec plus jeden refill, s bucketem na jeden rámec limiter při 40 Mb/s dosáhl jen 85 % rychlosti (ztráta tokenů v plném bucketu, potvrzeno simulací).
 10. **Do budoucna:**
    - DSA: TCAM, VLAN-aware bridge, forward-tagged TX do bridge, NAT, PPS/event capture (TAI GPIO), AVB režimy portů a SRP rezervace, Rsvd2CPU pro 01:80:C2:00:00:0x (gPTP, LLDP),
-   - eth1 přes SGMII (COMPHY), I2C, eMMC a UHS/DMA pro SD, USB, PCIe,
+   - eth1 přes SGMII (COMPHY), I2C, eMMC a UHS/DMA pro SD, USB, PCIe RC; PCIe EP: inbound/BARy (3.13),
    - Zephyr na CM3 by znamenal reimplementovat WTMI mailbox pro TF-A (reset, DVFS).
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (57 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (62 commitů nad `124121fbb`) + `gh-pages`
+- `flash-image-pcie-ep.bin` (+ `uart-images-pcie-ep.tgz.bin`): sample `epf_test`, PCIe endpoint + shell `advk_ep`, `CPU_1000_DDR_800`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
@@ -334,5 +409,6 @@ Očekávaný výstup na konzoli (115200 8N1) po bootu:
 
 - Linux `drivers/net/ethernet/marvell/mvneta.c`, `drivers/net/dsa/mv88e6xxx/`, `arch/arm64/boot/dts/marvell/armada-37xx.dtsi`, `armada-3720-espressobin.dtsi`, `drivers/pinctrl/mvebu/pinctrl-armada-37xx.c`, `drivers/clk/mvebu/armada-37xx-periph.c`, `drivers/tty/serial/mvebu-uart.c`
 - U-Boot `drivers/net/mvneta.c`, `drivers/net/mvmdio.c`, `board/Marvell/mvebu_armada-37xx/board.c`
-- TF-A `docs/plat/marvell/armada/build.rst`, `uart-booting.rst`
+- TF-A `docs/plat/marvell/armada/build.rst`, `uart-booting.rst`, `drivers/marvell/comphy/phy-comphy-3700.c`, `plat/marvell/armada/a3k/common/a3700_sip_svc.c`
+- Linux `drivers/pci/controller/pci-aardvark.c`, `drivers/phy/marvell/phy-mvebu-a3700-comphy.c` (v5.10, SMC varianta)
 - [A3700-utils-marvell](https://github.com/MarvellEmbeddedProcessors/A3700-utils-marvell), [mv-ddr-marvell](https://github.com/MarvellEmbeddedProcessors/mv-ddr-marvell), [mox-imager](https://gitlab.nic.cz/turris/mox-imager)
