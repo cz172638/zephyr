@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  GPIO bank of the Marvell Armada 3700 north or south bridge: output
+  enable at reg + 0x00, input values at + 0x10, output values at + 0x18.
+  The north bridge has 36 pins, pins 32..35 are a second bank at the
+  base + 4. Pin muxing is done by the pin controller.
+
+compatible: "marvell,armada-3700-gpio"
+
+include: [gpio-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  "#gpio-cells":
+    const: 2
+
+gpio-cells:
+  - pin
+  - flags
