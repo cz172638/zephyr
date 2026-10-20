@@ -147,6 +147,29 @@ static void bridge_mac(struct net_if *br)
 	(void)net_if_set_link_addr(br, mac, sizeof(mac), NET_LINK_ETHERNET);
 }
 
+/* Hand out the DNS server the wan lease names (there is no forwarder) */
+static uint8_t wan_dns[4];
+static struct net_dhcpv4_option_callback wan_dns_cb;
+
+static void wan_dns_handler(struct net_dhcpv4_option_callback *cb, size_t length,
+			    enum net_dhcpv4_msg_type msg_type, struct net_if *iface)
+{
+	char name[CONFIG_NET_INTERFACE_NAME_LEN + 1];
+	struct net_in_addr dns;
+	char str[NET_IPV4_ADDR_LEN];
+
+	if (length < sizeof(wan_dns) || msg_type != NET_DHCPV4_MSG_TYPE_ACK ||
+	    net_if_get_name(iface, name, sizeof(name)) < 0 ||
+	    strcmp(name, CONFIG_NETSHELL_WAN_IFACE) != 0) {
+		return;
+	}
+
+	memcpy(dns.s4_addr, wan_dns, sizeof(wan_dns));
+	net_dhcpv4_server_set_dns_address(&dns);
+	LOG_INF("LAN DNS server %s (from %s)",
+		net_addr_ntop(NET_AF_INET, &dns, str, sizeof(str)), name);
+}
+
 static int lan_start(struct net_if *br)
 {
 	struct net_in_addr addr, mask, pool;
@@ -304,6 +327,10 @@ int main(void)
 	}
 
 #if defined(CONFIG_NETSHELL_ROUTER)
+	net_dhcpv4_init_option_callback(&wan_dns_cb, wan_dns_handler, 6 /* DNS server */, wan_dns,
+					sizeof(wan_dns));
+	(void)net_dhcpv4_add_option_callback(&wan_dns_cb);
+
 	net_eth_bridge_foreach(find_bridge, &lan_bridge);
 	if (lan_bridge != NULL) {
 		bridge_mac(lan_bridge);

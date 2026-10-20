@@ -21,11 +21,13 @@ config NETSHELL_HOST_KEY_BITS
 config NETSHELL_ROUTER
 	bool "Router: wan uplink, bridged lan ports with a DHCP server"
 	depends on NET_DSA && NET_ETHERNET_BRIDGE && NET_DHCPV4_SERVER && NET_IPV4_FORWARDING
+	depends on NET_DHCPV4_OPTION_CALLBACKS
 	help
 	  The DSA port named NETSHELL_WAN_IFACE gets an address with DHCP,
 	  the ports whose names start with NETSHELL_LAN_PREFIX join the
 	  first bridge, which gets NETSHELL_LAN_ADDR and a DHCP server.
-	  IPv4 is forwarded between them without NAT. Name the ports with
+	  IPv4 is forwarded between them without NAT; the DHCP server hands
+	  out the DNS server of the wan lease. Name the ports with
 	  the espressobin-dsa-v5 or espressobin-dsa-v7 snippet.
 
 if NETSHELL_ROUTER
