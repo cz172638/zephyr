@@ -1,6 +1,6 @@
 # Zephyr na ESPRESSObin (Marvell Armada 3720): TF-A BL33 + síť přes 88E6341
 
-Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (48 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
+Stav k 2026-10-20. Zephyr `main` @ `124121fbb`, větev `espressobin` (51 commitů). TF-A `master` @ `0892ad4`, mv-ddr @ `7bcb9dc`, A3700-utils @ `a3e1c67`.
 
 ## TL;DR
 
@@ -264,6 +264,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 - Rezervovaný multicast 01:80:C2:00:00:0x a 2x (STP, LLDP, 802.1AS) se v DSA režimu trapuje na CPU (G1 0x1a pointery 0x00–0x03 = 0xff, CPU_DEST a PTP_CPU_DEST = port 0 s mgmt prioritou). Mezi přemostěnými porty se neflooduje.
 - Test `test_bridge_offload` v `tests/net/dsa_tag_mv88e6xxx`, upstream `tests/net/bridge` dál prochází.
 - DNS: Zephyr nemá forwarder. DHCP server rozdává DNS server z leasu na `wan` (option callback na option 6, nové API `net_dhcpv4_server_set_dns_address()` s testem v `tests/net/dhcpv4/server`).
+- Forwarding přes výchozí router: DHCP klient v Zephyru nastaví jen bránu rozhraní a výchozí router nepřidá, takže forwarding z LAN ven nenašel cestu. Netshell router přidává router z option 3 leasu na `wan`. Navíc `ipv4_route_packet()` při routování přes výchozí router nechával paketu vstupní rozhraní. Opraveno, test `test_route_ipv4_forward_via_default_router` v `tests/net/route/ipv4` bez opravy padá.
 - Limity: mDNS si na každém rozhraní registruje UDP connection handler. Výchozí `CONFIG_NET_MAX_CONN=4` tak s DSA a DHCP klientem dojde a DHCP server pak selže při `bind` s `-ENOENT` (SSH stejně). Netshell má 16, router 24 (+ 32 kontextů a fd).
 - Na hardwaru: rozhraní, názvy portů a bridge0 ověřeny, DHCP server po opravě limitů funguje, DNS z wan zatím neověřeno.
 
@@ -293,7 +294,7 @@ west build -b espressobin/armada3720/smp -S espressobin-dsa -S espressobin-dsa-v
 
 ## 5. Artefakty
 
-- `zephyr-espressobin.bundle`: Zephyr `espressobin` (48 commitů nad `124121fbb`) + `gh-pages`
+- `zephyr-espressobin.bundle`: Zephyr `espressobin` (51 commitů nad `124121fbb`) + `gh-pages`
 - `flash-image-router-v7.bin`, `flash-image-router-v5.bin`, `flash-image-router-v5-gptp.bin` (+ gPTP): netshell router (wan DHCP, lan0+lan1 HW bridge, DHCP server, forwarding), `CPU_1000_DDR_800`
 - `flash-image-netshell-qav.bin`: netshell + DSA + gPTP + Qav na `swpN`, `CPU_1000_DDR_800`
 - `flash-image-netshell.bin`: netshell (SSH + `fwupdate tcp`), `CPU_1000_DDR_800`; `netshell-sd.tar.gz` pro `booti` ze stock U-Bootu
