@@ -1,0 +1,20 @@
+sample:
+  name: PCIe endpoint test function
+  description: Linux pci_endpoint_test compatible PCIe endpoint
+common:
+  tags:
+    - pcie
+    - drivers
+  harness: console
+  harness_config:
+    type: one_line
+    regex:
+      - "test regs in BAR"
+tests:
+  sample.drivers.pcie.endpoint.epf_test:
+    platform_allow:
+      - espressobin/armada3720
+      - espressobin/armada3720/smp
+    integration_platforms:
+      - espressobin/armada3720
+    build_only: true

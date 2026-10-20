@@ -1,0 +1,46 @@
+/*
+ * ESPRESSObin: the Armada 3720 PCIe controller as endpoint on the
+ * mini-PCIe slot.
+ *
+ * The slot is wired as a host slot (SoC TX on PERp/n 25/23, SoC RX on
+ * PETp/n 33/31), so the link needs a crossover: host TX onto PETp/n,
+ * PERp/n to host RX, REFCLK from the host (pins 11/13), PERST# from the
+ * host onto pin 22 (PCA9306 to MPP2_3), 3.3 V of the two sides not
+ * joined. See the design document.
+ */
+
+#include <mem.h>
+
+/ {
+	/* BAR backing store in DDR, outside the Zephyr image */
+	pcie_bar_mem: memory@10000000 {
+		compatible = "mmio-sram";
+		reg = <0x10000000 DT_SIZE_M(2)>;
+	};
+};
+
+&pcie_ep {
+	status = "okay";
+	pinctrl-0 = <&pcie_ep_default>;
+	pinctrl-names = "default";
+	/*
+	 * PERST# input; needs CONFIG_GPIO=y and the SB GPIO controller:
+	 * perst-gpios = <&gpiosb 3 GPIO_ACTIVE_LOW>;
+	 */
+
+	epf_test0: function@0 {
+		compatible = "zephyr,pcie-epf-test";
+		reg = <0>;
+		/*
+		 * Marvell / A3720 default device ID, not in the pci_endpoint_test
+		 * ID table: on the host
+		 * echo "11ab 0100" > /sys/bus/pci/drivers/pci-endpoint-test/new_id
+		 */
+		vendor-id = <0x11ab>;
+		device-id = <0x0100>;
+		class-code = <0xff0000>;
+		memory-region = <&pcie_bar_mem>;
+		/* BAR4/5 of the default set do not fit the 2 MiB carveout */
+		bar-sizes = <512 512 1024 16384 131072 0>;
+	};
+};
