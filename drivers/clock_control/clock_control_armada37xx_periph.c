@@ -180,7 +180,7 @@ struct a37xx_clk_desc {
 	}
 
 /* South bridge, Linux data_sb[] order */
-static const struct a37xx_clk_desc sb_clks[] = {
+static const struct a37xx_clk_desc sb_clks[] __maybe_unused = {
 	MUX_DD(6, DIV_SEL2, 6, DIV_SEL2, 9),         /* 0 gbe_50 */
 	MUX_DD(8, DIV_SEL1, 18, DIV_SEL1, 21),       /* 1 gbe_core */
 	MUX_DD(10, DIV_SEL1, 6, DIV_SEL1, 9),        /* 2 gbe_125 */
@@ -205,7 +205,7 @@ static const struct a37xx_clk_desc sb_clks[] = {
 };
 
 /* North bridge, Linux data_nb[] order */
-static const struct a37xx_clk_desc nb_clks[] = {
+static const struct a37xx_clk_desc nb_clks[] __maybe_unused = {
 	FULL_DD(2, 0, DIV_SEL2, 16, DIV_SEL2, 13),   /* 0 mmc */
 	FULL_DD(3, 2, DIV_SEL2, 10, DIV_SEL2, 7),    /* 1 sata_host */
 	FULL_DD(6, 4, DIV_SEL1, 3, DIV_SEL1, 0),     /* 2 sec_at */

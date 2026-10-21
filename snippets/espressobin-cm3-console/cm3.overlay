@@ -29,6 +29,21 @@
 	};
 };
 
+/ {
+	/* the A53's SPI NOR requests; buffer at DDR 0x06010000 */
+	rflash: rwtm-flash@66010000 {
+		compatible = "marvell,armada-3700-rwtm-flash";
+		reg = <0x66010000 0x10000>;
+		mboxes = <&rwtm 1>, <&rwtm 1>;
+		mbox-names = "tx", "rx";
+		zephyr,flash-server = <&spi_nor>;
+	};
+};
+
+&spi0 {
+	status = "okay";
+};
+
 &rwtm {
 	status = "okay";
 };

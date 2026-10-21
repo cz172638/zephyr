@@ -61,6 +61,14 @@ config FWUPDATE_TIM_HEADER
 	  Refuse images that do not carry a TIM header ("TIMH" at offset 4),
 	  as produced by the Armada 3700 TF-A mrvl_flash target.
 
+config FWUPDATE_PROGRAM_EXTERNAL
+	bool
+	select CRC
+	help
+	  Selected by a platform that programs the image itself
+	  (fwupdate_program_external()), e.g. a secure processor owning the
+	  flash. The partition still gives the maximum size.
+
 config FWUPDATE_THREAD_STACK_SIZE
 	int "Update thread stack size"
 	default 2048

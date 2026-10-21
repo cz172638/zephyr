@@ -31,6 +31,14 @@
 
 #include "ymodem.h"
 
+#if defined(CONFIG_FWUPDATE_PROGRAM_EXTERNAL)
+/*
+ * Provided by the platform: programs the image somewhere this core has
+ * no direct access to, verifies it and returns the crc32 it read back.
+ */
+int fwupdate_program_external(const void *img, size_t len, uint32_t *crc);
+#endif
+
 #if defined(CONFIG_FWUPDATE_TCP)
 #include <zephyr/net/socket.h>
 #endif
@@ -182,6 +190,25 @@ static int fw_check(const struct shell *sh, size_t len)
 	return 0;
 }
 
+#if defined(CONFIG_FWUPDATE_PROGRAM_EXTERNAL)
+static int fw_program(const struct shell *sh, size_t len)
+{
+	uint32_t crc = 0;
+	int ret;
+
+	shell_print(sh, "handing %zu bytes to the firmware programmer...", len);
+	ret = fwupdate_program_external(fw_buf, len, &crc);
+	if (ret < 0) {
+		shell_error(sh, "programming: %d", ret);
+		return ret;
+	}
+	if (crc != crc32_ieee(fw_buf, len)) {
+		shell_error(sh, "programmer read back crc32 %08x", crc);
+		return -EIO;
+	}
+	return 0;
+}
+#else
 static int fw_program(const struct shell *sh, size_t len)
 {
 	static uint8_t vbuf[256];
@@ -243,6 +270,7 @@ out:
 	flash_area_close(fa);
 	return ret;
 }
+#endif /* CONFIG_FWUPDATE_PROGRAM_EXTERNAL */
 
 /* ---------------------------------------------------------------------- */
 /* Shell                                                                   */

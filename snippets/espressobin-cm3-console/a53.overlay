@@ -8,6 +8,7 @@
  * behind the CCI.
  */
 
+#include <mem.h>
 #include <zephyr/dt-bindings/memory-attr/memory-attr-arm64.h>
 
 / {
@@ -46,6 +47,53 @@
 		ipc-instance = "ipc0";
 		endpoint-name = "console";
 		status = "okay";
+	};
+};
+
+/* the SPI NOR belongs to the CM3 */
+/delete-node/ &spi_nor;
+
+&spi0 {
+	status = "disabled";
+};
+
+/ {
+	rflash: rwtm-flash@6010000 {
+		compatible = "marvell,armada-3700-rwtm-flash";
+		reg = <0x06010000 0x10000>;
+		mboxes = <&rwtm 1>, <&rwtm 1>;
+		mbox-names = "tx", "rx";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		rflash0: flash@0 {
+			compatible = "soc-nv-flash";
+			reg = <0 DT_SIZE_M(4)>;
+			erase-block-size = <4096>;
+			write-block-size = <1>;
+
+			partitions {
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				/* written only by the CM3, as a whole checked image */
+				boot_partition: partition@0 {
+					label = "firmware";
+					reg = <0x0 0x3e0000>;
+				};
+
+				storage_partition: partition@3e0000 {
+					label = "zephyr-storage";
+					reg = <0x3e0000 0x10000>;
+				};
+
+				env_partition: partition@3f0000 {
+					label = "u-boot-env";
+					reg = <0x3f0000 0x10000>;
+				};
+			};
+		};
 	};
 };
 

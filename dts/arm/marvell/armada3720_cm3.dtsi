@@ -17,6 +17,7 @@
 
 #include <arm/armv7-m.dtsi>
 #include <mem.h>
+#include <zephyr/dt-bindings/pinctrl/armada37xx-pinctrl.h>
 
 / {
 	cpus {
@@ -28,6 +29,12 @@
 			compatible = "arm,cortex-m3";
 			reg = <0>;
 		};
+	};
+
+	xtalclk: xtal-clk {
+		compatible = "fixed-clock";
+		clock-frequency = <25000000>;
+		#clock-cells = <0>;
 	};
 
 	/* 64 KiB below 0x20000000; the BootROM keeps the TIM at 0x20006000 */
@@ -46,6 +53,42 @@
 			status = "disabled";
 		};
 
+		/* SPI NOR controller, NVIC line 12 */
+		spi0: spi@c0010600 {
+			compatible = "marvell,armada-3700-spi";
+			reg = <0xc0010600 0xa00>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			/* sqf */
+			clocks = <&nb_periph_clk 7>;
+			interrupts = <12 3>;
+			status = "disabled";
+		};
+
+		nb_periph_clk: clock-controller@c0013000 {
+			compatible = "marvell,armada-3700-periph-clock-nb";
+			reg = <0xc0013000 0x100>;
+			clocks = <&tbg 0>, <&tbg 1>, <&tbg 2>, <&tbg 3>, <&xtalclk>;
+			#clock-cells = <1>;
+		};
+
+		tbg: clock-controller@c0013200 {
+			compatible = "marvell,armada-3700-tbg-clock";
+			reg = <0xc0013200 0x100>;
+			clocks = <&xtalclk>;
+			#clock-cells = <1>;
+		};
+
+		pinctrl_nb: pinctrl@c0013800 {
+			compatible = "marvell,armada3710-nb-pinctrl";
+			reg = <0xc0013800 0x100>;
+		};
+
+		pinctrl_sb: pinctrl@c0018800 {
+			compatible = "marvell,armada3710-sb-pinctrl";
+			reg = <0xc0018800 0x100>;
+		};
+
 		uart0: serial@c0012000 {
 			compatible = "marvell,armada-3700-uart";
 			reg = <0xc0012000 0x18>;
@@ -56,4 +99,15 @@
 
 &nvic {
 	arm,num-irq-priority-bits = <3>;
+};
+
+&pinctrl_nb {
+	/* CLK, MOSI, MISO and CS0 are dedicated; IO2/IO3 (WP#/HOLD#) are muxed */
+	spi0_default: spi0_default {
+		spi_quad {
+			marvell,bridge = <A37XX_NB>;
+			marvell,mask = <A37XX_NB_SPI_QUAD>;
+			marvell,value = <0>;
+		};
+	};
 };

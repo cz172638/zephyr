@@ -1,0 +1,29 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  SPI NOR of the Armada 3700 reached through the Cortex-M3: requests over
+  the rWTM mailbox, data in a shared DDR buffer (reg, as each core sees
+  it). The A53 side has one soc-nv-flash child (size, erase block,
+  partitions); the CM3 side names the flash it serves.
+
+compatible: "marvell,armada-3700-rwtm-flash"
+
+include: flash-controller.yaml
+
+properties:
+  reg:
+    required: true
+    description: Shared buffer
+
+  mboxes:
+    required: true
+    description: tx and rx channel (the same rWTM channel)
+
+  mbox-names:
+    required: true
+    description: '"tx", "rx"'
+
+  zephyr,flash-server:
+    type: phandle
+    description: CM3 side only, the flash it serves

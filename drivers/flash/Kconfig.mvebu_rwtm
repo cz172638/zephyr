@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config FLASH_MVEBU_RWTM
+	bool "Armada 3700 SPI NOR through the Cortex-M3"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_RWTM_FLASH_ENABLED
+	depends on !SOC_ARMADA3720_CM3
+	depends on MBOX
+	select FLASH_HAS_DRIVER_ENABLED
+	select FLASH_HAS_PAGE_LAYOUT
+	select FLASH_HAS_EXPLICIT_ERASE
+	help
+	  The A53 side: flash API calls become requests to the CM3, which
+	  owns the SPI controller (soc option
+	  SOC_ARMADA3720_CM3_FLASH_SERVER).
+
+config FLASH_MVEBU_RWTM_TIMEOUT_MS
+	int "Request timeout"
+	default 5000
+	depends on FLASH_MVEBU_RWTM
+
+config FLASH_MVEBU_RWTM_FWUPDATE
+	bool "fwupdate through the CM3"
+	default y
+	depends on FLASH_MVEBU_RWTM && FWUPDATE
+	select FWUPDATE_PROGRAM_EXTERNAL
+	help
+	  fwupdate hands the received image to the CM3, which checks and
+	  programs it; the A53 itself cannot write the firmware area.
+
+config FLASH_MVEBU_RWTM_FWUPDATE_TIMEOUT
+	int "Seconds for a whole update"
+	default 180
+	depends on FLASH_MVEBU_RWTM_FWUPDATE

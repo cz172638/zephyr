@@ -90,6 +90,24 @@ config SOC_ARMADA3720_CM3_CONSOLE_POLL_MS
 	default 2
 	depends on SOC_ARMADA3720_CM3_CONSOLE_BRIDGE
 
+config SOC_ARMADA3720_CM3_FLASH_SERVER
+	bool "Serve the SPI NOR to the A53"
+	depends on FLASH && MBOX_MVEBU_RWTM
+	depends on $(dt_nodelabel_enabled,rflash)
+	select CRC
+	help
+	  The CM3 owns the SPI NOR: the A53 (flash_mvebu_rwtm) reads, writes
+	  and erases outside the firmware area through the mailbox, and
+	  updates the firmware only as a whole checked image.
+
+config SOC_ARMADA3720_CM3_FLASH_FW_SIZE
+	hex "Firmware area"
+	default 0x3e0000
+	depends on SOC_ARMADA3720_CM3_FLASH_SERVER
+	help
+	  From offset 0: TIM, WTMI (this image), TF-A and the A53 Zephyr.
+	  Plain writes and erases from the A53 below this are refused.
+
 config SOC_ARMADA3720_CM3_REBOOT
 	bool "WTMI reboot command"
 	default y

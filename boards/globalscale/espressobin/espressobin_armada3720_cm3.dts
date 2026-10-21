@@ -9,6 +9,7 @@
 
 /dts-v1/;
 
+#include <freq.h>
 #include <marvell/armada3720_cm3.dtsi>
 
 / {
@@ -27,4 +28,20 @@
 	current-speed = <115200>;
 	/* the crystal; the BootROM may have left another baud rate */
 	clock-frequency = <25000000>;
+};
+
+/* W25Q32DW, owned by the CM3 when it serves the flash to the A53
+ * (snippet espressobin-cm3-console)
+ */
+&spi0 {
+	pinctrl-0 = <&spi0_default>;
+	pinctrl-names = "default";
+
+	spi_nor: flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(50)>;
+		size = <DT_SIZE_M(32)>; /* bits */
+		jedec-id = [ef 60 16];
+	};
 };

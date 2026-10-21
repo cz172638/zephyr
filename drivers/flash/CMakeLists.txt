@@ -109,6 +109,8 @@ else()
   zephyr_library_sources_ifdef(CONFIG_INFINEON_CAT1_QSPI_FLASH flash_infineon_qspi.c)
 endif()
 
+zephyr_library_sources_ifdef(CONFIG_FLASH_MVEBU_RWTM flash_mvebu_rwtm.c)
+
 if(CONFIG_FLASH_SIMULATOR)
   zephyr_library_sources(flash_simulator.c)
   if(CONFIG_NATIVE_LIBRARY)
