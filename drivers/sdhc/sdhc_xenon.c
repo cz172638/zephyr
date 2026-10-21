@@ -5,7 +5,7 @@
  *
  * Marvell Xenon SDHC as in the Armada 3700: a standard SDHCI v3 slot with
  * Xenon system registers and an eMMC PHY, after U-Boot xenon_sdhci.c and
- * Linux sdhci-xenon*.c. Polled, PIO only (no interrupts, no DMA).
+ * Linux sdhci-xenon*.c. Polled (no interrupts), data by ADMA2 or PIO.
  *
  * The Armada 3700 has a second register with the IO pad voltage of the
  * slot (0: 3.3 V, 1: 1.8 V). The SD slot of the ESPRESSObin switches its
@@ -15,6 +15,7 @@
 
 #define DT_DRV_COMPAT marvell_armada_3700_sdhci
 
+#include <zephyr/cache.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/gpio.h>
@@ -25,6 +26,7 @@
 #include <zephyr/sd/sd_spec.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/kernel/internal/mm.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(sdhc_xenon, CONFIG_SDHC_LOG_LEVEL);
@@ -34,6 +36,7 @@ LOG_MODULE_REGISTER(sdhc_xenon, CONFIG_SDHC_LOG_LEVEL);
 #define SDHCI_BLOCK_COUNT     0x06
 #define SDHCI_ARGUMENT        0x08
 #define SDHCI_TRANSFER_MODE   0x0c
+#define SDHCI_TRNS_DMA        BIT(0)
 #define SDHCI_TRNS_BLK_CNT_EN BIT(1)
 #define SDHCI_TRNS_AUTO_CMD12 BIT(2)
 #define SDHCI_TRNS_READ       BIT(4)
@@ -56,6 +59,8 @@ LOG_MODULE_REGISTER(sdhc_xenon, CONFIG_SDHC_LOG_LEVEL);
 #define SDHCI_HOST_CONTROL    0x28
 #define SDHCI_CTRL_4BITBUS    BIT(1)
 #define SDHCI_CTRL_HISPD      BIT(2)
+#define SDHCI_CTRL_DMA_MASK   GENMASK(4, 3)
+#define SDHCI_CTRL_ADMA32     (2 << 3)
 #define SDHCI_CTRL_8BITBUS    BIT(5)
 #define SDHCI_POWER_CONTROL   0x29
 #define SDHCI_POWER_ON        BIT(0)
@@ -82,6 +87,9 @@ LOG_MODULE_REGISTER(sdhc_xenon, CONFIG_SDHC_LOG_LEVEL);
 #define SDHCI_HOST_CONTROL2   0x3e
 #define SDHCI_CTRL_UHS_MASK   GENMASK(2, 0)
 #define SDHCI_CTRL_VDD_180    BIT(3)
+#define SDHCI_ADMA_ERROR      0x54
+#define SDHCI_ADMA_ADDRESS    0x58
+#define SDHCI_ADMA_ADDRESS_HI 0x5c
 #define SDHCI_CAPABILITIES    0x40
 #define SDHCI_CAPABILITIES_1  0x44
 #define SDHCI_HOST_VERSION    0xfe
@@ -156,9 +164,26 @@ struct xenon_config {
 	bool no_1v8;
 };
 
+/* ADMA2, 32-bit descriptors */
+#define ADMA_VALID    BIT(0)
+#define ADMA_END      BIT(1)
+#define ADMA_ACT_TRAN (0x4 << 3)
+#define ADMA_MAX_LEN  0x8000
+
+struct adma_desc {
+	uint16_t attr;
+	uint16_t len;
+	uint32_t addr;
+};
+
 struct xenon_data {
 	DEVICE_MMIO_NAMED_RAM(base);
 	DEVICE_MMIO_NAMED_RAM(pad);
+#ifdef CONFIG_SDHC_XENON_ADMA
+	struct adma_desc adma[CONFIG_SDHC_XENON_ADMA_DESC] __aligned(CONFIG_DCACHE_LINE_SIZE);
+	uint32_t dma_xfers;
+	uint32_t pio_xfers;
+#endif
 	struct k_mutex lock;
 	struct sdhc_host_props props;
 	struct sdhc_io ios;
@@ -529,12 +554,82 @@ static int xenon_pio(const struct device *dev, struct sdhc_data *dat, bool write
 	return xenon_wait_int(dev, SDHCI_INT_DATA_END, dat->timeout_ms);
 }
 
+#ifdef CONFIG_SDHC_XENON_ADMA
+/*
+ * Build the descriptor table for dat; false if the transfer has to be
+ * PIO (unaligned, not whole cache lines, beyond 4 GiB or the table).
+ */
+static bool xenon_adma_prepare(const struct device *dev, struct sdhc_data *dat, bool write)
+{
+	struct xenon_data *data = dev->data;
+	size_t len = (size_t)dat->block_size * dat->blocks;
+	uintptr_t va = (uintptr_t)dat->data;
+	uint64_t pa;
+	size_t n;
+
+	if ((va % CONFIG_SDHC_BUFFER_ALIGNMENT) != 0 || (len % CONFIG_DCACHE_LINE_SIZE) != 0 ||
+	    len > (size_t)ADMA_MAX_LEN * CONFIG_SDHC_XENON_ADMA_DESC) {
+		return false;
+	}
+	pa = k_mem_phys_addr(dat->data);
+	if (pa + len > BIT64(32)) {
+		return false;
+	}
+
+	n = 0;
+	for (size_t off = 0; off < len; off += ADMA_MAX_LEN, n++) {
+		size_t l = MIN(len - off, ADMA_MAX_LEN);
+
+		data->adma[n].attr = ADMA_VALID | ADMA_ACT_TRAN;
+		data->adma[n].len = (uint16_t)l;
+		data->adma[n].addr = (uint32_t)(pa + off);
+	}
+	data->adma[n - 1].attr |= ADMA_END;
+	sys_cache_data_flush_range(data->adma, n * sizeof(data->adma[0]));
+
+	/* write: the data to DDR; read: nothing dirty to land on top later */
+	if (write) {
+		sys_cache_data_flush_range(dat->data, len);
+	} else {
+		sys_cache_data_flush_and_invd_range(dat->data, len);
+	}
+
+	wr32(dev, SDHCI_ADMA_ADDRESS, (uint32_t)k_mem_phys_addr(data->adma));
+	wr32(dev, SDHCI_ADMA_ADDRESS_HI, 0);
+	wr8(dev, SDHCI_HOST_CONTROL,
+	    (rd8(dev, SDHCI_HOST_CONTROL) & ~SDHCI_CTRL_DMA_MASK) | SDHCI_CTRL_ADMA32);
+	return true;
+}
+
+static int xenon_adma_finish(const struct device *dev, struct sdhc_data *dat, bool write)
+{
+	size_t len = (size_t)dat->block_size * dat->blocks;
+	int ret;
+
+	ret = xenon_wait_int(dev, SDHCI_INT_DATA_END,
+			     dat->timeout_ms > 0 ? dat->timeout_ms * dat->blocks : 0);
+	if (ret < 0) {
+		LOG_DBG("ADMA: %d, error 0x%02x at 0x%08x", ret, rd8(dev, SDHCI_ADMA_ERROR),
+			rd32(dev, SDHCI_ADMA_ADDRESS));
+	}
+	if (!write) {
+		/* lines the CPU may have speculated in during the transfer */
+		sys_cache_data_invd_range(dat->data, len);
+	}
+	if (ret == 0) {
+		dat->bytes_xfered = len;
+	}
+	return ret;
+}
+#endif
+
 static int xenon_send(const struct device *dev, struct sdhc_command *cmd, struct sdhc_data *dat)
 {
 	uint32_t type = cmd->response_type & SDHC_NATIVE_RESPONSE_MASK;
 	bool busy = type == SD_RSP_TYPE_R1b || type == SD_RSP_TYPE_R5b;
 	uint32_t inhibit = SDHCI_CMD_INHIBIT;
 	uint16_t command, mode = 0;
+	bool dma = false;
 	int ret;
 
 	if (dat != NULL || busy) {
@@ -581,6 +676,17 @@ static int xenon_send(const struct device *dev, struct sdhc_command *cmd, struct
 		if (dat->blocks > 1) {
 			mode |= SDHCI_TRNS_BLK_CNT_EN | SDHCI_TRNS_MULTI | SDHCI_TRNS_AUTO_CMD12;
 		}
+#ifdef CONFIG_SDHC_XENON_ADMA
+		dma = xenon_adma_prepare(dev, dat, is_write(cmd->opcode));
+		if (dma) {
+			mode |= SDHCI_TRNS_DMA;
+			if (DEV_DATA(dev)->dma_xfers++ == 0) {
+				LOG_INF("ADMA2: first transfer, %u blocks", dat->blocks);
+			}
+		} else {
+			DEV_DATA(dev)->pio_xfers++;
+		}
+#endif
 	}
 	wr16(dev, SDHCI_TRANSFER_MODE, mode);
 	wr32(dev, SDHCI_ARGUMENT, cmd->arg);
@@ -592,7 +698,11 @@ static int xenon_send(const struct device *dev, struct sdhc_command *cmd, struct
 	}
 	xenon_read_response(dev, cmd);
 
-	if (dat != NULL) {
+	if (dat != NULL && dma) {
+#ifdef CONFIG_SDHC_XENON_ADMA
+		ret = xenon_adma_finish(dev, dat, is_write(cmd->opcode));
+#endif
+	} else if (dat != NULL) {
 		ret = xenon_pio(dev, dat, is_write(cmd->opcode));
 	} else if (busy) {
 		ret = xenon_wait_int(dev, SDHCI_INT_DATA_END,
@@ -680,9 +790,9 @@ static void xenon_init_props(const struct device *dev)
 		data->base_clk = p->host_caps.sd_base_clk * 1000000U;
 	}
 
-	/* PIO only; 1.8 V signalling needs the IO voltage regulator */
+	/* ADMA2 is the driver's business; 1.8 V needs the IO voltage regulator */
 	p->host_caps.sdma_support = 0;
-	p->host_caps.adma_2_support = 0;
+	p->host_caps.adma_2_support = IS_ENABLED(CONFIG_SDHC_XENON_ADMA);
 	p->host_caps.vol_180_support = v18;
 	if (!v18) {
 		p->host_caps.sdr50_support = 0;

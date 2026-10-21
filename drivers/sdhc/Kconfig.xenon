@@ -8,5 +8,28 @@ config SDHC_XENON
 	select SDHC_SUPPORTS_NATIVE_MODE
 	select SDHC_SUPPORTS_UHS
 	help
-	  Polled PIO driver for the Xenon SD host controller of the Armada
-	  3700 (microSD and eMMC slots).
+	  Polled driver for the Xenon SD host controller of the Armada 3700
+	  (microSD and eMMC slots), ADMA2 or PIO.
+
+config SDHC_XENON_ADMA
+	bool "ADMA2 data transfers"
+	default y
+	depends on SDHC_XENON
+	help
+	  Block data by 32-bit ADMA2 instead of the CPU copying through the
+	  buffer port. Buffers must be cache line aligned (the SD stack
+	  bounces unaligned ones through its card buffer); short transfers
+	  (SCR, status) stay PIO.
+
+config SDHC_XENON_ADMA_DESC
+	int "ADMA2 descriptors"
+	default 32
+	depends on SDHC_XENON_ADMA
+	help
+	  32 KiB per descriptor; larger requests fall back to PIO.
+
+if SDHC_XENON_ADMA
+# DMA buffers by whole cache lines
+configdefault SDHC_BUFFER_ALIGNMENT
+	default DCACHE_LINE_SIZE if DCACHE
+endif
