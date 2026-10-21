@@ -21,8 +21,12 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/arch/arm64/exception.h>
 #include <zephyr/kernel/internal/mm.h>
 #include <zephyr/shell/shell.h>
@@ -454,7 +458,56 @@ static int cmd_dap_rd(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * NB peripheral clocks of the debug/trace infrastructure (Linux
+ * armada-37xx-periph data_nb[]): with them gated, an APB read of the
+ * debug window does not even abort, it hangs.
+ */
+#define NB_CLK_DIS 0xd0013014UL
+
+static const struct {
+	uint8_t idx;
+	uint8_t gate;
+	const char *name;
+} dbg_clks[] = {
+	{2, 6, "sec_at"}, {3, 7, "sec_dap"}, {4, 8, "tscem"}, {5, 10, "tscem_tmx"},
+	{13, 22, "trace"},
+};
+
+static int cmd_dap_clk(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *nb = DEVICE_DT_GET(DT_NODELABEL(nb_periph_clk));
+	bool on = argc > 1 && strcmp(argv[1], "on") == 0;
+	struct win w;
+	uint32_t dis;
+
+	if (on) {
+		for (int i = 0; i < ARRAY_SIZE(dbg_clks); i++) {
+			int ret = clock_control_on(nb, (clock_control_subsys_t)(uintptr_t)dbg_clks[i].idx);
+
+			if (ret < 0) {
+				shell_error(sh, "%s: %d", dbg_clks[i].name, ret);
+			}
+		}
+	}
+
+	win_map(&w, NB_CLK_DIS, 4);
+	(void)prd(&w, NB_CLK_DIS, &dis);
+	win_unmap(&w);
+	shell_print(sh, "NB CLK_DIS 0x%08x", dis);
+	for (int i = 0; i < ARRAY_SIZE(dbg_clks); i++) {
+		uint32_t hz = 0;
+
+		(void)clock_control_get_rate(nb, (clock_control_subsys_t)(uintptr_t)dbg_clks[i].idx,
+					     &hz);
+		shell_print(sh, "  %-9s (bit %2u): %s, %u Hz", dbg_clks[i].name, dbg_clks[i].gate,
+			    (dis & BIT(dbg_clks[i].gate)) ? "gated" : "on", hz);
+	}
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(dap_cmds,
+	SHELL_CMD_ARG(clk, NULL, "debug/trace clocks: [on]", cmd_dap_clk, 1, 1),
 	SHELL_CMD_ARG(info, NULL, "ROM table walk: [rom table address]", cmd_dap_info, 1, 1),
 	SHELL_CMD_ARG(scan, NULL, "CoreSight IDs: <start> <end> [step]", cmd_dap_scan, 3, 1),
 	SHELL_CMD_ARG(win, NULL, "CPU address decode windows", cmd_dap_win, 1, 0),
