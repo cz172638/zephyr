@@ -42,14 +42,22 @@ CM3=${CM3:-}
 set --
 if [ -n "$CM3" ]; then
 	CM3=$(realpath "$CM3")
-	# vector table at 0x1fff0000; the BootROM jumps to the word at
-	# EXEC_ADDR, i.e. the reset vector
-	export WTMI_EXEC_ADDR=0x1fff0004
+	# EXEC_ADDR: the a3700_cm3_entry stub (soc/marvell/armada37xx/
+	# cm3_entry.S), from the zephyr.elf next to the image
+	CM3_ELF=$(dirname "$CM3")/zephyr.elf
+	WTMI_EXEC_ADDR=0x$(nm "$CM3_ELF" | awk '/ a3700_cm3_entry$/ {print $1}')
+	if [ "$WTMI_EXEC_ADDR" = "0x" ]; then
+		echo "no a3700_cm3_entry in $CM3_ELF" >&2
+		exit 1
+	fi
+	export WTMI_EXEC_ADDR
+	echo "CM3 entry $WTMI_EXEC_ADDR"
 	set -- WTMI_MULTI_IMG="$CM3"
 fi
 
-# make only compares timestamps: a different but older BL33 would be ignored
-rm -f "$TFA"/build/a3700/release/fip.bin
+# make only compares timestamps: a different but older BL33 or WTMI
+# (e.g. the Marvell one after a CM3= build) would be ignored
+rm -f "$TFA"/build/a3700/release/fip.bin "$TFA"/build/a3700/release/wtmi.bin
 
 # one target at a time: both regenerate the same TIM/DDR files
 for target in mrvl_flash mrvl_uart; do

@@ -87,12 +87,12 @@ void soc_early_init_hook(void)
 {
 	uint32_t hz;
 
-	if (IS_ENABLED(CONFIG_SOC_ARMADA3720_CM3_SYS_INIT)) {
-		(void)a3700_wtmi_sys_init();
-	}
-	if (IS_ENABLED(CONFIG_SOC_ARMADA3720_CM3_START_AP)) {
-		a3700_wtmi_start_ap(CONFIG_SOC_ARMADA3720_CM3_AP_ENTRY);
-	}
+#ifdef CONFIG_SOC_ARMADA3720_CM3_SYS_INIT
+	(void)a3700_wtmi_sys_init();
+#endif
+#ifdef CONFIG_SOC_ARMADA3720_CM3_START_AP
+	a3700_wtmi_start_ap(CONFIG_SOC_ARMADA3720_CM3_AP_ENTRY);
+#endif
 
 	hz = a3700_cm3_clk_hz();
 

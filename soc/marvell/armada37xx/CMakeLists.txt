@@ -3,7 +3,8 @@
 zephyr_include_directories(.)
 
 if(CONFIG_SOC_ARMADA3720_CM3)
-  zephyr_sources(soc_cm3.c)
+  zephyr_sources(soc_cm3.c cm3_entry.S)
+  zephyr_linker_sources(ROM_START SORT_KEY 0x1a3700entry cm3_entry.ld)
   if(CONFIG_SOC_ARMADA3720_CM3_SYS_INIT OR CONFIG_SOC_ARMADA3720_CM3_START_AP)
     zephyr_library_named(a3700_wtmi)
     zephyr_library_include_directories(wtmi wtmi/ddr)
