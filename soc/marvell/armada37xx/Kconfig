@@ -122,6 +122,15 @@ config SOC_ARMADA3720_CM3_REBOOT
 
 endif # SOC_ARMADA3720_CM3
 
+config SOC_ARMADA37XX_DAP_SHELL
+	bool "CoreSight/DAP shell"
+	depends on SOC_ARMADA3720 && SHELL
+	default y
+	help
+	  'dap info': MDRAR_EL1, DBGAUTHSTATUS and a walk of the debug ROM
+	  table (DAP-Lite or full CoreSight with funnels/TMC/TPIU);
+	  'dap rd': raw reads of the debug APB.
+
 config SOC_ARMADA37XX_CCI_SHELL
 	bool "CCI-400 shell"
 	depends on SOC_ARMADA3720 && SHELL

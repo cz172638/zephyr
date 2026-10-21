@@ -27,3 +27,4 @@ else()
 endif()
 
 zephyr_sources_ifdef(CONFIG_SOC_ARMADA37XX_CCI_SHELL cci400.c)
+zephyr_sources_ifdef(CONFIG_SOC_ARMADA37XX_DAP_SHELL dap.c)
