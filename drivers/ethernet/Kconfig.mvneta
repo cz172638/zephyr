@@ -62,11 +62,13 @@ config ETH_MVNETA_RX_BUDGET
 
 config ETH_MVNETA_DMA_COHERENT
 	bool "DMA is cache coherent (descriptors and buffers in cached memory)"
+	default y
 	help
 	  Put the rings and buffers in normal cached memory without any
-	  cache maintenance. Only correct when the NETA DMA is coherent
-	  with the CPU caches through the CCI-400; otherwise frames and
-	  descriptors get corrupted. For testing the I/O coherency.
+	  cache maintenance. Correct because the NETA DMA snoops the CPU
+	  caches through the CCI-400 on the Armada 3720 (verified on the
+	  ESPRESSObin: ping and apt dist-upgrade through the router with
+	  cached rings). Say n for uncached rings (__nocache).
 
 config ETH_MVNETA_TX_TIMEOUT_MS
 	int "Time to wait for a free TX descriptor [ms]"
