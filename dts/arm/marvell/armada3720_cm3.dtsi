@@ -6,8 +6,13 @@
  * Armada 3720 Cortex-M3 secure processor. Its view of the address map:
  * SRAM at 0x1fff0000 (code, data and stack of the WTMI image), own
  * registers at 0x40000000, SoC registers at 0xc0000000 (0xd0000000 for
- * the A53), DDR at 0x60000000. The NVIC interrupt numbers of the SoC
- * peripherals are not known, the drivers poll.
+ * the A53), DDR at 0x60000000.
+ *
+ * NVIC lines (CZ.NIC mox-boot-builder wtmi/irq.h): 0 AP, 1 USB, 2 SP
+ * (A53 mailbox command), 3 DMA, 4 MCT, 5 BCM access error, 6 EC ZMODP,
+ * 7 hash, 8 SATA, 9 crypto, 10 eMMC/SDIO, 11 SPAD, 12 SPI, 13 UART RX,
+ * 14/15 CTI trigger out. No I2C line; the UART has no TX interrupt, so
+ * it stays polled.
  */
 
 #include <arm/armv7-m.dtsi>
@@ -41,5 +46,6 @@
 };
 
 &nvic {
+	/* mox-boot-builder shifts priorities by one: 7 bits */
 	arm,num-irq-priority-bits = <3>;
 };
