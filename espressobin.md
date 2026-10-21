@@ -381,8 +381,17 @@ Pořadí ladění:
 ### 3.14 CCI-400 a I/O koherence
 
 - **CCI-400:** TF-A ho přesouvá z `0xd8000000` na `0xfe000000` a zapíná snoop jen pro CPU cluster (slave interface 3).
-- **Přístup z NS:** registry jsou jen secure, čtení z NS EL1 skončí synchronní externí chybou (`ESR 0x96002050`). TF-A větev `espressobin-cci` přidává `A3700_CCI_NS_ACCESS=1` (secure access register = 1), předává se jako `mkflash.sh zephyr.bin A3700_CCI_NS_ACCESS=1`.
-- **Shell `cci`:** `dump` (ID, control, secure access, status, snoop control a shareable override portů S0–S4), `share <port> none|ns|sh`.
+- **Přístup z NS:** čtení z NS EL1 skončí synchronní externí chybou (`ESR 0x96002050`), i když BL1 nastaví secure access register CCI (`A3700_CCI_NS_ACCESS=1`). Stejný zápis v BL31 navíc BL31 zablokuje. Non-secure přístup tedy blokuje něco před CCI (nejspíš dekódovací okno), ne CCI samo.
+- **Řešení:** TF-A SiP volání `MV_SIP_CCI_READ` (`0x82000020`) a `MV_SIP_CCI_WRITE` (`0x82000021`), zapnou se `mkflash.sh zephyr.bin A3700_CCI_SIP=1`. BL31 si pak CCI mapuje (dřív měl jen `0xd0000000`–`0xdfffffff`).
+- **Shell `cci`** (přes SMC): `dump` (ID, control, secure access, status, snoop control a shareable override portů S0–S4), `share <port> none|ns|sh`.
+- **Naměřeno:**
+  - periph ID `0x009bb420`, CCI-400 rev 9,
+  - secure access 0,
+  - S3 = cluster A53 (`snoop c0000003`: snoop i DVM schopný i zapnutý),
+  - S0–S2 = ACE-Lite I/O porty (snoop 0, shareable override `none`),
+  - S4 nepoužitý.
+  
+  I/O koherenci tedy zajišťují sami masteři (sdílitelné transakce), CCI je jen směruje do clusteru přes S3.
 - **NETA je koherentní:** ringy a buffery v cachované paměti bez údržby cache (`ETH_MVNETA_DMA_COHERENT`, teď výchozí `y`). Router prošel `ping -s 1400` i `apt update && apt dist-upgrade`. Marvell to tvrdil (patch `dma-coherent` pro A3700 PCIe, 2021), upstream Linux to v DT nemá.
 
 ### 3.15 Zephyr na Cortex-M3 (místo WTMI)
