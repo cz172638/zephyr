@@ -83,4 +83,4 @@ static void bridge_thread(void *a, void *b, void *c)
 	}
 }
 
-K_THREAD_DEFINE(cm3_console, 1024, bridge_thread, NULL, NULL, NULL, 5, 0, 0);
+K_THREAD_DEFINE(cm3_console, 2048, bridge_thread, NULL, NULL, NULL, 5, 0, 0);

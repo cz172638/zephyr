@@ -153,6 +153,7 @@ static void rflash_thread(void *a, void *b, void *c)
 {
 	struct mvebu_rflash_req req;
 	struct mvebu_rflash_rsp rsp;
+	int ret;
 	struct mbox_msg msg = {
 		.data = &rsp,
 		.size = sizeof(rsp),
@@ -171,14 +172,19 @@ static void rflash_thread(void *a, void *b, void *c)
 		printk("CM3 flash: mailbox\n");
 		return;
 	}
+	printk("CM3 flash: serving %s\n", flash->name);
 
 	for (;;) {
 		k_msgq_get(&rflash_q, &req, K_FOREVER);
 		memset(&rsp, 0, sizeof(rsp));
 		rsp.seq = req.seq;
 		rsp.ret = rflash_do(&req, &rsp);
-		(void)mbox_send_dt(&tx, &msg);
+		ret = mbox_send_dt(&tx, &msg);
+		if (IS_ENABLED(CONFIG_SOC_ARMADA3720_CM3_FLASH_TRACE) || ret < 0) {
+			printk("CM3 flash: #%u op %u 0x%x+0x%x -> %d (reply %d)\n", req.seq,
+			       req.op, req.offset, req.len, rsp.ret, ret);
+		}
 	}
 }
 
-K_THREAD_DEFINE(cm3_flash, 1024, rflash_thread, NULL, NULL, NULL, 4, 0, 0);
+K_THREAD_DEFINE(cm3_flash, 2048, rflash_thread, NULL, NULL, NULL, 4, 0, 0);

@@ -100,6 +100,10 @@ config SOC_ARMADA3720_CM3_FLASH_SERVER
 	  and erases outside the firmware area through the mailbox, and
 	  updates the firmware only as a whole checked image.
 
+config SOC_ARMADA3720_CM3_FLASH_TRACE
+	bool "Print every flash request"
+	depends on SOC_ARMADA3720_CM3_FLASH_SERVER
+
 config SOC_ARMADA3720_CM3_FLASH_FW_SIZE
 	hex "Firmware area"
 	default 0x3e0000
