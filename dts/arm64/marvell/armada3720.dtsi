@@ -188,6 +188,15 @@
 			status = "disabled";
 		};
 
+		/* rWTM mailbox to the Cortex-M3 secure processor */
+		rwtm: mailbox@d00b0000 {
+			compatible = "marvell,armada-3700-rwtm-mailbox";
+			reg = <0xd00b0000 0x100>;
+			interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#mbox-cells = <1>;
+			status = "disabled";
+		};
+
 		/* PCIe in endpoint mode; mem: AXI range decoded to PCIe for
 		 * outbound windows (0xe8000000..0xefffffff, power of two used)
 		 */

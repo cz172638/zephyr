@@ -1,0 +1,58 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * A53 console through the CM3: UART0 is the CM3's, the console is an
+ * icmsg endpoint in DDR at 0x06000000 (CM3 0x66000000), the rWTM
+ * mailbox rings the doorbells. Uncached on the A53: the CM3 is not
+ * behind the CCI.
+ */
+
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm64.h>
+
+/ {
+	chosen {
+		zephyr,console = &ipc_uart;
+		zephyr,shell-uart = &ipc_uart;
+	};
+
+	ipc_shm_tx: memory@6000000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x06000000 0x1000>;
+		zephyr,memory-region = "IPC_A53_TX";
+		zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL_NC>;
+	};
+
+	ipc_shm_rx: memory@6001000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x06001000 0x1000>;
+		zephyr,memory-region = "IPC_A53_RX";
+		zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL_NC>;
+	};
+
+	ipc {
+		ipc0: ipc0 {
+			compatible = "zephyr,ipc-icmsg";
+			tx-region = <&ipc_shm_tx>;
+			rx-region = <&ipc_shm_rx>;
+			mboxes = <&rwtm 0>, <&rwtm 0>;
+			mbox-names = "tx", "rx";
+			status = "okay";
+		};
+	};
+
+	ipc_uart: uart-ipc {
+		compatible = "zephyr,uart-ipc";
+		ipc-instance = "ipc0";
+		endpoint-name = "console";
+		status = "okay";
+	};
+};
+
+&rwtm {
+	status = "okay";
+};
+
+&uart0 {
+	status = "disabled";
+};

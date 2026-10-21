@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  UART on an IPC service endpoint: the bytes go to the remote core,
+  which puts them on its real UART (and sends its input back). Lets a
+  core without a UART of its own have a console and a shell.
+
+compatible: "zephyr,uart-ipc"
+
+include: uart-controller.yaml
+
+properties:
+  ipc-instance:
+    type: string
+    required: true
+    description: |
+      Name of the IPC service instance node (zephyr,ipc-icmsg, ...). A
+      name, not a phandle: the UART is a console from PRE_KERNEL_1, the
+      IPC backend only comes up in POST_KERNEL.
+
+  endpoint-name:
+    type: string
+    default: "console"
+    description: Endpoint name, the same on both cores

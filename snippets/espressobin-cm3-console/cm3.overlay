@@ -1,0 +1,34 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * CM3 end of the A53 console: the same DDR (0x60000000 + offset),
+ * regions swapped.
+ */
+
+/ {
+	ipc_shm_tx: memory@66001000 {
+		compatible = "mmio-sram";
+		reg = <0x66001000 0x1000>;
+	};
+
+	ipc_shm_rx: memory@66000000 {
+		compatible = "mmio-sram";
+		reg = <0x66000000 0x1000>;
+	};
+
+	ipc {
+		ipc0: ipc0 {
+			compatible = "zephyr,ipc-icmsg";
+			tx-region = <&ipc_shm_tx>;
+			rx-region = <&ipc_shm_rx>;
+			mboxes = <&rwtm 0>, <&rwtm 0>;
+			mbox-names = "tx", "rx";
+			status = "okay";
+		};
+	};
+};
+
+&rwtm {
+	status = "okay";
+};

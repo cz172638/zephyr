@@ -76,6 +76,28 @@ config SOC_ARMADA3720_CM3_AP_ENTRY
 	default 0x04100000
 	depends on SOC_ARMADA3720_CM3_START_AP
 
+config SOC_ARMADA3720_CM3_CONSOLE_BRIDGE
+	bool "A53 console through the CM3"
+	depends on IPC_SERVICE && UART_CONSOLE
+	depends on $(dt_nodelabel_enabled,ipc0)
+	help
+	  UART0 stays with the CM3. The A53 console (zephyr,uart-ipc on the
+	  "console" endpoint of ipc0) is written out here and the UART input
+	  goes to the A53.
+
+config SOC_ARMADA3720_CM3_CONSOLE_POLL_MS
+	int "UART input poll period"
+	default 2
+	depends on SOC_ARMADA3720_CM3_CONSOLE_BRIDGE
+
+config SOC_ARMADA3720_CM3_REBOOT
+	bool "WTMI reboot command"
+	default y
+	depends on MBOX_MVEBU_RWTM
+	help
+	  Answers the WTMI reboot command (9, argument 0xdeadbeef) that TF-A
+	  sends with CM3_SYSTEM_RESET=1, with the north bridge warm reset.
+
 endif # SOC_ARMADA3720_CM3
 
 config SOC_ARMADA37XX_CCI_SHELL

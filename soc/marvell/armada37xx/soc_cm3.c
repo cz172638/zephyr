@@ -105,6 +105,29 @@ static void early_uart(uint32_t baud)
 	sys_write32(0, UART_OSAMP);
 }
 
+#ifdef CONFIG_SOC_ARMADA3720_CM3_REBOOT
+#include <zephyr/drivers/mbox/mbox_mvebu_rwtm.h>
+
+#define NB_WARM_RESET       (A3700_CM3_SOC_REGS + 0x13840)
+#define NB_WARM_RESET_MAGIC 0x1d1e
+
+uint32_t mvebu_rwtm_sp_legacy_cmd(uint16_t cmd, const uint32_t args[MVEBU_RWTM_NARGS],
+				  uint32_t out[MVEBU_RWTM_NARGS])
+{
+	ARG_UNUSED(out);
+
+	if (cmd == MVEBU_RWTM_CMD_REBOOT) {
+		if (args[0] != MVEBU_RWTM_REBOOT_MAGIC) {
+			return MVEBU_RWTM_STS(cmd, 0, FAIL);
+		}
+		sys_write32(NB_WARM_RESET_MAGIC, NB_WARM_RESET);
+		for (;;) {
+		}
+	}
+	return MVEBU_RWTM_STS(cmd, 0, BADCMD);
+}
+#endif
+
 void soc_early_init_hook(void)
 {
 	uint32_t hz;

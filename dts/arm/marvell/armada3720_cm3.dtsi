@@ -37,6 +37,15 @@
 	};
 
 	soc {
+		/* the A53 commands: rWTM mailbox, secure processor side */
+		rwtm: mailbox@40000000 {
+			compatible = "marvell,armada-3700-rwtm-sp";
+			reg = <0x40000000 0x300>;
+			interrupts = <2 2>;
+			#mbox-cells = <1>;
+			status = "disabled";
+		};
+
 		uart0: serial@c0012000 {
 			compatible = "marvell,armada-3700-uart";
 			reg = <0xc0012000 0x18>;
@@ -46,6 +55,5 @@
 };
 
 &nvic {
-	/* mox-boot-builder shifts priorities by one: 7 bits */
 	arm,num-irq-priority-bits = <3>;
 };

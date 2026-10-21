@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 3700 rWTM mailbox, Cortex-M3 (secure processor) side:
+  the A53 commands arrive on NVIC line 2, replies raise the host
+  interrupt. Same channel encoding as marvell,armada-3700-rwtm-mailbox.
+
+compatible: "marvell,armada-3700-rwtm-sp"
+
+include: [base.yaml, mailbox-controller.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+mbox-cells:
+  - channel

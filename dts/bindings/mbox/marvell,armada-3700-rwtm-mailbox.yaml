@@ -1,0 +1,22 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 3700 rWTM mailbox, A53 (host) side: commands to the
+  Cortex-M3 secure processor, its replies and doorbells raise the host
+  interrupt. Channel n is command 0x200 + n; commands below 0x200 are the
+  ones of the Marvell/CZ.NIC WTMI firmware (9 reboot, ...).
+
+compatible: "marvell,armada-3700-rwtm-mailbox"
+
+include: [base.yaml, mailbox-controller.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+mbox-cells:
+  - channel

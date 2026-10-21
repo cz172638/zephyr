@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config UART_IPC
+	bool "UART over an IPC service endpoint"
+	default y
+	depends on DT_HAS_ZEPHYR_UART_IPC_ENABLED
+	depends on IPC_SERVICE
+	select SERIAL_HAS_DRIVER
+	select SERIAL_SUPPORT_INTERRUPT
+	help
+	  A UART whose bytes travel over an IPC service endpoint to another
+	  core. Output before the endpoint binds is kept in the TX buffer.
+
+if UART_IPC
+
+config UART_IPC_TX_BUF_SIZE
+	int "TX buffer"
+	default 4096
+	help
+	  Holds the output until the remote binds (boot messages) and while
+	  the shared ring is full.
+
+config UART_IPC_RX_BUF_SIZE
+	int "RX buffer"
+	default 256
+
+config UART_IPC_CHUNK
+	int "Largest message"
+	default 128
+
+config UART_IPC_INIT_PRIORITY
+	int "Endpoint registration priority (POST_KERNEL)"
+	default 48
+	help
+	  After the IPC backends (IPC_SERVICE_REG_BACKEND_PRIORITY).
+
+endif

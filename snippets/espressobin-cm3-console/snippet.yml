@@ -1,0 +1,14 @@
+name: espressobin-cm3-console
+boards:
+  espressobin/armada3720:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: a53.overlay
+      EXTRA_CONF_FILE: a53.conf
+  espressobin/armada3720/smp:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: a53.overlay
+      EXTRA_CONF_FILE: a53.conf
+  espressobin/armada3720_cm3:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: cm3.overlay
+      EXTRA_CONF_FILE: cm3.conf
