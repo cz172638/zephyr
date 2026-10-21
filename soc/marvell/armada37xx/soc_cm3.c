@@ -120,8 +120,13 @@ uint32_t mvebu_rwtm_sp_legacy_cmd(uint16_t cmd, const uint32_t args[MVEBU_RWTM_N
 		if (args[0] != MVEBU_RWTM_REBOOT_MAGIC) {
 			return MVEBU_RWTM_STS(cmd, 0, FAIL);
 		}
+		int wait = 100000;
+
 		printk("Zephyr CM3: reboot requested by the A53\n");
-		k_busy_wait(2000);
+		/* let the UART drain, the reset would cut the line */
+		while (--wait > 0 && (sys_read32(UART_STAT) & UART_TX_EMP) == 0) {
+			k_busy_wait(1);
+		}
 		sys_write32(NB_WARM_RESET_MAGIC, NB_WARM_RESET);
 		for (;;) {
 		}
