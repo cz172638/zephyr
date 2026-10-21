@@ -120,6 +120,8 @@ uint32_t mvebu_rwtm_sp_legacy_cmd(uint16_t cmd, const uint32_t args[MVEBU_RWTM_N
 		if (args[0] != MVEBU_RWTM_REBOOT_MAGIC) {
 			return MVEBU_RWTM_STS(cmd, 0, FAIL);
 		}
+		printk("Zephyr CM3: reboot requested by the A53\n");
+		k_busy_wait(2000);
 		sys_write32(NB_WARM_RESET_MAGIC, NB_WARM_RESET);
 		for (;;) {
 		}
