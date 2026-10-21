@@ -10,17 +10,17 @@
  * override +0x4. The CPU cluster is on slave interface 3, interfaces
  * 0..2 are the ACE-Lite I/O ports.
  *
- * Without TF-A setting bit 0 of the secure access register, non-secure
- * writes are ignored.
+ * Non-secure accesses abort (the CPU decode window to the CCI is secure
+ * only), so the registers go through the TF-A SiP calls MV_SIP_CCI_READ
+ * / MV_SIP_CCI_WRITE (TF-A built with A3700_CCI_SIP=1).
  */
 
 #include <stdlib.h>
 #include <string.h>
 
+#include <zephyr/arch/arm64/arm-smccc.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
-#include <zephyr/sys/device_mmio.h>
-#include <zephyr/sys/sys_io.h>
 
 #define CCI_BASE      0xfe000000UL
 #define CCI_SIZE      0x10000
@@ -39,24 +39,42 @@
 #define CCI_SL_MAXOT  0x110
 #define CCI_NUM_SL    5
 
-static mm_reg_t cci;
+#define SIP_CCI_READ  0x82000020
+#define SIP_CCI_WRITE 0x82000021
 
-static mm_reg_t cci_base(void)
-{
-	if (cci == 0) {
-		device_map(&cci, CCI_BASE, CCI_SIZE, K_MEM_CACHE_NONE);
-	}
-	return cci;
-}
+static bool sip_ok = true;
 
 static uint32_t rd(uint32_t off)
 {
-	return sys_read32(cci_base() + off);
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SIP_CCI_READ, off, 0, 0, 0, 0, 0, 0, &res);
+	if (res.a0 != 0) {
+		sip_ok = false;
+		return 0xdeadbeef;
+	}
+	return (uint32_t)res.a1;
+}
+
+static int wr(uint32_t off, uint32_t val)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SIP_CCI_WRITE, off, val, 0, 0, 0, 0, 0, &res);
+	return res.a0 == 0 ? 0 : -ENOTSUP;
 }
 
 static int cmd_dump(const struct shell *sh, size_t argc, char **argv)
 {
-	uint32_t pid = (rd(0xfe0) & 0xff) | ((rd(0xfe4) & 0xff) << 8) | ((rd(0xfe8) & 0xff) << 16) |
+	uint32_t pid;
+
+	sip_ok = true;
+	(void)rd(CCI_STATUS);
+	if (!sip_ok) {
+		shell_error(sh, "TF-A without the CCI SiP calls (build with A3700_CCI_SIP=1)");
+		return -ENOTSUP;
+	}
+	pid = (rd(0xfe0) & 0xff) | ((rd(0xfe4) & 0xff) << 8) | ((rd(0xfe8) & 0xff) << 16) |
 		       ((rd(0xfec) & 0xff) << 24);
 
 	shell_print(sh, "CCI @ 0x%lx: periph id %08x (part 0x%03x rev %u), comp id %02x %02x %02x %02x",
@@ -102,9 +120,11 @@ static int cmd_share(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "none | ns | sh");
 		return -EINVAL;
 	}
-	sys_write32(v, cci_base() + CCI_SL(i) + CCI_SL_SHARE);
-	shell_print(sh, "S%d share-ovr %08x (reads back; 0 when TF-A keeps CCI secure)", i,
-		    rd(CCI_SL(i) + CCI_SL_SHARE));
+	if (wr(CCI_SL(i) + CCI_SL_SHARE, v) != 0) {
+		shell_error(sh, "TF-A without the CCI SiP calls (build with A3700_CCI_SIP=1)");
+		return -ENOTSUP;
+	}
+	shell_print(sh, "S%d share-ovr %08x", i, rd(CCI_SL(i) + CCI_SL_SHARE));
 	return 0;
 }
 
