@@ -406,6 +406,16 @@ Pořadí ladění:
   - CM3 polluje vstup UARTu po 2 ms. TF-A s `LOG_LEVEL=10 CM3_SYSTEM_RESET=1`.
 - **Dál:** SPI NOR a I2C na CM3, přístup A53 k flash přes mailbox.
 
+
+### 3.16 DMA a ladění (2026-10-21)
+
+- **CM3 jako vlastník SPI NOR a fwupdate** (snippet `espressobin-cm3-console`, CM3 flash server na rWTM kanálu 1, buffer v DDR `0x06010000`): funkční, ale nepoužitelně pomalé. NVS čte po 8 B a každé čtení je jedna cesta přes mailbox s SPI v pollingu, takže načtení settings jsou tisíce požadavků. Odloženo, používá se zase Marvell WTMI. Kód zůstává ve větvi.
+- **SD ADMA2** (`SDHC_XENON_ADMA`, 32bitové deskriptory po 32 KiB, buffery zarovnané na 64 B, údržba cache): data v pořádku, rychlost stejná jako PIO (`fs cp` 4 MiB: 8,5 vs. 8,3 MiB/s). Limitem je karta a HS 50 MHz při 3,3 V. Přínos bude až s přerušením místo pollingu a s UHS na 1,8 V.
+- **fs shell:** `FILE_SYSTEM_SHELL_TIMING` (časové značky a rychlost), `FILE_SYSTEM_SHELL_CP_BUFFER_SIZE` (zarovnaný buffer pro `cp`). Testovací buffer fs shellu leží na stacku shellu (32 KiB v 8KiB stacku tiše rozbilo shell).
+- **NETA zero-copy** (`ETH_MVNETA_ZERO_COPY`, netshell `zerocopy.conf`): RX do `net_buf` z vlastního poolu ovladače, TX deskriptor na každý fragment, paket držený referencí do odeslání. Ověřeno: RX 115 307 / TX 601 964 bez kopie, 0 kopírovaných, pool bez úniku. `zperf tcp upload`: 250 Mb/s (kopírování 225 Mb/s). Limit je jedno odesílající vlákno (`top`: ~96 % jednoho jádra, druhé převážně volné), NETA RX vlákno ~5 % jádra.
+- **gPTP:** `dsa_mv88e6xxx: port N: no departure time stamp` jde i bez zátěže a s kopírováním i se zero-copy. TX timestampy na portech switche zatím nefungují (otevřené).
+- **DAP/CoreSight z běžícího systému:** `MDRAR_EL1 = 0`, `DBGAUTHSTATUS = 0xff`. Dekódovací okno CPU 4 (cíl 3) mapuje `0x80000000` (256 MiB) 1:1 jako u u8500 (RK3399 `0xfe400000`, Hi6220 `0xf6400000`, i.MX8M `0x28000000`). Čtení se zasekne bez abortu i jako secure přes BL31 (TF-A `A3700_DBG_SIP`) a i se zapnutými hodinami NB `sec_at`/`sec_dap`/`tscem`/`trace`. Nejspíš je vypnutá debug power doména (`CDBGPWRUPREQ` z DP). Ověřit s připojeným OpenOCD. Okno 3 (cíl 7, `0xf0000000`, 128 KiB, remap `0x1fff0000`) je SRAM CM3. Shell `dap win/scan/info/rd/clk/smc`, arm64 hook `z_arm64_fault_fixup()`.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
