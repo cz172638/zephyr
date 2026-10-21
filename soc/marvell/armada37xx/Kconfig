@@ -18,6 +18,66 @@ config SOC_ARMADA3720_CM3
 	  own registers (mailbox, eFuse) at 0x40000000, the SoC registers at
 	  0xc0000000 (0xd0000000 for the A53) and DDR at 0x60000000.
 
+if SOC_ARMADA3720_CM3
+
+config SOC_ARMADA3720_CM3_SYS_INIT
+	bool "Clock preset, AVS and DDR tuning (Marvell WTMI sys_init)"
+	default y
+	help
+	  What the Marvell WTMI sys_init does before the A53 may start, run
+	  before the kernel: the clock preset, the AVS voltage and the DDR
+	  tuning. The BootROM did the static DDR setup from the TIM already.
+
+if SOC_ARMADA3720_CM3_SYS_INIT
+
+config SOC_ARMADA3720_CM3_CLOCK_PRESET
+	int "Clock preset"
+	default 2
+	range 0 3
+	help
+	  0: CPU 600 / DDR 600, 1: CPU 800 / DDR 800, 2: CPU 1000 / DDR 800,
+	  3: CPU 1200 / DDR 750 MHz. Must match the chip marking and the TIM
+	  (mkflash.sh CLOCKS).
+
+config SOC_ARMADA3720_CM3_DDR_TYPE
+	int "DDR type (0 DDR3, 1 DDR4)"
+	default 0
+
+config SOC_ARMADA3720_CM3_DDR_DEV_WIDTH
+	int "DDR device bus width"
+	default 16
+
+config SOC_ARMADA3720_CM3_DDR_SPEED_BIN
+	int "DDR speed bin index"
+	default 12
+
+config SOC_ARMADA3720_CM3_DDR_CS_NUM
+	int "DDR chip selects"
+	default 2
+
+config SOC_ARMADA3720_CM3_DDR_DEV_CAP_MB
+	int "DDR device capacity [MiB]"
+	default 512
+	help
+	  Defaults: ESPRESSObin v5, 1 GiB DDR3 on 2 chip selects (A3700-utils
+	  DDR_TOPOLOGY_2).
+
+endif # SOC_ARMADA3720_CM3_SYS_INIT
+
+config SOC_ARMADA3720_CM3_START_AP
+	bool "Start the A53"
+	default y
+	help
+	  Tell the A53 BootROM through the mailbox to run the OBMI image
+	  (TF-A BL1) the BootROM loaded.
+
+config SOC_ARMADA3720_CM3_AP_ENTRY
+	hex "A53 entry"
+	default 0x04100000
+	depends on SOC_ARMADA3720_CM3_START_AP
+
+endif # SOC_ARMADA3720_CM3
+
 config SOC_ARMADA37XX_CCI_SHELL
 	bool "CCI-400 shell"
 	depends on SOC_ARMADA3720 && SHELL

@@ -16,6 +16,8 @@
 
 #include <soc.h>
 
+#include "wtmi/a3700_wtmi.h"
+
 #define NB_CLK          (A3700_CM3_SOC_REGS + 0x13000)
 #define NB_TBG_SEL      (NB_CLK + 0x0)
 #define NB_DIV_SEL1     (NB_CLK + 0x8)
@@ -83,7 +85,16 @@ uint32_t a3700_cm3_clk_hz(void)
 
 void soc_early_init_hook(void)
 {
-	uint32_t hz = a3700_cm3_clk_hz();
+	uint32_t hz;
+
+	if (IS_ENABLED(CONFIG_SOC_ARMADA3720_CM3_SYS_INIT)) {
+		(void)a3700_wtmi_sys_init();
+	}
+	if (IS_ENABLED(CONFIG_SOC_ARMADA3720_CM3_START_AP)) {
+		a3700_wtmi_start_ap(CONFIG_SOC_ARMADA3720_CM3_AP_ENTRY);
+	}
+
+	hz = a3700_cm3_clk_hz();
 
 	if (hz != 0) {
 		z_sys_clock_hw_cycles_per_sec_update(hz);

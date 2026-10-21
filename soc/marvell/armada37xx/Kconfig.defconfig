@@ -49,4 +49,9 @@ config FLASH_BASE_ADDRESS
 config INIT_ARCH_HW_AT_BOOT
 	default y
 
+# The DDR tuning runs on the interrupt stack before the kernel (the WTMI
+# gave it 4 KiB)
+config ISR_STACK_SIZE
+	default 4096
+
 endif # SOC_ARMADA3720_CM3
