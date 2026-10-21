@@ -9,11 +9,17 @@ config SOC_ARMADA3720
 	bool
 	select SOC_SERIES_ARMADA37XX
 	help
-	  Marvell Armada 3720: dual Cortex-A53, GIC-500, plus a Cortex-M3
-	  secure processor running the WTMI firmware (not a Zephyr target).
+	  Marvell Armada 3720: dual Cortex-A53, GIC-500.
+
+config SOC_ARMADA3720_CM3
+	bool
+	select SOC_SERIES_ARMADA37XX
+	help
+	  Marvell Armada 3720 Cortex-M3 secure processor.
 
 config SOC
 	default "armada3720" if SOC_ARMADA3720
+	default "armada3720_cm3" if SOC_ARMADA3720_CM3
 
 config SOC_SERIES
 	default "armada37xx" if SOC_SERIES_ARMADA37XX

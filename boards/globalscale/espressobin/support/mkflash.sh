@@ -17,6 +17,9 @@
 #   DDR_TOPOLOGY  0 = 512 MiB DDR3 1CS, 2 = 1 GiB DDR3 2CS (v5),
 #                 see A3700-utils tim/ddr/DDR_TOPOLOGY_*.txt   [2]
 #   BOOTDEV   SPINOR or EMMCNORM                  [SPINOR]
+#   CM3       Zephyr image for the Cortex-M3 (espressobin/armada3720_cm3)
+#             in place of the whole WTMI (sys_init + fuse app); needs the
+#             A3700-utils WTMI_EXEC_ADDR support                  [unset]
 #
 # Outputs in $TFA/build/a3700/release: flash-image.bin, uart-images.tgz.bin
 
@@ -25,6 +28,7 @@ set -eu
 BL33=${1:?usage: $0 <zephyr.bin> [make vars]}
 shift
 BL33=$(realpath "$BL33")
+EXTRA_VARS="$*"
 
 TFA=${TFA:-$HOME/work/tfa}
 WTP=${WTP:-$HOME/work/a3700-utils}
@@ -33,6 +37,16 @@ CRYPTOPP=${CRYPTOPP:-$HOME/work/cryptopp}
 CLOCKS=${CLOCKS:-CPU_800_DDR_800}
 DDR_TOPOLOGY=${DDR_TOPOLOGY:-2}
 BOOTDEV=${BOOTDEV:-SPINOR}
+CM3=${CM3:-}
+
+set --
+if [ -n "$CM3" ]; then
+	CM3=$(realpath "$CM3")
+	# vector table at 0x1fff0000; the BootROM jumps to the word at
+	# EXEC_ADDR, i.e. the reset vector
+	export WTMI_EXEC_ADDR=0x1fff0004
+	set -- WTMI_MULTI_IMG="$CM3"
+fi
 
 # make only compares timestamps: a different but older BL33 would be ignored
 rm -f "$TFA"/build/a3700/release/fip.bin
@@ -45,7 +59,7 @@ for target in mrvl_flash mrvl_uart; do
 		CLOCKSPRESET="$CLOCKS" DDR_TOPOLOGY="$DDR_TOPOLOGY" \
 		BOOTDEV="$BOOTDEV" PARTNUM=0 MARVELL_SECURE_BOOT=0 \
 		WTP="$WTP" MV_DDR_PATH="$MV_DDR" CRYPTOPP_PATH="$CRYPTOPP" \
-		BL33="$BL33" "$@" "$target"
+		BL33="$BL33" "$@" $EXTRA_VARS "$target"
 done
 
 ls -l "$TFA"/build/a3700/release/flash-image.bin \

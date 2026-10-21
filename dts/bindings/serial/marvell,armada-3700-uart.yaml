@@ -12,10 +12,9 @@ properties:
     required: true
 
   interrupts:
-    required: true
+    description: Needed for the interrupt driven API (not on the CM3).
 
   interrupt-names:
-    required: true
     description: Must contain "uart-sum".
 
   clock-frequency:

@@ -1,14 +1,26 @@
 # Copyright (c) 2026 Jiri Kastner
 # SPDX-License-Identifier: Apache-2.0
 
-config SOC_SERIES_ARMADA37XX
+config SOC_ARMADA3720
 	select ARM64
 	select CPU_CORTEX_A53
 	select ARM_ARCH_TIMER if SYS_CLOCK_EXISTS
 
+config SOC_ARMADA3720_CM3
+	select ARM
+	select CPU_CORTEX_M3
+	select CPU_CORTEX_M_HAS_SYSTICK
+	select CPU_CORTEX_M_HAS_VTOR
+	select SOC_EARLY_INIT_HOOK
+	help
+	  The Cortex-M3 secure processor ("rWTM") of the Armada 3720 in place
+	  of the Marvell WTMI firmware. It sees its SRAM at 0x1fff0000, its
+	  own registers (mailbox, eFuse) at 0x40000000, the SoC registers at
+	  0xc0000000 (0xd0000000 for the A53) and DDR at 0x60000000.
+
 config SOC_ARMADA37XX_CCI_SHELL
 	bool "CCI-400 shell"
-	depends on SOC_SERIES_ARMADA37XX && SHELL
+	depends on SOC_ARMADA3720 && SHELL
 	default y
 	help
 	  'cci dump' and 'cci share': the CCI-400 registers (remapped by

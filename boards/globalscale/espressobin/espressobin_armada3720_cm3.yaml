@@ -1,0 +1,11 @@
+identifier: espressobin/armada3720_cm3
+name: ESPRESSObin (Cortex-M3)
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+ram: 64
+flash: 0
+supported:
+  - serial
+vendor: globalscale

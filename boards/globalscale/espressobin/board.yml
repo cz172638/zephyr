@@ -6,3 +6,4 @@ board:
   - name: armada3720
     variants:
     - name: smp
+  - name: armada3720_cm3

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Jiri Kastner
 # SPDX-License-Identifier: Apache-2.0
 
-if SOC_SERIES_ARMADA37XX
+if SOC_ARMADA3720
 
 config NUM_IRQS
 	default 192
@@ -23,4 +23,30 @@ config FLASH_SIZE
 config FLASH_BASE_ADDRESS
 	default 0
 
-endif # SOC_SERIES_ARMADA37XX
+endif # SOC_ARMADA3720
+
+if SOC_ARMADA3720_CM3
+
+# 16 external interrupts in the WTMI vector table
+config NUM_IRQS
+	default 16
+
+# SysTick runs from the CM3 clock, measured from the clock tree at boot
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default 200000000
+
+config SYSTEM_CLOCK_HW_CYCLES_PER_SEC_RUNTIME_UPDATE
+	default y
+
+
+config FLASH_SIZE
+	default 0
+
+config FLASH_BASE_ADDRESS
+	default 0
+
+# The BootROM jumps in with its own stack and interrupt state
+config INIT_ARCH_HW_AT_BOOT
+	default y
+
+endif # SOC_ARMADA3720_CM3

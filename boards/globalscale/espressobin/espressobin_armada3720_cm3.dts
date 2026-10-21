@@ -1,0 +1,28 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * ESPRESSObin, Cortex-M3 secure processor in place of the WTMI firmware.
+ * The console is UART0, shared with the A53 (the BootROM set it up).
+ */
+
+/dts-v1/;
+
+#include <marvell/armada3720_cm3.dtsi>
+
+/ {
+	model = "Globalscale ESPRESSObin (Cortex-M3)";
+	compatible = "globalscale,espressobin";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+};

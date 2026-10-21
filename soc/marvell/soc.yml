@@ -4,3 +4,4 @@ family:
       - name: armada37xx
         socs:
           - name: armada3720
+          - name: armada3720_cm3

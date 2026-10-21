@@ -1,0 +1,45 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Armada 3720 Cortex-M3 secure processor. Its view of the address map:
+ * SRAM at 0x1fff0000 (code, data and stack of the WTMI image), own
+ * registers at 0x40000000, SoC registers at 0xc0000000 (0xd0000000 for
+ * the A53), DDR at 0x60000000. The NVIC interrupt numbers of the SoC
+ * peripherals are not known, the drivers poll.
+ */
+
+#include <arm/armv7-m.dtsi>
+#include <mem.h>
+
+/ {
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-m3";
+			reg = <0>;
+		};
+	};
+
+	/* 64 KiB below 0x20000000; the BootROM keeps the TIM at 0x20006000 */
+	sram0: memory@1fff0000 {
+		compatible = "mmio-sram";
+		reg = <0x1fff0000 DT_SIZE_K(64)>;
+	};
+
+	soc {
+		uart0: serial@c0012000 {
+			compatible = "marvell,armada-3700-uart";
+			reg = <0xc0012000 0x18>;
+			status = "disabled";
+		};
+	};
+};
+
+&nvic {
+	arm,num-irq-priority-bits = <3>;
+};

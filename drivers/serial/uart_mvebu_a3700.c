@@ -229,16 +229,18 @@ static void a3700_isr(const struct device *dev)
 static int a3700_uart_init(const struct device *dev)
 {
 	const struct a3700_uart_config *cfg = dev->config;
-	int ret;
+	int __maybe_unused ret;
 
 	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
 
+#ifdef CONFIG_PINCTRL
 	if (cfg->pcfg != NULL) {
 		ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
 		if (ret < 0 && ret != -ENOENT) {
 			return ret;
 		}
 	}
+#endif
 
 	if (cfg->clock_frequency != 0 && cfg->current_speed != 0) {
 		uint32_t div = DIV_ROUND_CLOSEST(cfg->clock_frequency, 16 * cfg->current_speed);
