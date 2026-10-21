@@ -378,6 +378,20 @@ Pořadí ladění:
 4. MSI/INTx.
 5. Inbound (BARy). Postup: `lspci` ukáže výchozí velikosti, po přiřazení adres hostem zkusit `devmem` na BAR a hledat, kam v AXI se zápis promítne. Pomůžou `advk_ep dump lmi` před a po.
 
+### 3.14 CCI-400 a I/O koherence
+
+- **CCI-400:** TF-A ho přesouvá z `0xd8000000` na `0xfe000000` a zapíná snoop jen pro CPU cluster (slave interface 3).
+- **Přístup z NS:** registry jsou jen secure, čtení z NS EL1 skončí synchronní externí chybou (`ESR 0x96002050`). TF-A větev `espressobin-cci` přidává `A3700_CCI_NS_ACCESS=1` (secure access register = 1), předává se jako `mkflash.sh zephyr.bin A3700_CCI_NS_ACCESS=1`.
+- **Shell `cci`:** `dump` (ID, control, secure access, status, snoop control a shareable override portů S0–S4), `share <port> none|ns|sh`.
+- **NETA je koherentní:** ringy a buffery v cachované paměti bez údržby cache (`ETH_MVNETA_DMA_COHERENT`, teď výchozí `y`). Router prošel `ping -s 1400` i `apt update && apt dist-upgrade`. Marvell to tvrdil (patch `dma-coherent` pro A3700 PCIe, 2021), upstream Linux to v DT nemá.
+
+### 3.15 Zephyr na Cortex-M3 (místo WTMI)
+
+- **Target `espressobin/armada3720_cm3`:** SRAM 64 KiB na `0x1fff0000` (bez XIP). Registry SoC jsou z pohledu CM3 na `0xc0000000`, vlastní registry CM3 (mailbox, eFuse) na `0x40000000`, DDR na `0x60000000`.
+- **Start:** Boot ROM podle TIM (balíček CRV2, „core release“) skočí na slovo na `EXEC_ADDR`. Zephyr má standardní vektorovou tabulku, proto `EXEC_ADDR = 0x1fff0004` (reset vektor). A3700-utils větev `espressobin-cm3` přidává override `WTMI_EXEC_ADDR`, `mkflash.sh` bere `CM3=<zephyr.bin>`.
+- **Před kernelem** (`soc_early_init_hook`): preset hodin, AVS, DDR tuning (kód Marvellu, BSD-3, v `soc/marvell/armada37xx/wtmi`) a mailbox zpráva `0x1003` s argumentem `0x04100000`, po které Boot ROM spustí na A53 TF-A BL1.
+- **Konzole** je UART0, zatím sdílený s A53 a v pollingu. Čísla přerušení SoC periferií na NVIC CM3 nejsou známá. Plán: zmapovat přes pending bity (`nvic watch`), UART jen pro CM3, výstup A53 přes mailbox + icmsg, SPI NOR a I2C na CM3.
+
 ## 4. Nejistoty a otevřené body
 
 1. **CPU port switche.** Vyřešeno: `0xe03e` dává 1000/full, ověřeno přes `mvneta sw`.
