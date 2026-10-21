@@ -399,7 +399,12 @@ Pořadí ladění:
 - **Target `espressobin/armada3720_cm3`:** SRAM 64 KiB na `0x1fff0000` (bez XIP). Registry SoC jsou z pohledu CM3 na `0xc0000000`, vlastní registry CM3 (mailbox, eFuse) na `0x40000000`, DDR na `0x60000000`.
 - **Start:** Boot ROM podle TIM (balíček CRV2, „core release“) skočí na slovo na `EXEC_ADDR`. Zephyr má standardní vektorovou tabulku, proto `EXEC_ADDR = 0x1fff0004` (reset vektor). A3700-utils větev `espressobin-cm3` přidává override `WTMI_EXEC_ADDR`, `mkflash.sh` bere `CM3=<zephyr.bin>`.
 - **Před kernelem** (`soc_early_init_hook`): preset hodin, AVS, DDR tuning (kód Marvellu, BSD-3, v `soc/marvell/armada37xx/wtmi`) a mailbox zpráva `0x1003` s argumentem `0x04100000`, po které Boot ROM spustí na A53 TF-A BL1.
-- **Konzole** je UART0, zatím sdílený s A53 a v pollingu. Čísla přerušení SoC periferií na NVIC CM3 nejsou známá. Plán: zmapovat přes pending bity (`nvic watch`), UART jen pro CM3, výstup A53 přes mailbox + icmsg, SPI NOR a I2C na CM3.
+- **NVIC** (z CZ.NIC mox-boot-builder `wtmi/irq.h`): 0 AP, 1 USB, 2 SP (příkaz z A53 v mailboxu), 3 DMA, 4 MCT, 5 BCM_ACC_ERR, 6 EC_ZMODP, 7 HASH, 8 SATA, 9 CRYPTO, 10 EMMC/SDIO, 11 SPAD, 12 SPI, 13 UART_RX, 14/15 CTITRIGOUT. I2C přerušení nemá, UART jen RX.
+- **Konzole A53 přes CM3** (snippet `espressobin-cm3-console`, ověřeno image 31): UART0 patří jen CM3, A53 má `zephyr,uart-ipc` (endpoint „console“, icmsg). Shell A53 včetně `cci dump` běží přes CM3.
+  - rWTM mailbox `mbox_mvebu_rwtm` pro obě strany: A53 `0xd00b0000` GIC SPI 18 (přístup z normal world funguje), CM3 `0x40000000` NVIC 2. Kanál n = příkaz `0x200+n`, délka v argumentu 0, MTU 60 B; příkazy WTMI pod `0x200` zůstávají, CM3 odpovídá na reboot (9, `0xdeadbeef`) warm resetem NB.
+  - Sdílená paměť: DDR `0x06000000`, 2× 4 KiB (CM3 vidí `0x66000000`), na A53 normal non-cacheable.
+  - CM3 polluje vstup UARTu po 2 ms. TF-A s `LOG_LEVEL=10 CM3_SYSTEM_RESET=1`.
+- **Dál:** SPI NOR a I2C na CM3, přístup A53 k flash přes mailbox.
 
 ## 4. Nejistoty a otevřené body
 
