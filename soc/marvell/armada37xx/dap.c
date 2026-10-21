@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <zephyr/arch/arm64/arm-smccc.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
@@ -104,8 +105,28 @@ static void win_unmap(struct win *w)
 	k_mem_unmap_phys_bare(w->va, w->size);
 }
 
+/*
+ * 'dap smc on': reads of the debug window go through BL31
+ * (TF-A A3700_DBG_SIP=1, secure accesses), the rest stays direct.
+ */
+#define SIP_DBG_READ 0x82000022
+#define DBG_BASE     0x80000000UL
+#define DBG_SIZE     0x01000000UL
+
+static bool use_smc;
+
 static int prd(const struct win *w, uintptr_t pa, uint32_t *v)
 {
+	if (use_smc && pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE) {
+		struct arm_smccc_res res;
+
+		arm_smccc_smc(SIP_DBG_READ, pa - DBG_BASE, 0, 0, 0, 0, 0, 0, &res);
+		if (res.a0 != 0) {
+			return -EIO;
+		}
+		*v = (uint32_t)res.a1;
+		return 0;
+	}
 	return a3700_probe_read32((uintptr_t)w->va + (pa - w->pa), v);
 }
 
@@ -506,7 +527,18 @@ static int cmd_dap_clk(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_dap_smc(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc > 1) {
+		use_smc = strcmp(argv[1], "on") == 0;
+	}
+	shell_print(sh, "debug window 0x%08lx+0x%lx: %s", DBG_BASE, DBG_SIZE,
+		    use_smc ? "through BL31 (secure)" : "direct (non-secure)");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(dap_cmds,
+	SHELL_CMD_ARG(smc, NULL, "debug window reads through TF-A: [on|off]", cmd_dap_smc, 1, 1),
 	SHELL_CMD_ARG(clk, NULL, "debug/trace clocks: [on]", cmd_dap_clk, 1, 1),
 	SHELL_CMD_ARG(info, NULL, "ROM table walk: [rom table address]", cmd_dap_info, 1, 1),
 	SHELL_CMD_ARG(scan, NULL, "CoreSight IDs: <start> <end> [step]", cmd_dap_scan, 3, 1),
