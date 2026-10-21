@@ -303,7 +303,8 @@ static int cmd_cp(const struct shell *sh, size_t argc, char **argv)
 	char path_dst[MAX_PATH_LEN];
 	struct fs_file_t file_src;
 	struct fs_file_t file_dst;
-	uint8_t buf[BUF_CNT];
+	/* static: may be large, and aligned for DMA straight into it */
+	static uint8_t buf[CONFIG_FILE_SYSTEM_SHELL_CP_BUFFER_SIZE] __aligned(64);
 	ssize_t buf_len;
 	ssize_t num_written;
 
@@ -327,7 +328,7 @@ static int cmd_cp(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	while (true) {
-		buf_len = fs_read(&file_src, buf, BUF_CNT);
+		buf_len = fs_read(&file_src, buf, sizeof(buf));
 		if (buf_len < 0) {
 			shell_error(sh, "Failed to read %s (%d)", path_src, (int)buf_len);
 			err = -EIO;
@@ -970,30 +971,94 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_fs_mount,
 );
 #endif
 
+#ifdef CONFIG_FILE_SYSTEM_SHELL_TIMING
+/*
+ * Uptime stamps before and after a command, and the rate for the ones
+ * that move a known amount of data (size of the files involved).
+ */
+static uint64_t fs_files_size(size_t argc, char **argv, size_t first, size_t last)
+{
+	char path[MAX_PATH_LEN];
+	struct fs_dirent dirent;
+	uint64_t sum = 0;
+
+	for (size_t i = first; i <= last && i < argc; i++) {
+		create_abs_path(argv[i], path, sizeof(path));
+		if (fs_stat(path, &dirent) == 0 && dirent.type == FS_DIR_ENTRY_FILE) {
+			sum += dirent.size;
+		}
+	}
+	return sum;
+}
+
+static int fs_timed(const struct shell *sh, size_t argc, char **argv,
+		    int (*handler)(const struct shell *, size_t, char **), uint64_t bytes)
+{
+	uint64_t c0, c1, us;
+	int ret;
+
+	shell_print(sh, "[%lld ms] %s start", k_uptime_get(), argv[0]);
+	c0 = k_cycle_get_64();
+	ret = handler(sh, argc, argv);
+	c1 = k_cycle_get_64();
+	us = k_cyc_to_us_floor64(c1 - c0);
+	if (bytes != 0 && us != 0) {
+		shell_print(sh, "[%lld ms] %s end: %llu.%06llu s, %llu bytes, %llu KiB/s",
+			    k_uptime_get(), argv[0], us / 1000000, us % 1000000, bytes,
+			    bytes * 1000000 / us / 1024);
+	} else {
+		shell_print(sh, "[%lld ms] %s end: %llu.%06llu s", k_uptime_get(), argv[0],
+			    us / 1000000, us % 1000000);
+	}
+	return ret;
+}
+
+/* data moved: source file(s) for cat/read/cp, nothing known for the rest */
+#define FS_TIMED(name, first, last)                                                                \
+	static int name##_timed(const struct shell *sh, size_t argc, char **argv)                  \
+	{                                                                                          \
+		uint64_t bytes = (first) > 0 ? fs_files_size(argc, argv, first, last) : 0;         \
+		return fs_timed(sh, argc, argv, name, bytes);                                      \
+	}
+
+FS_TIMED(cmd_ls, 0, 0)
+FS_TIMED(cmd_mkdir, 0, 0)
+FS_TIMED(cmd_read, 1, 1)
+FS_TIMED(cmd_cat, 1, 255)
+FS_TIMED(cmd_rm, 0, 0)
+FS_TIMED(cmd_cp, 1, 1)
+FS_TIMED(cmd_mv, 0, 0)
+FS_TIMED(cmd_trunc, 0, 0)
+FS_TIMED(cmd_write, 0, 0)
+#define FS_HANDLER(name) name##_timed
+#else
+#define FS_HANDLER(name) name
+#endif
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_fs,
 	SHELL_CMD(cd, NULL, SHELL_HELP("Change working directory", "[<path>]"), cmd_cd),
-	SHELL_CMD(ls, NULL, SHELL_HELP("List files in current directory", "[<path>]"), cmd_ls),
-	SHELL_CMD_ARG(mkdir, NULL, SHELL_HELP("Create directory", "<path>"), cmd_mkdir, 2, 0),
+	SHELL_CMD(ls, NULL, SHELL_HELP("List files in current directory", "[<path>]"), FS_HANDLER(cmd_ls)),
+	SHELL_CMD_ARG(mkdir, NULL, SHELL_HELP("Create directory", "<path>"), FS_HANDLER(cmd_mkdir), 2, 0),
 #ifdef CONFIG_FILE_SYSTEM_SHELL_MOUNT_COMMAND
 	SHELL_CMD(mount, &sub_fs_mount,
 		  SHELL_HELP("Mount filesystem", "<fs type> <mount-point>"), NULL),
 #endif
 	SHELL_CMD(pwd, NULL, SHELL_HELP("Print current working directory", NULL), cmd_pwd),
 	SHELL_CMD_ARG(read, NULL, SHELL_HELP("Read from file", "<path> [<count> [<offset>]]"),
-		      cmd_read, 2, 255),
+		      FS_HANDLER(cmd_read), 2, 255),
 	SHELL_CMD_ARG(cat, NULL,
 		      SHELL_HELP("Concatenate files and print on the standard output",
 				 "<path> [<path> ...]"),
-		      cmd_cat, 2, 255),
-	SHELL_CMD_ARG(rm, NULL, SHELL_HELP("Remove file", "<path>"), cmd_rm, 2, 0),
-	SHELL_CMD_ARG(cp, NULL, SHELL_HELP("Copy file", "<source> <dest>"), cmd_cp, 3, 0),
-	SHELL_CMD_ARG(mv, NULL, SHELL_HELP("Move file", "<source> <dest>"), cmd_mv, 3, 0),
+		      FS_HANDLER(cmd_cat), 2, 255),
+	SHELL_CMD_ARG(rm, NULL, SHELL_HELP("Remove file", "<path>"), FS_HANDLER(cmd_rm), 2, 0),
+	SHELL_CMD_ARG(cp, NULL, SHELL_HELP("Copy file", "<source> <dest>"), FS_HANDLER(cmd_cp), 3, 0),
+	SHELL_CMD_ARG(mv, NULL, SHELL_HELP("Move file", "<source> <dest>"), FS_HANDLER(cmd_mv), 3, 0),
 	SHELL_CMD_ARG(statvfs, NULL, SHELL_HELP("Show file system state", "<path>"),
 		      cmd_statvfs, 2, 0),
 	SHELL_CMD_ARG(trunc, NULL, SHELL_HELP("Truncate file", "<path> [<length>]"),
-		      cmd_trunc, 2, 255),
+		      FS_HANDLER(cmd_trunc), 2, 255),
 	SHELL_CMD_ARG(write, NULL, SHELL_HELP("Write file", "<path> <data> [<data> ...]"),
-		      cmd_write, 3, 255),
+		      FS_HANDLER(cmd_write), 3, 255),
 #ifdef CONFIG_FILE_SYSTEM_SHELL_TEST_COMMANDS
 	SHELL_CMD_ARG(read_test, NULL, SHELL_HELP("Read file test", "<path> <repeat>"),
 		      cmd_read_test, 3, 0),

@@ -68,6 +68,20 @@ config FILE_SYSTEM_SHELL_MOUNT_COMMAND
 	  Enable file system shell command for mounting file systems. This
 	  requires the heap to be present.
 
+config FILE_SYSTEM_SHELL_CP_BUFFER_SIZE
+	int "Copy buffer"
+	default 64
+	help
+	  'fs cp' chunk size. Whole sectors let the file system read and
+	  write straight from it instead of through its sector window.
+
+config FILE_SYSTEM_SHELL_TIMING
+	bool "Time the file system shell commands"
+	help
+	  Print the uptime before and after ls, mkdir, read, cat, rm, cp,
+	  mv, trunc and write, the elapsed time, and for cat, read and cp
+	  the size of the source file(s) and the rate.
+
 config FILE_SYSTEM_SHELL_TEST_COMMANDS
 	bool "File system shell read/write/erase test commands"
 	select CBPRINTF_FP_SUPPORT
