@@ -83,9 +83,33 @@ uint32_t a3700_cm3_clk_hz(void)
 	return tbg / (d1 * d2);
 }
 
+#define UART0      (A3700_CM3_SOC_REGS + 0x12000)
+#define UART_STAT  (UART0 + 0x0c)
+#define UART_BRDV  (UART0 + 0x10)
+#define UART_OSAMP (UART0 + 0x14)
+#define UART_TX_EMP BIT(6)
+
+/*
+ * The BootROM leaves UART0 at whatever the loader used (mox-imager: up
+ * to 6 Mbaud); set 115200 from the crystal, as the WTMI uart_init(), so
+ * the output before the console driver is readable too.
+ */
+static void early_uart(uint32_t baud)
+{
+	uint32_t div = DIV_ROUND_CLOSEST(a3700_ref_clk_hz(), 16 * baud);
+	int wait = 100000;
+
+	while (--wait > 0 && (sys_read32(UART_STAT) & UART_TX_EMP) == 0) {
+	}
+	sys_write32((sys_read32(UART_BRDV) & ~(0x3ff | BIT(19))) | div, UART_BRDV);
+	sys_write32(0, UART_OSAMP);
+}
+
 void soc_early_init_hook(void)
 {
 	uint32_t hz;
+
+	early_uart(115200);
 
 #ifdef CONFIG_SOC_ARMADA3720_CM3_SYS_INIT
 	(void)a3700_wtmi_sys_init();

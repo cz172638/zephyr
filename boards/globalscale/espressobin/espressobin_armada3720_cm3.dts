@@ -25,4 +25,6 @@
 &uart0 {
 	status = "okay";
 	current-speed = <115200>;
+	/* the crystal; the BootROM may have left another baud rate */
+	clock-frequency = <25000000>;
 };
