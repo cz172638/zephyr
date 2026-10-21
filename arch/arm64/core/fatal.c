@@ -584,6 +584,19 @@ static void dump_ptable_walk(uintptr_t addr)
 }
 #endif
 
+/*
+ * A platform may recover from its own, expected faults (e.g. probing a
+ * bus address that may not decode) before anything is reported.
+ */
+__weak bool z_arm64_fault_fixup(struct arch_esf *esf, uint64_t esr, uint64_t far)
+{
+	ARG_UNUSED(esf);
+	ARG_UNUSED(esr);
+	ARG_UNUSED(far);
+
+	return false;
+}
+
 void z_arm64_fatal_error(unsigned int reason, struct arch_esf *esf)
 {
 	uint64_t esr = 0;
@@ -607,6 +620,11 @@ void z_arm64_fatal_error(unsigned int reason, struct arch_esf *esf)
 			elr = read_elr_el3();
 			break;
 #endif /* CONFIG_ARMV8_R */
+		}
+
+		if (esf != NULL && GET_EL(el) != MODE_EL0 &&
+		    z_arm64_fault_fixup(esf, esr, far)) {
+			return;
 		}
 
 #ifdef CONFIG_ARM64_STACK_PROTECTION
