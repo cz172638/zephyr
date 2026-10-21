@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(netshell)
 
-target_sources(app PRIVATE src/main.c src/config.c)
+target_sources(app PRIVATE src/main.c src/config.c src/top.c)
 # TCAM rule API of the switch driver
 target_include_directories(app PRIVATE ${ZEPHYR_BASE}/drivers/ethernet/phy)
 
