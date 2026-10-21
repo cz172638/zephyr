@@ -31,6 +31,7 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/net_pkt.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/net/phy.h>
 #include <ethernet/eth_stats.h>
 
@@ -225,9 +226,26 @@ BUILD_ASSERT(sizeof(struct mvneta_rx_desc) == 32);
 #define TXQ_HW(q) (q)
 #endif
 
+/*
+ * Zero copy: the RX ring points straight into net_bufs that go up the
+ * stack as the packet's only fragment, and TX descriptors point at the
+ * packet's own fragments (held by a reference until sent). Needs
+ * coherent DMA: nothing is cleaned or invalidated. The static buffers
+ * remain as the TX fallback for packets with more fragments than free
+ * descriptors.
+ */
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+/* room to align each buffer to 64 bytes */
+#define MVNETA_RX_NB_SIZE (MVNETA_BUF_SIZE + 64)
+NET_BUF_POOL_FIXED_DEFINE(mvneta_rx_pool, CONFIG_ETH_MVNETA_ZERO_COPY_RX_BUFS, MVNETA_RX_NB_SIZE,
+			  0, NULL);
+#endif
+
 struct mvneta_rxq_dma {
 	struct mvneta_rx_desc desc[RX_DESCS];
+#ifndef CONFIG_ETH_MVNETA_ZERO_COPY
 	uint8_t buf[RX_DESCS][MVNETA_BUF_SIZE];
+#endif
 };
 
 struct mvneta_txq_dma {
@@ -244,6 +262,11 @@ struct mvneta_txq {
 	struct k_mutex lock;
 	uint16_t idx;
 	uint16_t inflight;
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+	/* oldest descriptor in flight; packet held on the frame's last one */
+	uint16_t tail;
+	struct net_pkt *pkt[TX_DESCS];
+#endif
 	/* Qav emulation with the per-queue token bucket */
 	bool qav_enabled;
 	uint32_t idle_slope; /* bit/s */
@@ -272,6 +295,13 @@ struct mvneta_data {
 	struct mvneta_dma *dma;
 	uint8_t mac_addr[NET_ETH_ADDR_LEN];
 	uint16_t rx_idx[NUM_RXQ];
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+	struct net_buf *rx_nb[NUM_RXQ][RX_DESCS];
+	uint32_t rx_zc;
+	uint32_t rx_copied;
+	uint32_t tx_zc;
+	uint32_t tx_copied;
+#endif
 	struct mvneta_txq txq[NUM_TXQ];
 	uint32_t core_hz; /* GbE core clock, 0 if unknown (no shaping) */
 	uint32_t link_mbps;
@@ -428,13 +458,37 @@ static void mvneta_rxq_update(const struct device *dev, unsigned int q, uint32_t
 	}
 }
 
-static void mvneta_rx_desc_fill(struct mvneta_rxq_dma *rq, uint16_t idx)
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+static struct net_buf *mvneta_rx_nb_alloc(void)
 {
-	struct mvneta_rx_desc *d = &rq->desc[idx];
+	struct net_buf *nb = net_buf_alloc(&mvneta_rx_pool, K_NO_WAIT);
+	uintptr_t a;
+
+	if (nb != NULL) {
+		a = (uintptr_t)nb->data;
+		net_buf_reserve(nb, ROUND_UP(a, 64) - a);
+	}
+	return nb;
+}
+
+static inline uint8_t *mvneta_rx_buf(struct mvneta_data *data, unsigned int q, uint16_t idx)
+{
+	return data->rx_nb[q][idx]->data;
+}
+#else
+static inline uint8_t *mvneta_rx_buf(struct mvneta_data *data, unsigned int q, uint16_t idx)
+{
+	return data->dma->rxq[q].buf[idx];
+}
+#endif
+
+static void mvneta_rx_desc_fill(struct mvneta_data *data, unsigned int q, uint16_t idx)
+{
+	struct mvneta_rx_desc *d = &data->dma->rxq[q].desc[idx];
 
 	d->status = 0;
 	d->data_size = 0;
-	d->buf_phys_addr = dma_addr(rq->buf[idx]);
+	d->buf_phys_addr = dma_addr(mvneta_rx_buf(data, q, idx));
 	d->buf_cookie = idx;
 }
 
@@ -444,7 +498,14 @@ static void mvneta_rxq_init(const struct device *dev, unsigned int q)
 	struct mvneta_rxq_dma *rq = &data->dma->rxq[q];
 
 	for (uint16_t i = 0; i < RX_DESCS; i++) {
-		mvneta_rx_desc_fill(rq, i);
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+		if (data->rx_nb[q][i] == NULL) {
+			data->rx_nb[q][i] = mvneta_rx_nb_alloc();
+			__ASSERT(data->rx_nb[q][i] != NULL,
+				 "ETH_MVNETA_ZERO_COPY_RX_BUFS too small for the rings");
+		}
+#endif
+		mvneta_rx_desc_fill(data, q, i);
 	}
 	data->rx_idx[q] = 0;
 	barrier_dmem_fence_full();
@@ -463,13 +524,13 @@ static void mvneta_rxq_init(const struct device *dev, unsigned int q)
 }
 
 /* Returns -ENOMEM when no net_pkt is free: the frame stays in the ring */
-static int mvneta_rx_one(const struct device *dev, struct mvneta_rxq_dma *rq, uint16_t idx)
+static int mvneta_rx_one(const struct device *dev, unsigned int q, uint16_t idx)
 {
 	struct mvneta_data *data = dev->data;
-	struct mvneta_rx_desc *d = &rq->desc[idx];
+	struct mvneta_rx_desc *d = &data->dma->rxq[q].desc[idx];
 	uint32_t status = d->status;
 	uint16_t size = d->data_size;
-	const uint8_t *frame = rq->buf[idx] + MVNETA_MH_SIZE;
+	const uint8_t *frame = mvneta_rx_buf(data, q, idx) + MVNETA_MH_SIZE;
 	struct net_pkt *pkt;
 	int len;
 
@@ -486,17 +547,47 @@ static int mvneta_rx_one(const struct device *dev, struct mvneta_rxq_dma *rq, ui
 		return 0;
 	}
 
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+	struct net_buf *fresh = mvneta_rx_nb_alloc();
+
+	if (fresh != NULL) {
+		struct net_buf *nb = data->rx_nb[q][idx];
+
+		pkt = net_pkt_rx_alloc_on_iface(data->iface, K_NO_WAIT);
+		if (pkt == NULL) {
+			net_buf_unref(fresh);
+			return -ENOMEM;
+		}
+		/* the frame goes up in its DMA buffer, a new one takes its slot */
+		data->rx_nb[q][idx] = fresh;
+		net_buf_add(nb, MVNETA_MH_SIZE + len);
+		net_buf_pull(nb, MVNETA_MH_SIZE);
+		net_pkt_frag_add(pkt, nb);
+		data->rx_zc++;
+		goto deliver;
+	}
+	/* pool empty (the stack holds them all): copy, keep the buffer */
+	data->rx_copied++;
+#endif
 	pkt = net_pkt_rx_alloc_with_buffer(data->iface, len, NET_AF_UNSPEC, 0, K_NO_WAIT);
 	if (pkt == NULL) {
 		return -ENOMEM;
 	}
+	if (net_pkt_write(pkt, frame, len) < 0) {
+		net_pkt_unref(pkt);
+		eth_stats_update_errors_rx(data->iface);
+		return 0;
+	}
 
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+deliver:
+#endif
 	/* Pick the RX traffic class from the PCP before the stack queues it */
 	if (len >= 16 && sys_get_be16(&frame[12]) == NET_ETH_PTYPE_VLAN) {
 		net_pkt_set_priority(pkt, net_vlan2priority(frame[14] >> 5));
 	}
 
-	if (net_pkt_write(pkt, frame, len) < 0 || net_recv_data(data->iface, pkt) < 0) {
+	if (net_recv_data(data->iface, pkt) < 0) {
 		net_pkt_unref(pkt);
 		eth_stats_update_errors_rx(data->iface);
 	}
@@ -506,7 +597,6 @@ static int mvneta_rx_one(const struct device *dev, struct mvneta_rxq_dma *rq, ui
 static int mvneta_rx(const struct device *dev, unsigned int q, int budget)
 {
 	struct mvneta_data *data = dev->data;
-	struct mvneta_rxq_dma *rq = &data->dma->rxq[q];
 	uint32_t occupied;
 	uint32_t done = 0;
 	int ret = 0;
@@ -518,11 +608,11 @@ static int mvneta_rx(const struct device *dev, unsigned int q, int budget)
 	while (done < occupied) {
 		uint16_t idx = data->rx_idx[q];
 
-		ret = mvneta_rx_one(dev, rq, idx);
+		ret = mvneta_rx_one(dev, q, idx);
 		if (ret < 0) {
 			break;
 		}
-		mvneta_rx_desc_fill(rq, idx);
+		mvneta_rx_desc_fill(data, q, idx);
 
 		data->rx_idx[q] = (idx + 1) % RX_DESCS;
 		done++;
@@ -563,6 +653,24 @@ static int mvneta_rx_all(const struct device *dev)
 	return 0;
 }
 
+static void mvneta_tx_reclaim(const struct device *dev, unsigned int q);
+
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+/* Sent packets keep their buffers until reclaimed; don't wait for the next send */
+static void mvneta_tx_reclaim_idle(const struct device *dev)
+{
+	struct mvneta_data *data = dev->data;
+
+	for (unsigned int q = 0; q < NUM_TXQ; q++) {
+		if (data->txq[q].inflight != 0 &&
+		    k_mutex_lock(&data->txq[q].lock, K_NO_WAIT) == 0) {
+			mvneta_tx_reclaim(dev, q);
+			k_mutex_unlock(&data->txq[q].lock);
+		}
+	}
+}
+#endif
+
 static void mvneta_rx_thread(void *p1, void *p2, void *p3)
 {
 	const struct device *dev = p1;
@@ -576,6 +684,10 @@ static void mvneta_rx_thread(void *p1, void *p2, void *p3)
 		(void)k_sem_take(&data->rx_sem, K_MSEC(CONFIG_ETH_MVNETA_RX_POLL_MS));
 
 		uint32_t cause = neta_read(dev, INTR_NEW_CAUSE);
+
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+		mvneta_tx_reclaim_idle(dev);
+#endif
 
 		if (cause & INTR_MISC) {
 			LOG_DBG("misc cause 0x%08x", neta_read(dev, INTR_MISC_CAUSE));
@@ -621,6 +733,15 @@ static void mvneta_txq_init(const struct device *dev, unsigned int q)
 	k_mutex_init(&tq->lock);
 	tq->idx = 0;
 	tq->inflight = 0;
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+	tq->tail = 0;
+	for (int i = 0; i < TX_DESCS; i++) {
+		if (tq->pkt[i] != NULL) {
+			net_pkt_unref(tq->pkt[i]);
+			tq->pkt[i] = NULL;
+		}
+	}
+#endif
 
 	neta_write(dev, TXQ_TOKEN_CFG(hw), 0x03ffffff);
 	neta_write(dev, TXQ_TOKEN_COUNT(hw), 0x3fffffff);
@@ -638,6 +759,15 @@ static void mvneta_tx_reclaim(const struct device *dev, unsigned int q)
 
 	sent = MIN(sent, tq->inflight);
 	tq->inflight -= sent;
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+	for (uint32_t i = 0; i < sent; i++) {
+		if (tq->pkt[tq->tail] != NULL) {
+			net_pkt_unref(tq->pkt[tq->tail]);
+			tq->pkt[tq->tail] = NULL;
+		}
+		tq->tail = (tq->tail + 1) % TX_DESCS;
+	}
+#endif
 
 	while (sent > 0) {
 		uint32_t n = MIN(sent, 0xff);
@@ -679,6 +809,45 @@ static int mvneta_send(const struct device *dev, struct net_pkt *pkt)
 	}
 
 	idx = tq->idx;
+#ifdef CONFIG_ETH_MVNETA_ZERO_COPY
+	{
+		unsigned int nfrags = 0;
+		uint16_t first = idx, last = idx;
+
+		for (struct net_buf *f = pkt->frags; f != NULL; f = f->frags) {
+			if (f->len != 0) {
+				nfrags++;
+			}
+		}
+		if (nfrags > 0 && nfrags <= CONFIG_ETH_MVNETA_ZERO_COPY_TX_FRAGS &&
+		    nfrags <= TX_DESCS - tq->inflight) {
+			/* one descriptor per fragment, the first one written last */
+			for (struct net_buf *f = pkt->frags; f != NULL; f = f->frags) {
+				if (f->len == 0) {
+					continue;
+				}
+				d = &tqd->desc[idx];
+				d->buf_phys_addr = dma_addr(f->data);
+				d->data_size = f->len;
+				d->command = idx == first ? TXD_L4_CSUM_NOT : 0;
+				last = idx;
+				idx = (idx + 1) % TX_DESCS;
+			}
+			tqd->desc[last].command |= TXD_L_DESC | TXD_Z_PAD;
+			barrier_dmem_fence_full();
+			tqd->desc[first].command |= TXD_F_DESC;
+			barrier_dmem_fence_full();
+
+			tq->pkt[last] = net_pkt_ref(pkt);
+			tq->idx = idx;
+			tq->inflight += nfrags;
+			data->tx_zc++;
+			neta_write(dev, TXQ_UPDATE(TXQ_HW(q)), nfrags);
+			goto out;
+		}
+		data->tx_copied++;
+	}
+#endif
 	net_pkt_cursor_init(pkt);
 	if (net_pkt_read(pkt, tqd->buf[idx], len) < 0) {
 		ret = -EIO;
@@ -1380,3 +1549,30 @@ static int mvneta_init(const struct device *dev)
 				      CONFIG_ETH_INIT_PRIORITY, &mvneta_api, NET_ETH_MTU);
 
 DT_INST_FOREACH_STATUS_OKAY(MVNETA_INIT)
+
+#if defined(CONFIG_ETH_MVNETA_ZERO_COPY) && defined(CONFIG_SHELL)
+#include <zephyr/shell/shell.h>
+
+static void mvneta_zc_print(const struct shell *sh, const struct device *dev)
+{
+	struct mvneta_data *data = dev->data;
+
+	shell_print(sh, "%s: rx zero copy %u, copied %u; tx zero copy %u, copied %u", dev->name,
+		    data->rx_zc, data->rx_copied, data->tx_zc, data->tx_copied);
+}
+
+static int cmd_mvneta_zc(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+#define MVNETA_ZC_PRINT(n) mvneta_zc_print(sh, DEVICE_DT_INST_GET(n));
+	DT_INST_FOREACH_STATUS_OKAY(MVNETA_ZC_PRINT)
+#ifdef CONFIG_NET_BUF_POOL_USAGE
+	shell_print(sh, "rx pool: %zu of %u free", net_buf_get_available(&mvneta_rx_pool),
+		    mvneta_rx_pool.buf_count);
+#endif
+	return 0;
+}
+
+SHELL_CMD_REGISTER(mvneta_zc, NULL, "NETA zero copy counters", cmd_mvneta_zc);
+#endif

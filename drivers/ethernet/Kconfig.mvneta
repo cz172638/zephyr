@@ -70,6 +70,30 @@ config ETH_MVNETA_DMA_COHERENT
 	  ESPRESSObin: ping and apt dist-upgrade through the router with
 	  cached rings). Say n for uncached rings (__nocache).
 
+config ETH_MVNETA_ZERO_COPY
+	bool "Zero copy RX and TX"
+	depends on ETH_MVNETA_DMA_COHERENT
+	help
+	  RX DMA goes into net_bufs handed to the stack as the packet data
+	  (a fresh buffer takes the ring slot); TX descriptors point at the
+	  packet's fragments, which stay referenced until sent. No copy in
+	  either direction while the RX pool lasts and a packet has few
+	  enough fragments; otherwise the driver falls back to copying.
+
+config ETH_MVNETA_ZERO_COPY_RX_BUFS
+	int "RX net_bufs (rings plus those held by the stack)"
+	depends on ETH_MVNETA_ZERO_COPY
+	default 256
+	help
+	  Each holds one frame (about 1.6 KiB). The rings take RX queues x RX
+	  descriptors of them for every port; the rest is what the stack
+	  can hold before RX falls back to copying.
+
+config ETH_MVNETA_ZERO_COPY_TX_FRAGS
+	int "Most fragments sent without copying"
+	depends on ETH_MVNETA_ZERO_COPY
+	default 8
+
 config ETH_MVNETA_TX_TIMEOUT_MS
 	int "Time to wait for a free TX descriptor [ms]"
 	default 100
