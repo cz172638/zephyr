@@ -23,6 +23,7 @@ if(CONFIG_SOC_ARMADA3720_CM3)
   endif()
   set(SOC_LINKER_SCRIPT ${ZEPHYR_BASE}/include/zephyr/arch/arm/cortex_m/scripts/linker.ld CACHE INTERNAL "")
 else()
+  zephyr_sources(probe.c)
   set(SOC_LINKER_SCRIPT ${ZEPHYR_BASE}/include/zephyr/arch/arm64/scripts/linker.ld CACHE INTERNAL "")
 endif()
 

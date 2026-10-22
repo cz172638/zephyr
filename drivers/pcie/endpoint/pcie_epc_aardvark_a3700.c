@@ -618,6 +618,7 @@ static int cmd_host(const struct shell *sh, size_t argc, char **argv)
  * offset. A host polling BAR0+0 / BAR4+0 then reads the culprit directly.
  */
 #include <zephyr/kernel/internal/mm.h>
+#include <soc.h>
 
 #define IB_BASE     0x20000000UL
 #define IB_STEP     0x100000UL
@@ -640,6 +641,8 @@ static int cmd_ibscan(const struct shell *sh, size_t argc, char **argv)
 	uint32_t cand[IB_MAX];
 	int n = 0;
 	uint8_t *ddr;
+	uint32_t err_start = 0, faults = 0;
+	bool in_err = false;
 
 	if (parse_u(sh, argv[1], &start) != 0 || parse_u(sh, argv[2], &end) != 0 ||
 	    (argc > 3 && parse_u(sh, argv[3], &hold) != 0) || end > ADVK_REG_SPACE ||
@@ -648,9 +651,25 @@ static int cmd_ibscan(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	for (uint32_t o = start & ~3U; o < end && n < IB_MAX; o += 4) {
-		uint32_t rb;
+		uint32_t rb, v;
 
-		if (ib_skip(o) || advk_rd(ep, o) != 0) {
+		if (ib_skip(o)) {
+			continue;
+		}
+		/* holes in the register space abort: probe before touching */
+		if (a3700_probe_read32(ep->reg + o, &v) < 0) {
+			if (!in_err) {
+				err_start = o;
+				in_err = true;
+			}
+			faults++;
+			continue;
+		}
+		if (in_err) {
+			shell_print(sh, "  %05x..%05x: bus error", err_start, o - 4);
+			in_err = false;
+		}
+		if (v != 0) {
 			continue;
 		}
 		advk_wr(ep, o, IB_BASE);
@@ -661,7 +680,10 @@ static int cmd_ibscan(const struct shell *sh, size_t argc, char **argv)
 			cand[n++] = o;
 		}
 	}
-	shell_print(sh, "%d candidates", n);
+	if (in_err) {
+		shell_print(sh, "  %05x..%05x: bus error", err_start, (uint32_t)end - 4);
+	}
+	shell_print(sh, "%d candidates, %u aborted reads", n, faults);
 	if (n == 0) {
 		return 0;
 	}

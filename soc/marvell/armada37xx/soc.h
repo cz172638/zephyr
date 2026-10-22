@@ -37,4 +37,11 @@
 #define A3700_CM3_IRQ_CTITRIGOUT3 15
 #endif
 
+#if defined(CONFIG_SOC_ARMADA3720) && !defined(_ASMLANGUAGE)
+#include <stdint.h>
+/* 32-bit read that returns -EIO on an external abort (probe.c) */
+int a3700_probe_read32(uintptr_t va, uint32_t *val);
+extern volatile uint32_t a3700_probe_faults;
+#endif
+
 #endif /* ZEPHYR_SOC_MARVELL_ARMADA37XX_SOC_H_ */
