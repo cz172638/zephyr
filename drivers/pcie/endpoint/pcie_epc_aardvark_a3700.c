@@ -672,9 +672,13 @@ static int cmd_ibscan(const struct shell *sh, size_t argc, char **argv)
 		if (v != 0) {
 			continue;
 		}
-		advk_wr(ep, o, IB_BASE);
+		if (a3700_probe_write32(ep->reg + o, IB_BASE) < 0) {
+			shell_print(sh, "  %05x: write aborts", o);
+			faults++;
+			continue;
+		}
 		rb = advk_rd(ep, o);
-		advk_wr(ep, o, 0);
+		(void)a3700_probe_write32(ep->reg + o, 0);
 		if (rb != 0) {
 			shell_print(sh, "candidate %2d: %05x keeps %08x", n, o, rb);
 			cand[n++] = o;

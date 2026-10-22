@@ -41,6 +41,8 @@
 #include <stdint.h>
 /* 32-bit read that returns -EIO on an external abort (probe.c) */
 int a3700_probe_read32(uintptr_t va, uint32_t *val);
+/* 32-bit write (and read back) that returns -EIO on a bus error */
+int a3700_probe_write32(uintptr_t va, uint32_t val);
 extern volatile uint32_t a3700_probe_faults;
 #endif
 
