@@ -19,6 +19,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/kernel.h>
+#include <zephyr/kernel/internal/mm.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/barrier.h>
@@ -65,6 +66,35 @@ struct a3700_ep_data {
 };
 
 /* TF-A enables the PHY clock output to the REFCLK pins; an EP must not drive it */
+/*
+ * Inbound: a TLP hitting a BAR goes to AXI address (BAR offset) and on
+ * through the PCIe unit's IO decode window 0 (0xd000c500, set up by TF-A
+ * for DRAM 0..1 GiB, no remap). Shrinking that window to the BAR backing
+ * area at DDR 0 keeps the host out of the rest of memory.
+ */
+#define IODEC_PCIE_WIN0 0xd000c500UL
+
+static void inbound_limit(uint32_t size)
+{
+	uint8_t *va;
+	volatile uint32_t *r;
+	uint32_t ctrl;
+
+	if (size == 0) {
+		return;
+	}
+	k_mem_map_phys_bare(&va, IODEC_PCIE_WIN0 & ~0xfffUL, 0x1000,
+			    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	r = (volatile uint32_t *)(va + (IODEC_PCIE_WIN0 & 0xfff));
+	ctrl = (r[0] & 0xffff) & ~1U;
+	r[0] = ctrl;
+	r[1] = 0;
+	r[0] = (((size >> 16) - 1) << 16) | ctrl;
+	r[0] |= 1;
+	LOG_INF("inbound limited to DDR 0x0-0x%x (IO decode ctrl %08x)", size - 1, r[0]);
+	k_mem_unmap_phys_bare(va, 0x1000);
+}
+
 static void comphy_clkout_off(const struct device *dev)
 {
 	struct a3700_ep_data *data = dev->data;
@@ -202,6 +232,8 @@ static int a3700_ep_init(const struct device *dev)
 		}
 		data->perst_asserted = gpio_pin_get_dt(&cfg->perst) > 0;
 	}
+
+	inbound_limit(CONFIG_PCIE_EPC_AARDVARK_INBOUND_LIMIT);
 
 	TRACE("controller setup");
 	ret = advk_ep_init(dev, cfg->autostart);

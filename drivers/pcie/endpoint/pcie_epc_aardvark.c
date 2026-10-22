@@ -292,14 +292,14 @@ int advk_ep_set_bar(const struct device *dev, uint8_t func, const struct pcie_ep
 	}
 
 	/*
-	 * No known register sets the BAR size or translates inbound accesses
-	 * to bar->phys; remember the request for the shell and leave the
-	 * reset defaults the host will size.
+	 * The BAR sizes are fixed (reset defaults) and there is no inbound
+	 * translation: BAR offset N is DDR address N. A request works if its
+	 * backing store sits at DDR 0 + offset inside the hardware BAR; the
+	 * host then finds it at that offset.
 	 */
 	ep->bar[bar->barno] = *bar;
-	LOG_WRN("BAR%u: 0x%zx bytes at 0x%llx requested, inbound translation unknown, "
-		"not programmed",
-		bar->barno, bar->size, (unsigned long long)bar->phys);
+	LOG_INF("BAR%u: 0x%zx bytes at DDR 0x%llx = BAR offset 0x%llx", bar->barno, bar->size,
+		(unsigned long long)bar->phys, (unsigned long long)bar->phys);
 	return 0;
 }
 

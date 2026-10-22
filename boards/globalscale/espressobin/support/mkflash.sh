@@ -21,6 +21,9 @@
 #             in place of the whole WTMI (sys_init + fuse app); needs the
 #             A3700-utils WTMI_EXEC_ADDR support                  [unset]
 #
+# PCIe endpoint images (snippet espressobin-pcie-ep) need BL33 above the
+# BAR backing store at DDR 0: pass A3700_NS_IMAGE_OFFSET=0x100000.
+#
 # Outputs in $TFA/build/a3700/release: flash-image.bin, uart-images.tgz.bin
 
 set -eu

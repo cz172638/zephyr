@@ -13,11 +13,20 @@
 #include <mem.h>
 
 / {
-	/* BAR backing store in DDR, outside the Zephyr image */
-	pcie_bar_mem: memory@10000000 {
+	/*
+	 * BAR backing store: the BARs map DDR from 0 (BAR offset = DDR
+	 * address), so it is the bottom 256 KiB and Zephyr moves above it
+	 * (TF-A A3700_NS_IMAGE_OFFSET=0x100000).
+	 */
+	pcie_bar_mem: pcie-bar-mem@0 {
 		compatible = "mmio-sram";
-		reg = <0x10000000 DT_SIZE_M(2)>;
+		reg = <0x0 DT_SIZE_K(256)>;
 	};
+};
+
+/* Zephyr from 1 MiB, below TF-A at 0x04000000 */
+&ddr0 {
+	reg = <0x00100000 DT_SIZE_M(63)>;
 };
 
 &pcie_ep {
