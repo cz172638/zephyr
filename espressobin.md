@@ -394,6 +394,16 @@ Pořadí ladění:
   I/O koherenci tedy zajišťují sami masteři (sdílitelné transakce), CCI je jen směruje do clusteru přes S3.
 - **NETA je koherentní:** ringy a buffery v cachované paměti bez údržby cache (`ETH_MVNETA_DMA_COHERENT`, teď výchozí `y`). Router prošel `ping -s 1400` i `apt update && apt dist-upgrade`. Marvell to tvrdil (patch `dma-coherent` pro A3700 PCIe, 2021), upstream Linux to v DT nemá.
 
+- **Srovnání s jinými SoC (TF-A, U-Boot, Linux):**
+  - Nikdo neprogramuje ACE-Lite porty S0–S2. TF-A u všech platforem (Juno, RK3368, MT8173/8183, HiKey, A3700) jen zapíná snoop a DVM na ACE portech clusterů (u CCI-400 jsou to vždy S3/S4).
+  - Koherenci I/O mastera řídí jeho vlastní AXI atributy:
+    - Layerscape LS10xx: U-Boot `SCFG_SNPCNFGCR` (snoop pro SEC/USB/SATA/eDMA).
+    - Armada 7K/8K: TF-A `cp110_axi_attr_init()`, kde se pro každou jednotku nastaví AxCACHE cacheable a AxDOMAIN outer shareable. Na A3700 nic takového TF-A nemá a G. Clement (2026) „neviděl žádný registr pro konfiguraci“.
+  - Linux MT7622 (router, 2× A53): ethernet `dma-coherent` a `cci-control-port` → ovladač zapíše 3 do Snoop Control portu clusteru.
+  - Northstar2: `dma-coherent` mají PCIe, ethernet, crypto, SATA i SDIO.
+  - Marvell Linux 17.10/18.12: `dma-coherent` na celém `internal-regs` A37xx. Patch Chulski/Porotchkin (2021): simple-bus + PCIe. Mainline 2026-05: EIP97 `dma-coherent` (až 4× víc IOPS).
+  - Pro nás: SD ADMA, AHCI, USB, XOR a PCIe EP by měly být koherentní stejně jako NETA, údržba cache je zbytečná (ověřit testem). Přiřazení masterů k S0–S2 by šlo zjistit čítači PMU CCI po portech.
+
 ### 3.15 Zephyr na Cortex-M3 (místo WTMI)
 
 - **Target `espressobin/armada3720_cm3`:** SRAM 64 KiB na `0x1fff0000` (bez XIP). Registry SoC jsou z pohledu CM3 na `0xc0000000`, vlastní registry CM3 (mailbox, eFuse) na `0x40000000`, DDR na `0x60000000`.
