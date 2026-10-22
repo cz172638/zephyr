@@ -692,14 +692,17 @@ static int cmd_ibscan(const struct shell *sh, size_t argc, char **argv)
 		return 0;
 	}
 
-	k_mem_map_phys_bare(&ddr, IB_BASE, IB_STEP * n, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
 	for (int i = 0; i < n; i++) {
-		volatile uint32_t *p = (volatile uint32_t *)(ddr + i * IB_STEP);
+		volatile uint32_t *p;
 
+		k_mem_map_phys_bare(&ddr, IB_BASE + i * IB_STEP, 0x1000,
+				    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+		p = (volatile uint32_t *)ddr;
 		p[0] = IB_MAGIC | i;
 		p[1] = cand[i];
+		barrier_dsync_fence_full();
+		k_mem_unmap_phys_bare(ddr, 0x1000);
 	}
-	barrier_dsync_fence_full();
 
 	for (int i = 0; i < n; i++) {
 		shell_print(sh, "[%lld ms] %2d: %05x = %08lx", k_uptime_get(), i, cand[i],
@@ -708,9 +711,71 @@ static int cmd_ibscan(const struct shell *sh, size_t argc, char **argv)
 		k_msleep(hold);
 		advk_wr(ep, cand[i], 0);
 	}
-	k_mem_unmap_phys_bare(ddr, IB_STEP * n);
 	shell_print(sh, "done");
 	return 0;
+}
+
+/*
+ * Guess: 0x4d00 holds inbound windows laid out like the outbound ones at
+ * 0x4c00 (8 x 0x20: match | enable, remap, mask, actions, 64-bit pairs),
+ * with PCI address as match and AXI address as remap. Puts a tagged
+ * pattern at the AXI address, so a host reading the BAR sees the hit.
+ */
+#define IB_WIN(w, off) (0x4d00 + 0x20 * (w) + (off))
+
+static int cmd_ibwin(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long w, pci, axi, size, act = 0;
+	uint64_t mask;
+	uint32_t regs[7];
+	uint8_t *ddr;
+	volatile uint32_t *p;
+	int ret = 0;
+
+	if (parse_u(sh, argv[1], &w) != 0 || w > 7) {
+		return -EINVAL;
+	}
+	if (argc == 2) {
+		for (uint32_t o = 0; o < 0x1c; o += 4) {
+			(void)a3700_probe_write32(ep->reg + IB_WIN(w, o), 0);
+		}
+		shell_print(sh, "window %llu cleared", w);
+		return 0;
+	}
+	if (argc < 5 || parse_u(sh, argv[2], &pci) != 0 || parse_u(sh, argv[3], &axi) != 0 ||
+	    parse_u(sh, argv[4], &size) != 0 || (argc > 5 && parse_u(sh, argv[5], &act) != 0) ||
+	    size == 0 || (size & (size - 1)) != 0) {
+		return -EINVAL;
+	}
+
+	k_mem_map_phys_bare(&ddr, axi & ~0xfffULL, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	p = (volatile uint32_t *)(ddr + (axi & 0xfff));
+	p[0] = IB_MAGIC | 0xff00 | (uint32_t)w;
+	p[1] = IB_WIN(w, 0);
+	barrier_dsync_fence_full();
+	k_mem_unmap_phys_bare(ddr, 0x1000);
+
+	mask = ~(size - 1);
+	regs[0] = (uint32_t)pci | 1;
+	regs[1] = (uint32_t)(pci >> 32);
+	regs[2] = (uint32_t)axi;
+	regs[3] = (uint32_t)(axi >> 32);
+	regs[4] = (uint32_t)mask;
+	regs[5] = (uint32_t)(mask >> 32);
+	regs[6] = (uint32_t)act;
+	/* enable (match) last */
+	for (int i = 6; i >= 0 && ret == 0; i--) {
+		ret = a3700_probe_write32(ep->reg + IB_WIN(w, 4 * i), regs[i]);
+	}
+	for (int i = 0; i < 7; i++) {
+		shell_print(sh, "  %05x: %08x", (uint32_t)IB_WIN(w, 4 * i),
+			    advk_rd(ep, (uint32_t)IB_WIN(w, 4 * i)));
+	}
+	shell_print(sh, "window %llu: pci 0x%llx -> axi 0x%llx, 0x%llx bytes%s, tag %08x at axi",
+		    w, pci, axi, size, ret < 0 ? " (write aborted)" : "",
+		    IB_MAGIC | 0xff00 | (uint32_t)w);
+	return ret;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
@@ -735,6 +800,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(msi, NULL, "[n] Send MSI n (1-based)", cmd_msi, 1, 1),
 	SHELL_CMD_ARG(host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
 		      1),
+	SHELL_CMD_ARG(ibwin, NULL,
+		      "<w> [<pci> <axi> <size> [actions]] Guessed inbound window at 0x4d00",
+		      cmd_ibwin, 2, 4),
 	SHELL_CMD_ARG(ibscan, NULL,
 		      "<start> <end> [hold ms] Hunt the inbound translation (writes, restores!)",
 		      cmd_ibscan, 3, 1),
