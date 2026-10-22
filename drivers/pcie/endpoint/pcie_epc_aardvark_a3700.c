@@ -778,6 +778,67 @@ static int cmd_ibwin(const struct shell *sh, size_t argc, char **argv)
 	return ret;
 }
 
+/*
+ * The PCIe unit's IO address decode windows (TF-A io_addr_dec.c,
+ * 0xd000c500, 2 windows x 0x10: ctrl = (size/64K - 1) << 16 | attr << 8 |
+ * target << 4 | enable, base, remap). TF-A sets window 0 to DRAM 0..1 GiB,
+ * which is why the BARs land on DDR 0: inbound TLPs go through here.
+ */
+#define IODEC_PCIE     0xd000c500UL
+#define IODEC_ATTR     0x3d
+
+static int cmd_iodec(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long long w, base, size, remap;
+	uint8_t *va;
+	volatile uint32_t *r;
+
+	k_mem_map_phys_bare(&va, IODEC_PCIE & ~0xfffUL, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	r = (volatile uint32_t *)(va + (IODEC_PCIE & 0xfff));
+
+	if (argc >= 5) {
+		if (parse_u(sh, argv[1], &w) != 0 || w > 1 || parse_u(sh, argv[2], &base) != 0 ||
+		    parse_u(sh, argv[3], &size) != 0 || parse_u(sh, argv[4], &remap) != 0 ||
+		    size < 0x10000 || (size & 0xffff) != 0 || (base & 0xffff) != 0 ||
+		    (remap & 0xffff) != 0) {
+			k_mem_unmap_phys_bare(va, 0x1000);
+			return -EINVAL;
+		}
+		uint32_t ctrl = (uint32_t)(((size >> 16) - 1) << 16) | (IODEC_ATTR << 8);
+		uint8_t *t;
+
+		/* tag the remapped target */
+		k_mem_map_phys_bare(&t, remap, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+		((volatile uint32_t *)t)[0] = IB_MAGIC | 0xee00 | (uint32_t)w;
+		((volatile uint32_t *)t)[1] = (uint32_t)remap;
+		barrier_dsync_fence_full();
+		k_mem_unmap_phys_bare(t, 0x1000);
+
+		r[w * 4 + 0] = ctrl;
+		r[w * 4 + 1] = (uint32_t)base;
+		r[w * 4 + 2] = (uint32_t)remap;
+		r[w * 4 + 0] = ctrl | 1;
+		barrier_dsync_fence_full();
+	} else if (argc == 2 && strcmp(argv[1], "reset") == 0) {
+		/* TF-A's setting: window 0 = DRAM 0..1 GiB, window 1 off */
+		r[4] = 0;
+		r[0] = (uint32_t)(((0x40000000ULL >> 16) - 1) << 16) | (IODEC_ATTR << 8);
+		r[1] = 0;
+		r[2] = 0;
+		r[0] |= 1;
+	}
+
+	for (int i = 0; i < 2; i++) {
+		uint32_t c = r[i * 4 + 0];
+
+		shell_print(sh, "win %d: ctrl %08x base %08x remap %08x  (%s, size 0x%x, attr 0x%02x,"
+			    " target %u)", i, c, r[i * 4 + 1], r[i * 4 + 2], (c & 1) ? "on" : "off",
+			    ((c >> 16) + 1) << 16, (c >> 8) & 0xff, (c >> 4) & 0xf);
+	}
+	k_mem_unmap_phys_bare(va, 0x1000);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_advk_ep, SHELL_CMD(status, NULL, "Link, header, BARs, windows, events", cmd_status),
 	SHELL_CMD(hist, NULL, "LTSSM history of the link poll", cmd_hist),
@@ -800,6 +861,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(msi, NULL, "[n] Send MSI n (1-based)", cmd_msi, 1, 1),
 	SHELL_CMD_ARG(host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
 		      1),
+	SHELL_CMD_ARG(iodec, NULL,
+		      "[<w> <base> <size> <remap> | reset] PCIe IO decode windows (0xd000c500)",
+		      cmd_iodec, 1, 4),
 	SHELL_CMD_ARG(ibwin, NULL,
 		      "<w> [<pci> <axi> <size> [actions]] Guessed inbound window at 0x4d00",
 		      cmd_ibwin, 2, 4),
