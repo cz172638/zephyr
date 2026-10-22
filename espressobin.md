@@ -368,6 +368,18 @@ Na desce po resetu (výpis `advk_ep dump cfg`):
 
 **Ověřeno na HW (2026-10-22):** s křížovým kabelem (bez REFCLK a napájení) naběhl link Gen2 x1 (`lnksta 0012`, LTSSM L0) a host vyjmenoval `06:00.0 [11ab:0100]`, class `ff00`. BARy jsou výchozí z resetu: BAR0 64bit 128 KiB (stejně jako registrový prostor řadiče, MSI-X tabulka na BAR0+0, PBA na +0x10000), BAR2 I/O 128 KiB, BAR4 64bit 256 KiB, Expansion ROM 128 KiB. Adresy zapsané hostem jsou vidět v registrech řadiče (`BAR0 00240004`, `BAR4 00200004`). Další krok: čtení BAR0/BAR4 z hostu, aby se zjistilo, jestli BAR0 jsou registry Aardvarku a kam vede BAR4 (inbound překlad).
 
+**Inbound (2026-10-22):**
+- **Mapování:** BAR offset N = DDR adresa N, takže BAR0 i BAR4 začínají na DDR 0 a překrývají se. Ověřeno z hostu: oba BARy čtou obraz Zephyru. Cesta vede přes IO decode okno PCIe (`0xd000c500`, TF-A `io_addr_dec.c`): při okně zúženém na 64 KiB skončí BAR0+0x10000 na hostu `Bus error`. Okno nemá remap. Registr řadiče, který by BAR posunul, jsem nenašel.
+- **Mapa registrů řadiče** (`advk_ep ibscan`, čtení i zápisy přes probe):
+  - `0x1000–0x3ffc` díra, `0x4900–0x4bfc` díra,
+  - `0x4400–0x47fc` jen pro čtení,
+  - `0x4d00–0x4e18` bloky jako u OB oken (0x20, díra na +0x1c, `0x4dfc` výchozí akce). Zápis ve formátu OB okna nic nezmění, ani se zapnutými bity `CTRL2`.
+- **Řešení v image 59:**
+  - úložiště BARů DDR 0–256 KiB (snippet `espressobin-pcie-ep`),
+  - Zephyr od 1 MiB (TF-A `A3700_NS_IMAGE_OFFSET=0x100000`),
+  - IO decode okno zúžené na 256 KiB (`PCIE_EPC_AARDVARK_INBOUND_LIMIT`), takže host jinam nesáhne.
+- **`pcitest`** (statický aarch64, host BeagleY-AI, kernel ≥ 6.14): `-i 1` OK, `-m 1` timeout, `-r` visí. EP hostu nepošle přerušení. Otevřené: vidí EP příkaz v BAR0? Dojde MSI přes OB okno?
+
 **Otevřené: boot s logem jen přes shell.**
 - Image s EP, kde je shell jediný log backend, po BL31 nic nevypíše a nenaběhne (sample `epf_test` i router).
 - Stejný image s `LOG_PRINTK=n` + `LOG_BACKEND_UART=y` naběhne celý. Router: `-DEXTRA_CONF_FILE=router.conf;gptp.conf;pcie-ep-uartlog.conf`.
