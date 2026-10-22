@@ -366,6 +366,8 @@ Na desce po resetu (výpis `advk_ep dump cfg`):
 - Capability: PM 0x80 → MSI 0x90 (64bit, 16 vektorů) → MSI-X 0xb0 (16 vektorů, tabulka BAR0+0, PBA BAR0+0x10000) → PCIe 0xc0 (endpoint, link cap Gen2 x1). Rozšířené: AER 0x100 → DSN 0x150 → 0x240.
 - Po resetu `CTRL0` = 0x18382, tedy GEN_SEL 2.
 
+**Ověřeno na HW (2026-10-22):** s křížovým kabelem (bez REFCLK a napájení) naběhl link Gen2 x1 (`lnksta 0012`, LTSSM L0) a host vyjmenoval `06:00.0 [11ab:0100]`, class `ff00`. BARy jsou výchozí z resetu: BAR0 64bit 128 KiB (stejně jako registrový prostor řadiče, MSI-X tabulka na BAR0+0, PBA na +0x10000), BAR2 I/O 128 KiB, BAR4 64bit 256 KiB, Expansion ROM 128 KiB. Adresy zapsané hostem jsou vidět v registrech řadiče (`BAR0 00240004`, `BAR4 00200004`). Další krok: čtení BAR0/BAR4 z hostu, aby se zjistilo, jestli BAR0 jsou registry Aardvarku a kam vede BAR4 (inbound překlad).
+
 **Otevřené: boot s logem jen přes shell.**
 - Image s EP, kde je shell jediný log backend, po BL31 nic nevypíše a nenaběhne (sample `epf_test` i router).
 - Stejný image s `LOG_PRINTK=n` + `LOG_BACKEND_UART=y` naběhne celý. Router: `-DEXTRA_CONF_FILE=router.conf;gptp.conf;pcie-ep-uartlog.conf`.
