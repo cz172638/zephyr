@@ -609,6 +609,84 @@ static int cmd_host(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * Inbound translation hunt. The BARs come up mapping AXI address 0 (BAR
+ * offset = DDR address), the register that moves them is unknown. Phase 1
+ * lists the registers in [start, end) that read 0 and keep a written
+ * 0x20000000; phase 2 writes 0x20000000 + i MiB into candidate i for a
+ * while, with DDR at that address holding 0xc0de0000 | i and the register
+ * offset. A host polling BAR0+0 / BAR4+0 then reads the culprit directly.
+ */
+#include <zephyr/kernel/internal/mm.h>
+
+#define IB_BASE     0x20000000UL
+#define IB_STEP     0x100000UL
+#define IB_MAX      64
+#define IB_MAGIC    0xc0de0000U
+
+static bool ib_skip(uint32_t o)
+{
+	return o < 0x1000 ||                            /* config space, BARs */
+	       (o >= ADVK_CTRL0 && o < ADVK_CTRL0 + 0x100) || /* control, IRQ */
+	       (o >= 0x4c00 && o < 0x4d00) ||           /* outbound windows */
+	       (o >= ADVK_LMI_CFG && o < ADVK_LMI_CFG + 0x48) ||
+	       o >= ADVK_CTRL_CONFIG;                   /* core control, IRQ */
+}
+
+static int cmd_ibscan(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long start, end, hold = 1000;
+	uint32_t cand[IB_MAX];
+	int n = 0;
+	uint8_t *ddr;
+
+	if (parse_u(sh, argv[1], &start) != 0 || parse_u(sh, argv[2], &end) != 0 ||
+	    (argc > 3 && parse_u(sh, argv[3], &hold) != 0) || end > ADVK_REG_SPACE ||
+	    start >= end) {
+		return -EINVAL;
+	}
+
+	for (uint32_t o = start & ~3U; o < end && n < IB_MAX; o += 4) {
+		uint32_t rb;
+
+		if (ib_skip(o) || advk_rd(ep, o) != 0) {
+			continue;
+		}
+		advk_wr(ep, o, IB_BASE);
+		rb = advk_rd(ep, o);
+		advk_wr(ep, o, 0);
+		if (rb != 0) {
+			shell_print(sh, "candidate %2d: %05x keeps %08x", n, o, rb);
+			cand[n++] = o;
+		}
+	}
+	shell_print(sh, "%d candidates", n);
+	if (n == 0) {
+		return 0;
+	}
+
+	k_mem_map_phys_bare(&ddr, IB_BASE, IB_STEP * n, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	for (int i = 0; i < n; i++) {
+		volatile uint32_t *p = (volatile uint32_t *)(ddr + i * IB_STEP);
+
+		p[0] = IB_MAGIC | i;
+		p[1] = cand[i];
+	}
+	barrier_dsync_fence_full();
+
+	for (int i = 0; i < n; i++) {
+		shell_print(sh, "[%lld ms] %2d: %05x = %08lx", k_uptime_get(), i, cand[i],
+			    IB_BASE + i * IB_STEP);
+		advk_wr(ep, cand[i], IB_BASE + i * IB_STEP);
+		k_msleep(hold);
+		advk_wr(ep, cand[i], 0);
+	}
+	k_mem_unmap_phys_bare(ddr, IB_STEP * n);
+	shell_print(sh, "done");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_advk_ep, SHELL_CMD(status, NULL, "Link, header, BARs, windows, events", cmd_status),
 	SHELL_CMD(hist, NULL, "LTSSM history of the link poll", cmd_hist),
@@ -631,6 +709,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(msi, NULL, "[n] Send MSI n (1-based)", cmd_msi, 1, 1),
 	SHELL_CMD_ARG(host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
 		      1),
+	SHELL_CMD_ARG(ibscan, NULL,
+		      "<start> <end> [hold ms] Hunt the inbound translation (writes, restores!)",
+		      cmd_ibscan, 3, 1),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(advk_ep, &sub_advk_ep, "Armada 3700 PCIe endpoint", NULL);
