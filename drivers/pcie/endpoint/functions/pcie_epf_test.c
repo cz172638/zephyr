@@ -26,6 +26,9 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epf.h>
+#ifdef CONFIG_MMU
+#include <zephyr/kernel/internal/mm.h>
+#endif
 
 LOG_MODULE_REGISTER(pcie_epf_test, CONFIG_PCIE_EP_LOG_LEVEL);
 
@@ -380,7 +383,8 @@ static int epf_test_setup_bars(const struct device *dev)
 		LOG_DBG("BAR%u: 0x%zx bytes @ 0x%lx", b, sz, (unsigned long)base);
 	}
 
-	if (d->bar[cfg->reg_bar].virt == NULL) {
+	/* By size: the virtual address says nothing about a BAR being set */
+	if (d->bar[cfg->reg_bar].size == 0) {
 		LOG_ERR("test register BAR%u not available", cfg->reg_bar);
 		return -EINVAL;
 	}
@@ -434,11 +438,17 @@ static int epf_test_init(const struct device *dev)
 	 * non-cacheable where the architecture has it: memset/memcpy use
 	 * unaligned and DC ZVA accesses, which fault on Device memory.
 	 */
-	device_map((mm_reg_t *)&d->mem_virt, cfg->mem_base, cfg->mem_size,
+	/*
+	 * Not device_map(): with KERNEL_DIRECT_MAP that maps 1:1, and a
+	 * carveout at physical 0 (Armada 3700, BAR offset = DDR address)
+	 * would end up at NULL.
+	 */
+	k_mem_map_phys_bare((uint8_t **)&d->mem_virt, cfg->mem_base, cfg->mem_size,
+			    K_MEM_PERM_RW |
 #ifdef K_MEM_ARM_NORMAL_NC
-		   K_MEM_ARM_NORMAL_NC
+			    K_MEM_ARM_NORMAL_NC
 #else
-		   K_MEM_CACHE_NONE
+			    K_MEM_CACHE_NONE
 #endif
 	);
 #else
