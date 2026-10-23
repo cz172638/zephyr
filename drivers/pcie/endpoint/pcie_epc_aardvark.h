@@ -148,6 +148,7 @@ struct advk_ep {
 	bool hdr_valid;
 	struct pcie_epc_bar bar[PCIE_EPC_NUM_BARS];
 	uint8_t msi_mmc;
+	uint32_t msi_sent;
 
 	/* link state seen by the last poll */
 	uint8_t ltssm;

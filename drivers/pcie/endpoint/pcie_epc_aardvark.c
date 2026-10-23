@@ -438,10 +438,18 @@ static int raise_msi(const struct device *dev, uint16_t irq_num)
 	if (ret != 0) {
 		return ret;
 	}
+	/*
+	 * No read back: the MSI target (an interrupt controller doorbell such
+	 * as a GIC ITS translater) need not answer reads, and a failed
+	 * completion upsets the link.
+	 */
 	sys_write32(data, (mem_addr_t)map.ptr);
-	barrier_dmem_fence_full();
-	(void)sys_read32((mem_addr_t)map.ptr);
+	barrier_dsync_fence_full();
 	pcie_epc_unmap_host(dev, &map);
+	if (ep->msi_sent++ == 0) {
+		LOG_INF("MSI %u: 0x%04x -> 0x%llx (first one)", irq_num, data,
+			(unsigned long long)addr);
+	}
 	return 0;
 }
 
