@@ -25,6 +25,8 @@
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/device_mmio.h>
 
+#include <soc.h>
+
 #include "pcie_epc_aardvark.h"
 
 LOG_MODULE_REGISTER(pcie_epc_a3700, CONFIG_PCIE_EP_LOG_LEVEL);
@@ -629,16 +631,42 @@ static int cmd_host(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "map 0x%llx: %d", addr, ret);
 		return ret;
 	}
+	struct advk_ep *ep = advk_ep(dev);
+	uint32_t isr0 = advk_rd(ep, ADVK_ISR0), isr1 = advk_rd(ep, ADVK_ISR1);
+
+	shell_print(sh, "host 0x%llx via cpu %p, axi 0x%llx", addr, map.ptr,
+		    (unsigned long long)advk_ep_cpu_to_axi(dev, (uintptr_t)map.ptr));
+	/* a completion error from the host aborts the access: probe it */
 	if (write) {
-		sys_write32((uint32_t)arg, (mem_addr_t)map.ptr);
-		barrier_dmem_fence_full();
-		shell_print(sh, "0x%llx <- %08x, reads %08x", addr, (uint32_t)arg,
-			    sys_read32((mem_addr_t)map.ptr));
+		uint32_t v = 0;
+
+		ret = a3700_probe_write32((uintptr_t)map.ptr, (uint32_t)arg);
+		if (ret == 0) {
+			ret = a3700_probe_read32((uintptr_t)map.ptr, &v);
+		}
+		shell_print(sh, "0x%llx <- %08x: %s, reads %08x", addr, (uint32_t)arg,
+			    ret == 0 ? "ok" : "bus error", v);
 	} else {
-		shell_hexdump(sh, (const uint8_t *)map.ptr, MIN(arg, 4096ULL));
+		for (uint32_t o = 0; o < MIN(arg, 4096ULL); o += 16) {
+			uint32_t w[4] = {0};
+			int r = 0;
+
+			for (int i = 0; i < 4 && r == 0; i++) {
+				r = a3700_probe_read32((uintptr_t)map.ptr + o + 4 * i, &w[i]);
+			}
+			if (r != 0) {
+				shell_print(sh, "%08llx: bus error", addr + o);
+				ret = r;
+				break;
+			}
+			shell_print(sh, "%08llx: %08x %08x %08x %08x", addr + o, w[0], w[1], w[2],
+				    w[3]);
+		}
 	}
+	shell_print(sh, "isr0 %08x -> %08x, isr1 %08x -> %08x", isr0, advk_rd(ep, ADVK_ISR0), isr1,
+		    advk_rd(ep, ADVK_ISR1));
 	pcie_epc_unmap_host(dev, &map);
-	return 0;
+	return ret;
 }
 
 /*
@@ -650,7 +678,6 @@ static int cmd_host(const struct shell *sh, size_t argc, char **argv)
  * offset. A host polling BAR0+0 / BAR4+0 then reads the culprit directly.
  */
 #include <zephyr/kernel/internal/mm.h>
-#include <soc.h>
 
 #define IB_BASE     0x20000000UL
 #define IB_STEP     0x100000UL
