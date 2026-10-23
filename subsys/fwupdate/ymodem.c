@@ -3,8 +3,10 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Minimal YMODEM (batch) receiver, CRC-16 mode, as described in
- * Chuck Forsberg's "XMODEM/YMODEM Protocol Reference" (1988).
+ * Minimal YMODEM (batch) and XMODEM receiver, as described in Chuck
+ * Forsberg's "XMODEM/YMODEM Protocol Reference" (1988). YMODEM in CRC-16
+ * mode; XMODEM in CRC-16 mode, falling back to the original 8-bit
+ * checksum when the sender does not answer the 'C'.
  */
 
 #include <errno.h>
@@ -28,6 +30,8 @@
 #define BYTE_TIMEOUT_MS   1000
 #define PACKET_TIMEOUT_MS 3000
 #define MAX_ERRORS        10
+/* XMODEM: 'C' this many times (1 s apart) before falling back to NAK */
+#define XMODEM_CRC_TRIES  3
 
 enum state {
 	WAIT_HEADER, /* block 0 with name and size */
@@ -38,6 +42,7 @@ enum state {
 struct ymodem {
 	const struct ymodem_ops *ops;
 	void *ctx;
+	bool crc;
 	uint8_t buf[1024];
 };
 
@@ -64,7 +69,7 @@ static void purge(struct ymodem *y)
 
 static int read_block(struct ymodem *y, size_t n, uint8_t *blk)
 {
-	uint8_t b0, b1, crc_hi, crc_lo;
+	uint8_t b0, b1, crc_hi, crc_lo = 0;
 
 	if (y->ops->getc(y->ctx, &b0, BYTE_TIMEOUT_MS) ||
 	    y->ops->getc(y->ctx, &b1, BYTE_TIMEOUT_MS)) {
@@ -76,23 +81,34 @@ static int read_block(struct ymodem *y, size_t n, uint8_t *blk)
 		}
 	}
 	if (y->ops->getc(y->ctx, &crc_hi, BYTE_TIMEOUT_MS) ||
-	    y->ops->getc(y->ctx, &crc_lo, BYTE_TIMEOUT_MS)) {
+	    (y->crc && y->ops->getc(y->ctx, &crc_lo, BYTE_TIMEOUT_MS))) {
 		return -EAGAIN;
 	}
 	if ((uint8_t)(b0 ^ b1) != 0xff) {
 		return -EBADMSG;
 	}
-	if (crc16_itu_t(0, y->buf, n) != ((crc_hi << 8) | crc_lo)) {
-		return -EBADMSG;
+	if (y->crc) {
+		if (crc16_itu_t(0, y->buf, n) != ((crc_hi << 8) | crc_lo)) {
+			return -EBADMSG;
+		}
+	} else {
+		uint8_t sum = 0;
+
+		for (size_t i = 0; i < n; i++) {
+			sum += y->buf[i];
+		}
+		if (sum != crc_hi) {
+			return -EBADMSG;
+		}
 	}
 	*blk = b0;
 	return 0;
 }
 
-int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
+static int receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s, bool xmodem)
 {
 	static struct ymodem y;
-	enum state st = WAIT_HEADER;
+	enum state st = xmodem ? WAIT_DATA : WAIT_HEADER;
 	size_t size = 0, received = 0;
 	uint8_t expect = 1;
 	bool started = false;
@@ -101,6 +117,15 @@ int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
 
 	y.ops = ops;
 	y.ctx = ctx;
+	y.crc = true;
+
+	if (xmodem) {
+		/* No header block: one file, name and size unknown */
+		ret = ops->open(ctx, "xmodem", 0);
+		if (ret < 0) {
+			return ret;
+		}
+	}
 
 	tx(&y, CRC_C);
 
@@ -115,7 +140,11 @@ int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
 					cancel(&y);
 					return -ETIMEDOUT;
 				}
-				tx(&y, CRC_C);
+				if (xmodem && waited >= XMODEM_CRC_TRIES) {
+					/* Checksum-only sender, ask with NAK */
+					y.crc = false;
+				}
+				tx(&y, y.crc ? CRC_C : NAK);
 				continue;
 			}
 			if (st == WAIT_HEADER && files > 0 && errors >= 2) {
@@ -146,6 +175,21 @@ int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
 			}
 			started = true;
 			errors = 0;
+
+			if (st == WAIT_EOT2 && blk == 0) {
+				/*
+				 * The sender took our NAK of the first EOT as the end of
+				 * the file and goes on with the next header (lrzsz sb):
+				 * the file is complete.
+				 */
+				ret = ops->close(ctx, received);
+				if (ret < 0) {
+					cancel(&y);
+					return ret;
+				}
+				files++;
+				st = WAIT_HEADER;
+			}
 
 			if (st == WAIT_HEADER) {
 				if (blk != 0) {
@@ -197,6 +241,16 @@ int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
 			break;
 
 		case EOT:
+			if (xmodem && started) {
+				/* Single file, no batch: done at the first EOT */
+				ret = ops->close(ctx, received);
+				if (ret < 0) {
+					cancel(&y);
+					return ret;
+				}
+				tx(&y, ACK);
+				return 1;
+			}
 			if (st == WAIT_DATA) {
 				/* NAK the first EOT, as the protocol suggests */
 				st = WAIT_EOT2;
@@ -234,4 +288,14 @@ int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
 			break;
 		}
 	}
+}
+
+int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
+{
+	return receive(ops, ctx, start_timeout_s, false);
+}
+
+int xmodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s)
+{
+	return receive(ops, ctx, start_timeout_s, true);
 }

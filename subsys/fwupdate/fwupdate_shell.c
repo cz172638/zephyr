@@ -7,6 +7,9 @@
  * with YMODEM (e.g. tio ctrl-t y, or sb), check it and write it into the
  * firmware flash partition.
  *
+ * "fwupdate xmodem [dry]": the same with XMODEM / XMODEM-1K (e.g. sx);
+ * the image arrives padded to whole blocks and is written with the padding.
+ *
  * "fwupdate tcp [port] [dry]": the same over one TCP connection, e.g.
  * "nc -N <board> 6969 < flash-image.bin"; the result is sent back on the
  * connection.
@@ -67,6 +70,7 @@ static struct fwupdate {
 	struct k_sem rx_sem;
 	bool log_was_on;
 	bool dry;
+	bool xmodem;
 	char name[64];
 	size_t size;     /* announced by the sender, 0 = unknown */
 	size_t received; /* actual file length */
@@ -307,7 +311,8 @@ static void fw_worker(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
-	ret = ymodem_receive(&fw_ymodem_ops, NULL, CONFIG_FWUPDATE_YMODEM_START_TIMEOUT);
+	ret = (fw.xmodem ? xmodem_receive : ymodem_receive)(&fw_ymodem_ops, NULL,
+							    CONFIG_FWUPDATE_YMODEM_START_TIMEOUT);
 
 	/* Let the sender finish and the terminal settle before talking again */
 	k_msleep(500);
@@ -315,7 +320,7 @@ static void fw_worker(void *p1, void *p2, void *p3)
 	fw_log(sh, true);
 
 	if (ret <= 0) {
-		shell_error(sh, "ymodem: %s (%d)",
+		shell_error(sh, "%s: %s (%d)", fw.xmodem ? "xmodem" : "ymodem",
 			    ret == -ECANCELED   ? "cancelled"
 			    : ret == -ETIMEDOUT ? "timeout"
 			    : ret == 0          ? "no file"
@@ -326,6 +331,10 @@ static void fw_worker(void *p1, void *p2, void *p3)
 
 	shell_print(sh, "received \"%s\", %zu bytes, crc32 %08x", fw.name, fw.received,
 		    crc32_ieee(fw_buf, fw.received));
+	if (fw.xmodem) {
+		shell_print(sh, "(XMODEM: padded by the sender to whole blocks, "
+				"the padding is written too)");
+	}
 
 	if (fw_check(sh, fw.received) < 0) {
 		goto done;
@@ -505,7 +514,7 @@ static int cmd_tcp(const struct shell *sh, size_t argc, char **argv)
 #endif /* CONFIG_FWUPDATE_TCP */
 
 #if defined(CONFIG_FWUPDATE_YMODEM)
-static int cmd_ymodem(const struct shell *sh, size_t argc, char **argv)
+static int fw_serial_start(const struct shell *sh, size_t argc, char **argv, bool xmodem)
 {
 	if (!atomic_cas(&fw.busy, 0, 1)) {
 		shell_error(sh, "update already running");
@@ -514,14 +523,16 @@ static int cmd_ymodem(const struct shell *sh, size_t argc, char **argv)
 
 	fw.sh = sh;
 	fw.dry = (argc > 1 && strcmp(argv[1], "dry") == 0);
+	fw.xmodem = xmodem;
 	fw.size = 0;
 	fw.received = 0;
 	fw.name[0] = '\0';
 	ring_buf_init(&fw.rx, sizeof(fw.rx_mem), fw.rx_mem);
 	k_sem_init(&fw.rx_sem, 0, 1);
 
-	shell_print(sh, "partition %s: %u KiB. Start the YMODEM upload now (tio: ctrl-t y),",
-		    STRINGIFY(FW_LABEL), (unsigned int)(FW_SIZE / 1024));
+	shell_print(sh, "partition %s: %u KiB. Start the %s upload now (tio: ctrl-t %c),",
+		    STRINGIFY(FW_LABEL), (unsigned int)(FW_SIZE / 1024),
+		    xmodem ? "XMODEM" : "YMODEM", xmodem ? 'x' : 'y');
 	shell_print(sh, "Ctrl-C to abort.%s", fw.dry ? " Dry run." : "");
 
 	fw_log(sh, false);
@@ -533,6 +544,16 @@ static int cmd_ymodem(const struct shell *sh, size_t argc, char **argv)
 
 	return 0;
 }
+
+static int cmd_ymodem(const struct shell *sh, size_t argc, char **argv)
+{
+	return fw_serial_start(sh, argc, argv, false);
+}
+
+static int cmd_xmodem(const struct shell *sh, size_t argc, char **argv)
+{
+	return fw_serial_start(sh, argc, argv, true);
+}
 #endif /* CONFIG_FWUPDATE_YMODEM */
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
@@ -541,7 +562,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		   (SHELL_CMD_ARG(ymodem, NULL,
 				  "[dry]: receive an image with YMODEM and write it to the "
 				  "firmware partition",
-				  cmd_ymodem, 1, 1),))
+				  cmd_ymodem, 1, 1),
+		    SHELL_CMD_ARG(xmodem, NULL,
+				  "[dry]: the same with XMODEM / XMODEM-1K (CRC or checksum)",
+				  cmd_xmodem, 1, 1),))
 	IF_ENABLED(CONFIG_FWUPDATE_TCP,
 		   (SHELL_CMD_ARG(tcp, NULL, "[port] [dry]: receive an image over one TCP connection",
 				  cmd_tcp, 1, 2),))

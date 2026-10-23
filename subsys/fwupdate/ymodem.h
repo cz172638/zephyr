@@ -33,4 +33,14 @@ struct ymodem_ops {
  */
 int ymodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s);
 
+/*
+ * Receive one file with XMODEM: 128 (XMODEM) or 1024 byte (XMODEM-1K)
+ * blocks, CRC-16, or the 8-bit checksum if the sender ignores the 'C'.
+ * There is no header: open() gets the name "xmodem" and size 0, and the
+ * file is padded by the sender to a whole block (usually with 0x1a).
+ *
+ * @return 1 when a file was received, or a negative errno as above
+ */
+int xmodem_receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s);
+
 #endif /* ZEPHYR_SUBSYS_FWUPDATE_YMODEM_H_ */
