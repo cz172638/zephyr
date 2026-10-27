@@ -1,0 +1,26 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config PCIE_EP_CDNS
+	bool
+	help
+	  Register level support for the Cadence PCIe controller in endpoint
+	  mode, used by SoC specific glue drivers.
+
+config PCIE_EP_RK3399
+	bool "Rockchip RK3399 PCIe endpoint controller"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_PCIE_EP_ENABLED
+	depends on SYSCON && RESET && CLOCK_CONTROL
+	select PCIE_EP_CDNS
+	help
+	  Driver for the Cadence based PCIe controller of the RK3399 in
+	  endpoint mode.
+
+config PCIE_EP_RK3399_INIT_PRIORITY
+	int "RK3399 PCIe endpoint init priority"
+	default 80
+	depends on PCIE_EP_RK3399
+	help
+	  Must be lower priority (higher number) than the clock, reset, GRF
+	  syscon and GPIO drivers.

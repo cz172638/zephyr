@@ -1,0 +1,96 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+title: Rockchip RK3399 PCIe endpoint controller
+
+description: |
+  PCIe Gen2 x4 controller of the RK3399 in endpoint mode. The controller is
+  a Cadence PCIe IP (older LGA revision) behind a Rockchip "client" wrapper;
+  the integrated PCIe PHY is controlled through the GRF.
+
+  The apb region (16 MiB) holds the client registers at offset 0 and
+  the Cadence core at offset 0x800000. The mem region (32 MiB) is the
+  AXI outbound window, split into 32 regions of 1 MiB.
+
+compatible: "rockchip,rk3399-pcie-ep"
+
+include: [base.yaml, reset-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: Must be "apb", "mem".
+
+  clocks:
+    required: true
+
+  clock-names:
+    required: true
+    description: Must be "aclk", "aclk-perf", "hclk", "pm".
+
+  resets:
+    required: true
+
+  reset-names:
+    required: true
+    description: |
+      Must contain "core", "mgmt", "mgmt-sticky", "pipe", "pm", "pclk",
+      "aclk" and "phy".
+
+  rockchip,grf:
+    type: phandle
+    required: true
+    description: GRF syscon holding the PCIe PHY configuration registers.
+
+  num-lanes:
+    type: int
+    default: 4
+    enum: [1, 2, 4]
+    description: Number of lanes to train.
+
+  max-link-speed:
+    type: int
+    default: 1
+    enum: [1, 2]
+    description: 1 = 2.5 GT/s, 2 = 5 GT/s.
+
+  max-functions:
+    type: int
+    default: 1
+    description: Number of physical functions (1..8).
+
+  perst-gpios:
+    type: phandle-array
+    description: |
+      PERST# input from the host. Without it, link training starts as soon
+      as pcie_ep_cdns_start() is called.
+
+  vendor-id:
+    type: int
+    description: Vendor ID of function 0. Hardware reset value when absent.
+
+  device-id:
+    type: int
+    description: Device ID of function 0. Hardware reset value when absent.
+
+  class-code:
+    type: int
+    default: 0xff0000
+    description: Class code of function 0 (base << 16 | sub << 8 | prog-if).
+
+  subsystem-vendor-id:
+    type: int
+    default: 0
+
+  subsystem-id:
+    type: int
+    default: 0
+
+  msi-vectors:
+    type: int
+    default: 1
+    enum: [1, 2, 4, 8, 16, 32]
+    description: MSI vectors advertised by function 0.

@@ -17,6 +17,7 @@ source "subsys/logging/Kconfig.template.log_config"
 comment "Legacy PCIe Endpoint API (pcie_ep.h)"
 
 source "drivers/pcie/endpoint/Kconfig.iproc"
+source "drivers/pcie/endpoint/Kconfig.rk3399"
 
 comment "Endpoint Controller / Endpoint Function API (pcie_epc.h, pcie_epf.h)"
 
