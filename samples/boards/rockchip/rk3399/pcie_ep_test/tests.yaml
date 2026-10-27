@@ -1,0 +1,19 @@
+sample:
+  name: RK3399 PCIe endpoint test function
+  description: PCIe endpoint speaking the Linux pci-epf-test protocol
+common:
+  tags:
+    - pcie
+  platform_allow:
+    - rock_pi_4/rk3399/a53
+    - rock_pi_4/rk3399/a72
+  integration_platforms:
+    - rock_pi_4/rk3399/a53
+  harness: console
+  harness_config:
+    type: one_line
+    regex:
+      - "pci-epf-test ready"
+tests:
+  sample.boards.rockchip.rk3399.pcie_ep_test:
+    build_only: true

@@ -1,0 +1,22 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "RK3399 AMP launcher"
+
+config AMP_A72_ENTRY
+	hex "Entry point of the big cluster image (0 = do not start)"
+	default 0x04000000
+
+config AMP_M0_PMU_IMAGE
+	hex "DRAM address of the PMU M0 image (0 = do not start)"
+	default 0x06000000
+
+config AMP_M0_PERILP_IMAGE
+	hex "DRAM address of the PERILP M0 image (0 = do not start)"
+	default 0x06100000
+
+config AMP_M0_PERILP_DIV
+	int "PERILP M0 clock divider, fclk = GPLL / (div + 1)"
+	default 7
+
+source "Kconfig.zephyr"

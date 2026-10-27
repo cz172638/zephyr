@@ -1,0 +1,14 @@
+sample:
+  name: RK3399 AMP launcher
+  description: Start the big cluster and both Cortex-M0 cores from the little cluster
+common:
+  tags:
+    - amp
+  platform_allow:
+    - rock_pi_4/rk3399/a53
+    - rock_pi_4/rk3399/a53/smp
+  integration_platforms:
+    - rock_pi_4/rk3399/a53
+tests:
+  sample.boards.rockchip.rk3399.amp:
+    build_only: true
