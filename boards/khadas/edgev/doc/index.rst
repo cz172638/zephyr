@@ -31,7 +31,7 @@ kernel tests on Khadas Edge-V board. For example, with the :zephyr:code-sample:`
 .. zephyr-app-commands::
    :zephyr-app: samples/hello_world
    :host-os: unix
-   :board: khadas_edgev
+   :board: khadas_edgev/rk3399/a53
    :goals: build
 
 This will build an image with the synchronization sample app.

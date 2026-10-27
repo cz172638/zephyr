@@ -1,19 +1,41 @@
-#
 # Copyright 2022 Huawei France Technologies SASU
-#
+# Copyright The Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
-#
-
-config SOC_RK3399
-	bool
-	select SOC_SERIES_RK3399
 
 config SOC_SERIES_RK3399
 	bool
 	select SOC_FAMILY_ROCKCHIP
 
-config SOC
-	default "rk3399" if SOC_RK3399
+config SOC_RK3399
+	bool
+	select SOC_SERIES_RK3399
+
+config SOC_RK3399_A53
+	bool
+	select SOC_RK3399
+	help
+	  RK3399 little cluster (4x Cortex-A53, MPIDR 0x000-0x003).
+
+config SOC_RK3399_A72
+	bool
+	select SOC_RK3399
+	help
+	  RK3399 big cluster (2x Cortex-A72, MPIDR 0x100-0x101).
+
+config SOC_RK3399_M0_PMU
+	bool
+	select SOC_RK3399
+	help
+	  RK3399 Cortex-M0 in the PMU power domain (PMU M0).
+
+config SOC_RK3399_M0_PERILP
+	bool
+	select SOC_RK3399
+	help
+	  RK3399 Cortex-M0 in the PERILP power domain (PERILP M0).
 
 config SOC_SERIES
 	default "rk3399" if SOC_SERIES_RK3399
+
+config SOC
+	default "rk3399" if SOC_RK3399

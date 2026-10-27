@@ -1,11 +1,46 @@
-#
 # Copyright 2022 Huawei France Technologies SASU
-#
+# Copyright The Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
-#
 
 if SOC_SERIES_RK3399
 
-rsource "Kconfig.defconfig.rk3399"
+if ARM64
+
+config NUM_IRQS
+	default 288
+
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default $(dt_node_int_prop_int,/cpus,timebase-frequency)
+
+config FLASH_SIZE
+	default 0
+
+config FLASH_BASE_ADDRESS
+	default 0
+
+config CLOCK_CONTROL
+	default y
+
+config RESET
+	default y
+
+config SYSCON
+	default y
+
+# Both clusters may run separate images sharing the GIC distributor.
+config GIC_SAFE_CONFIG
+	default y
+
+endif # ARM64
+
+if CPU_CORTEX_M0
+
+config NUM_IRQS
+	default 32
+
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default $(dt_node_int_prop_int,/cpus/cpu@0,clock-frequency)
+
+endif # CPU_CORTEX_M0
 
 endif # SOC_SERIES_RK3399

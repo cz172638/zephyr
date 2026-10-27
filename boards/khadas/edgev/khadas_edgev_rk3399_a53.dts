@@ -7,11 +7,15 @@
 /dts-v1/;
 
 #include <freq.h>
-#include <rockchip/rk3399.dtsi>
+#include <rockchip/rk3399_a53.dtsi>
 
 / {
 	model = "Khadas Edge-V";
 	compatible = "khadas,edgev";
+
+	sram0: memory@10000000 {
+		reg = <0x10000000 DT_SIZE_M(128)>;
+	};
 
 	chosen {
 		zephyr,sram = &sram0;
@@ -25,8 +29,6 @@
 		/delete-node/ cpu@1;
 		/delete-node/ cpu@2;
 		/delete-node/ cpu@3;
-		/delete-node/ cpu@4;
-		/delete-node/ cpu@5;
 	};
 };
 

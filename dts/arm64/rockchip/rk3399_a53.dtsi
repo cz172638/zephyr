@@ -1,0 +1,15 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* Image running on the little cluster only (4x Cortex-A53). */
+
+#include <rockchip/rk3399.dtsi>
+
+/ {
+	cpus {
+		/delete-node/ cpu@100;
+		/delete-node/ cpu@101;
+	};
+};

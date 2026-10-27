@@ -1,0 +1,80 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * RK3399 as seen from either Cortex-M0 (PMU M0, PERILP M0). The Cortex-A
+ * peripheral window 0xf8000000-0xffffffff appears at 0x40000000; address
+ * 0x0 is remapped by the secure firmware to the DRAM area holding the image.
+ */
+
+#include <arm/armv6-m.dtsi>
+#include <freq.h>
+#include <mem.h>
+
+/ {
+	compatible = "rockchip,rk3399";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-m0";
+			reg = <0>;
+		};
+	};
+
+	m0_ram: memory@0 {
+		compatible = "mmio-sram";
+		reg = <0x0 DT_SIZE_K(256)>;
+	};
+
+	soc {
+		uart0: serial@47180000 {
+			compatible = "rockchip,rk3399-uart", "ns16550";
+			reg = <0x47180000 0x100>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			reg-shift = <2>;
+			status = "disabled";
+		};
+
+		uart1: serial@47190000 {
+			compatible = "rockchip,rk3399-uart", "ns16550";
+			reg = <0x47190000 0x100>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			reg-shift = <2>;
+			status = "disabled";
+		};
+
+		uart2: serial@471a0000 {
+			compatible = "rockchip,rk3399-uart", "ns16550";
+			reg = <0x471a0000 0x100>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			reg-shift = <2>;
+			status = "disabled";
+		};
+
+		uart3: serial@471b0000 {
+			compatible = "rockchip,rk3399-uart", "ns16550";
+			reg = <0x471b0000 0x100>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			reg-shift = <2>;
+			status = "disabled";
+		};
+
+		uart4: serial@47370000 {
+			compatible = "rockchip,rk3399-uart", "ns16550";
+			reg = <0x47370000 0x100>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			reg-shift = <2>;
+			status = "disabled";
+		};
+	};
+};
+
+&nvic {
+	arm,num-irq-priority-bits = <2>;
+};

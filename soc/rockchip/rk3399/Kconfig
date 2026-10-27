@@ -1,13 +1,49 @@
-#
 # Copyright 2022 Huawei France Technologies SASU
-#
+# Copyright The Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
-#
 
-config SOC_RK3399
+config SOC_RK3399_A53
 	select ARM64
 	select CPU_CORTEX_A53
 	select ARM_ARCH_TIMER if SYS_CLOCK_EXISTS
 
+config SOC_RK3399_A72
+	select ARM64
+	select CPU_CORTEX_A72
+	select ARM_ARCH_TIMER if SYS_CLOCK_EXISTS
+
+config SOC_RK3399_M0_PMU
+	select ARM
+	select CPU_CORTEX_M0
+	select CPU_CORTEX_M_HAS_SYSTICK
+
+config SOC_RK3399_M0_PERILP
+	select ARM
+	select CPU_CORTEX_M0
+	select CPU_CORTEX_M_HAS_SYSTICK
+
 config SOC_PART_NUMBER
 	default "RK3399" if SOC_SERIES_RK3399
+
+if SOC_SERIES_RK3399
+
+config RK3399_A72_SELF_MIGRATE
+	bool "Migrate to the big cluster when entered on a Cortex-A53"
+	depends on SOC_RK3399_A72
+	default y
+	help
+	  The boot ROM, TF-A and U-Boot always run on CPU0 (Cortex-A53).
+	  When an image built for the big cluster is entered on an A53, it
+	  asks PSCI to start CPU4 (MPIDR 0x100) at the image entry point and
+	  powers the calling A53 off.
+
+config RK3399_REMOTE_CORE_CONTROL
+	bool "Remote core control (M0 and big/little cluster start)"
+	depends on ARM64
+	default y
+	select HAS_ARM_SMCCC
+	help
+	  Helpers to start the PMU M0, the PERILP M0 and cores of the other
+	  cluster from an image running on a Cortex-A core.
+
+endif # SOC_SERIES_RK3399
