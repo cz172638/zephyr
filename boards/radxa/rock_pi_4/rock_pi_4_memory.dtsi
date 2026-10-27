@@ -1,0 +1,34 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * DRAM partitioning between the images of an AMP setup (Cortex-A view).
+ *
+ *   0x00000000 - 0x001fffff  TF-A (TZRAM, BL31)
+ *   0x00200000 - 0x03ffffff  little cluster image (BL33 entry point)
+ *   0x04000000 - 0x05ffffff  big cluster image
+ *   0x06000000 - 0x060fffff  PMU M0 image (M0 address 0x0)
+ *   0x06100000 - 0x061fffff  PERILP M0 image (M0 address 0x0)
+ *   0x06200000 - 0x063fffff  shared memory between all cores
+ *   0x08000000 - 0x0bffffff  memory exposed through PCIe endpoint BARs
+ */
+
+#define ROCK_PI_4_A53_BASE	0x00200000
+#define ROCK_PI_4_A53_SIZE	(DT_SIZE_M(62))
+#define ROCK_PI_4_A72_BASE	0x04000000
+#define ROCK_PI_4_A72_SIZE	(DT_SIZE_M(32))
+#define ROCK_PI_4_M0_PMU_BASE	0x06000000
+#define ROCK_PI_4_M0_PERILP_BASE 0x06100000
+#define ROCK_PI_4_M0_SIZE	(DT_SIZE_M(1))
+#define ROCK_PI_4_SHM_BASE	0x06200000
+#define ROCK_PI_4_SHM_SIZE	(DT_SIZE_M(2))
+#define ROCK_PI_4_PCIE_EP_BASE	0x08000000
+#define ROCK_PI_4_PCIE_EP_SIZE	(DT_SIZE_M(64))
+
+/* PERILP M0 core clock: GPLL (800 MHz) / (7 + 1) */
+#define ROCK_PI_4_M0_PERILP_DIV	7
+#define ROCK_PI_4_M0_PERILP_HZ	100000000
+/* PMU M0 core clock: xin24m, set up by TF-A */
+#define ROCK_PI_4_M0_PMU_HZ	24000000

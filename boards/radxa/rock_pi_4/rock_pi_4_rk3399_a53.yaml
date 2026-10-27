@@ -1,0 +1,11 @@
+identifier: rock_pi_4/rk3399/a53
+name: ROCK Pi 4 RK3399 A53
+type: mcu
+arch: arm64
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 63488
+vendor: radxa
+supported:
+  - uart

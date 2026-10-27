@@ -1,0 +1,11 @@
+identifier: rock_pi_4/rk3399/a72/smp
+name: ROCK Pi 4 RK3399 A72 (SMP)
+type: mcu
+arch: arm64
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 32768
+vendor: radxa
+supported:
+  - uart

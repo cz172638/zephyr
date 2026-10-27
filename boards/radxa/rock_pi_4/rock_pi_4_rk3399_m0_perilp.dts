@@ -1,0 +1,28 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <rockchip/rk3399_m0.dtsi>
+#include "rock_pi_4_memory.dtsi"
+
+/ {
+	model = "Radxa ROCK Pi 4 PERILP M0";
+	compatible = "radxa,rock-pi-4", "rockchip,rk3399";
+
+	chosen {
+		zephyr,sram = &m0_ram;
+		zephyr,console = &uart2;
+	};
+};
+
+&cpu0 {
+	clock-frequency = <ROCK_PI_4_M0_PERILP_HZ>;
+};
+
+/* Shared with the Cortex-A images, polled mode only. */
+&uart2 {
+	status = "okay";
+};

@@ -1,0 +1,54 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm64.h>
+#include "rock_pi_4_memory.dtsi"
+
+/ {
+	model = "Radxa ROCK Pi 4";
+	compatible = "radxa,rock-pi-4", "rockchip,rk3399";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,console = &uart2;
+		zephyr,shell-uart = &uart2;
+	};
+
+	shm: memory@6200000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <ROCK_PI_4_SHM_BASE ROCK_PI_4_SHM_SIZE>;
+		zephyr,memory-region = "SHM";
+		zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL_NC>;
+	};
+
+	pcie_ep_mem: memory@8000000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <ROCK_PI_4_PCIE_EP_BASE ROCK_PI_4_PCIE_EP_SIZE>;
+		zephyr,memory-region = "PCIE_EP";
+		zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL_NC>;
+	};
+};
+
+&uart2 {
+	current-speed = <1500000>;
+	status = "okay";
+};
+
+&gpio4 {
+	status = "okay";
+};
+
+/*
+ * M.2 M-key slot. In endpoint mode the host drives PERST# on GPIO4_D3 (the
+ * "ep-gpios" line of root complex mode) and the slot 3.3 V supply
+ * (vcc3v3_pcie, GPIO2_D2) must stay off. The RK3399 PHY has no reference
+ * clock input, so the host must accept a separate reference clock.
+ */
+&pcie0_ep {
+	perst-gpios = <&gpio4 27 GPIO_ACTIVE_LOW>;
+	num-lanes = <4>;
+	max-link-speed = <2>;
+};

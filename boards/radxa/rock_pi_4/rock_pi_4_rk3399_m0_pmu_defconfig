@@ -1,0 +1,12 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Image runs from DRAM remapped to address 0x0
+CONFIG_XIP=n
+
+# Serial Drivers, polled: the UARTs are not routed to the M0 interrupt inputs
+CONFIG_SERIAL=y
+
+# Enable console
+CONFIG_CONSOLE=y
+CONFIG_UART_CONSOLE=y

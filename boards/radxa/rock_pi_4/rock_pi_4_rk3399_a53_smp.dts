@@ -1,0 +1,15 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <rockchip/rk3399_a53.dtsi>
+#include "rock_pi_4_a.dtsi"
+
+/ {
+	sram0: memory@200000 {
+		reg = <ROCK_PI_4_A53_BASE ROCK_PI_4_A53_SIZE>;
+	};
+};

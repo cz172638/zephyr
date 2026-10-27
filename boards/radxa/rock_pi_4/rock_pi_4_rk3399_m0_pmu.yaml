@@ -1,0 +1,11 @@
+identifier: rock_pi_4/rk3399/m0_pmu
+name: ROCK Pi 4 RK3399 M0_PMU
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 256
+vendor: radxa
+supported:
+  - uart

@@ -1,0 +1,11 @@
+board:
+  name: rock_pi_4
+  full_name: ROCK Pi 4
+  vendor: radxa
+  socs:
+    - name: rk3399
+      variants:
+        - name: smp
+          cpucluster: a53
+        - name: smp
+          cpucluster: a72
