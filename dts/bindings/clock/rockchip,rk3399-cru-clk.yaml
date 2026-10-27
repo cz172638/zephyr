@@ -1,0 +1,25 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+title: Rockchip RK3399 CRU clock gate controller
+
+description: |
+  Clock gate controller of an RK3399 CRU or PMUCRU. Clock specifiers are
+  (CLKGATE_CON index * 16) + bit, see
+  include/zephyr/dt-bindings/clock/rk3399-cru.h.
+
+compatible: "rockchip,rk3399-cru-clk"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  "#clock-cells":
+    const: 1
+
+  rockchip,gate-offset:
+    type: int
+    required: true
+    description: Offset of CLKGATE_CON0 in the parent block (CRU 0x300, PMUCRU 0x100).
+
+clock-cells:
+  - clkid

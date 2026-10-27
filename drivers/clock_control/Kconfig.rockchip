@@ -7,3 +7,10 @@ config CLOCK_CONTROL_ROCKCHIP_RK3588
 	depends on DT_HAS_ROCKCHIP_RK3588_CRU_CLK_ENABLED
 	help
 	  Enable clock gate control for the Rockchip RK3588 CRU.
+
+config CLOCK_CONTROL_ROCKCHIP_RK3399
+	bool "Rockchip RK3399 CRU clock controller"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_CRU_CLK_ENABLED
+	help
+	  Enable clock gate control for the Rockchip RK3399 CRU and PMUCRU.

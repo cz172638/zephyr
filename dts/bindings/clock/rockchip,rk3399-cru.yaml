@@ -1,0 +1,21 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+title: Rockchip RK3399 CRU / PMUCRU
+
+description: |
+  Rockchip RK3399 Clock and Reset Unit register block (CRU at 0xff760000 or
+  PMUCRU at 0xff750000). Child nodes provide the clock gate and soft reset
+  controller interfaces.
+
+compatible: "rockchip,rk3399-cru"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+child-binding:
+  description: |
+    Clock or reset controller node sharing the parent register block.

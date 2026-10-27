@@ -7,3 +7,10 @@ config RESET_ROCKCHIP_RK3588
 	depends on DT_HAS_ROCKCHIP_RK3588_CRU_RST_ENABLED
 	help
 	  Enable reset control for the Rockchip RK3588 CRU.
+
+config RESET_ROCKCHIP_RK3399
+	bool "Rockchip RK3399 CRU reset controller"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_CRU_RST_ENABLED
+	help
+	  Enable soft reset control for the Rockchip RK3399 CRU and PMUCRU.

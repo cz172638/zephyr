@@ -1,0 +1,25 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+title: Rockchip RK3399 CRU soft reset controller
+
+description: |
+  Soft reset controller of an RK3399 CRU or PMUCRU. Reset specifiers are
+  (SOFTRST_CON index * 16) + bit, see
+  include/zephyr/dt-bindings/reset/rk3399-cru-reset.h.
+
+compatible: "rockchip,rk3399-cru-rst"
+
+include: [reset-controller.yaml, base.yaml]
+
+properties:
+  "#reset-cells":
+    const: 1
+
+  rockchip,softrst-offset:
+    type: int
+    required: true
+    description: Offset of SOFTRST_CON0 in the parent block (CRU 0x400, PMUCRU 0x110).
+
+reset-cells:
+  - id
