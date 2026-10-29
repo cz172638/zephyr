@@ -29,6 +29,7 @@
 #include <soc.h>
 
 #include "pcie_epc_aardvark.h"
+#include "pcie_epc_aardvark_a3700_xor.h"
 
 LOG_MODULE_REGISTER(pcie_epc_a3700, CONFIG_PCIE_EP_LOG_LEVEL);
 
@@ -644,21 +645,6 @@ static int cmd_map(const struct shell *sh, size_t argc, char **argv)
  * with h: is host memory (PCI address), reached through an outbound
  * window. Probing whether a system DMA master gets to PCIe at all.
  */
-#define XOR_LOW   0xd0060900UL
-#define XOR_HIGH  0xd0060b00UL
-
-struct xor_desc {
-	uint32_t status;
-	uint32_t crc32;
-	uint32_t command;
-	uint32_t next;
-	uint32_t byte_count;
-	uint32_t dst;
-	uint32_t src[8];
-	uint32_t rsvd[2];
-} __aligned(64);
-
-static struct xor_desc xor_desc;
 
 static int xor_addr(const struct shell *sh, const char *arg, size_t len, uint64_t *axi,
 		    struct pcie_epc_host_map *map, bool *mapped)
@@ -689,9 +675,8 @@ static int cmd_xor(const struct shell *sh, size_t argc, char **argv)
 	bool dm = false, sm = false;
 	unsigned long long len;
 	uint64_t dst, src;
-	uint8_t *lo, *hi;
-	uint32_t cause = 0, err = 0, eaddr = 0;
-	int64_t t0, end;
+	struct a3700_xor_result r;
+	int64_t t0;
 	int ret = -EINVAL;
 
 	if (parse_u(sh, argv[3], &len) != 0 || len < 128 || len >= 0x1000000) {
@@ -707,58 +692,11 @@ static int cmd_xor(const struct shell *sh, size_t argc, char **argv)
 		goto out;
 	}
 
-	k_mem_map_phys_bare(&lo, XOR_LOW, 0x100, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
-	k_mem_map_phys_bare(&hi, XOR_HIGH, 0x100, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
-
-	/* windows as Linux on the A3700: one 4 GiB window, DRAM decode at AXI level */
-	for (int w = 0; w < 8; w++) {
-		sys_write32(0, (mem_addr_t)hi + 0x50 + 4 * w);
-		sys_write32(0, (mem_addr_t)hi + 0x70 + 4 * w);
-	}
-	sys_write32(0xffff0000, (mem_addr_t)hi + 0x70);
-	sys_write32(1 | (3 << 16), (mem_addr_t)hi + 0x40);
-	sys_write32(0, (mem_addr_t)hi + 0xa0);
-
-	/* channel 0: stopped, descriptor mode, no swap */
-	sys_write32((sys_read32((mem_addr_t)lo + 0x10) & ~(0x7U | BIT(14))) | 7,
-		    (mem_addr_t)lo + 0x10);
-	sys_write32(0, (mem_addr_t)lo + 0x30); /* cause */
-
-	memset(&xor_desc, 0, sizeof(xor_desc));
-	xor_desc.status = BIT(31);
-	xor_desc.command = 2U << 24; /* memcpy */
-	xor_desc.byte_count = (uint32_t)len;
-	xor_desc.dst = (uint32_t)dst;
-	xor_desc.src[0] = (uint32_t)src;
-	sys_cache_data_flush_range(&xor_desc, sizeof(xor_desc));
-	barrier_dsync_fence_full();
-
-	sys_write32((uint32_t)(uintptr_t)&xor_desc, (mem_addr_t)hi + 0x00);
 	t0 = k_uptime_get();
-	sys_write32(BIT(0), (mem_addr_t)lo + 0x20);
-
-	end = t0 + 1000;
-	do {
-		cause = sys_read32((mem_addr_t)lo + 0x30);
-		if (cause & (BIT(1) | GENMASK(9, 4))) {
-			break;
-		}
-	} while (k_uptime_get() < end);
-	err = sys_read32((mem_addr_t)lo + 0x50);
-	eaddr = sys_read32((mem_addr_t)lo + 0x60);
-	sys_cache_data_invd_range(&xor_desc, sizeof(xor_desc));
-
-	shell_print(sh, "xor 0x%llx <- 0x%llx, %llu bytes: cause %08x error %08x @%08x, "
+	ret = a3700_xor_memcpy((uint32_t)dst, (uint32_t)src, (uint32_t)len, &r);
+	shell_print(sh, "xor 0x%llx <- 0x%llx, %llu bytes: %d, cause %08x error %08x @%08x, "
 		    "desc status %08x, %lld ms", (unsigned long long)dst, (unsigned long long)src,
-		    len, cause, err, eaddr, xor_desc.status, k_uptime_get() - t0);
-	ret = (cause & BIT(1)) && !(cause & GENMASK(9, 4)) ? 0 : -EIO;
-	if (ret != 0) {
-		/* stop the channel */
-		sys_write32(BIT(1), (mem_addr_t)lo + 0x20);
-	}
-	sys_write32(0, (mem_addr_t)lo + 0x30);
-	k_mem_unmap_phys_bare(lo, 0x100);
-	k_mem_unmap_phys_bare(hi, 0x100);
+		    len, ret, r.cause, r.err, r.err_addr, r.status, k_uptime_get() - t0);
 out:
 	if (dm) {
 		pcie_epc_unmap_host(EP_DEV, &dmap);
