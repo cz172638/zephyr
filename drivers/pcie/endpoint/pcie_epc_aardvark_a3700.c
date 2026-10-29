@@ -918,10 +918,20 @@ static int cmd_down(const struct shell *sh, size_t argc, char **argv)
 	struct advk_ep *ep = advk_ep(EP_DEV);
 	bool ok;
 
+	struct a3700_ep_data *data = EP_DEV->data;
+	mem_addr_t pwr = data->comphy + ADVK_COMPHY_PWR_PLL_CTRL;
+
+	/*
+	 * Clearing the training enable does not leave L0 once the link is
+	 * up: power the PHY PLL / Rx / Tx down (TF-A has no PCIe power off),
+	 * the host sees electrical idle and drops the link. up powers it on
+	 * again through the SiP call.
+	 */
 	pcie_epc_stop(EP_DEV);
+	sys_write16(sys_read16(pwr) & ~ADVK_COMPHY_PU_PLL_RX_TX, pwr);
 	ok = wait_link(ep, false, 200);
-	shell_print(sh, "training off, ltssm 0x%02x %s%s", advk_ltssm(ep),
-		    advk_ltssm_name(advk_ltssm(ep)), ok ? "" : " (link still up)");
+	shell_print(sh, "training off, PHY down (pwr %04x), ltssm 0x%02x %s%s", sys_read16(pwr),
+		    advk_ltssm(ep), advk_ltssm_name(advk_ltssm(ep)), ok ? "" : " (link still up)");
 	return 0;
 }
 
@@ -935,8 +945,16 @@ static int cmd_up(const struct shell *sh, size_t argc, char **argv)
 	struct advk_ep *ep = advk_ep(EP_DEV);
 	bool ok;
 
+	struct a3700_ep_data *data = EP_DEV->data;
+
 	pcie_epc_stop(EP_DEV);
 	(void)wait_link(ep, false, 200);
+	if ((sys_read16(data->comphy + ADVK_COMPHY_PWR_PLL_CTRL) & ADVK_COMPHY_PU_PLL_RX_TX) !=
+	    ADVK_COMPHY_PU_PLL_RX_TX) {
+		data->comphy_ret = comphy_power_on(EP_DEV);
+		comphy_clkout_off(EP_DEV);
+		shell_print(sh, "PHY on: %ld", data->comphy_ret);
+	}
 	advk_ep_restore(EP_DEV);
 	pcie_epc_start(EP_DEV);
 	ok = wait_link(ep, true, 1000);

@@ -134,6 +134,8 @@
  * REFCLK pins; TF-A turns it on, an endpoint must not drive the clock
  * (ESPRESSObin wiki "Enabling ESPRESSObin board as PCIe Endpoint").
  */
+#define ADVK_COMPHY_PWR_PLL_CTRL     (0x01 * 2)
+#define ADVK_COMPHY_PU_PLL_RX_TX     (BIT(14) | BIT(13) | BIT(12))
 #define ADVK_COMPHY_MISC_CTRL0       (0x4f * 2)
 #define ADVK_COMPHY_CLK100M_125M_EN  BIT(4)
 
