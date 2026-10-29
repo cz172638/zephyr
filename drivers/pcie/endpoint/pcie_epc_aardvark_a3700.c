@@ -872,6 +872,51 @@ static int cmd_copy(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * wmap <start> <end>: writable bits of every word (write the complement,
+ * read back, restore). Skips 0x18000-0x18fff (core control: mode bit)
+ * unless asked for explicitly. Prints only words with writable bits.
+ */
+static int cmd_wmap(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long start, end;
+	uint32_t n = 0;
+
+	ARG_UNUSED(argc);
+	if (parse_u(sh, argv[1], &start) != 0 || parse_u(sh, argv[2], &end) != 0) {
+		return -EINVAL;
+	}
+	end = MIN(end, (unsigned long long)ADVK_REG_SPACE);
+	for (uint32_t o = start & ~3U; o < end; o += 4) {
+		uint32_t v, w;
+
+		if (o >= 0x18000 && o < 0x19000 && !(start >= 0x18000 && start < 0x19000)) {
+			o = 0x19000 - 4;
+			continue;
+		}
+		if (a3700_probe_read32(ep->reg + o, &v) != 0) {
+			continue;
+		}
+		if (a3700_probe_write32(ep->reg + o, ~v) != 0 ||
+		    a3700_probe_read32(ep->reg + o, &w) != 0) {
+			shell_print(sh, "%05x: abort on write", o);
+			continue;
+		}
+		(void)a3700_probe_write32(ep->reg + o, v);
+		if ((v ^ w) != 0) {
+			uint32_t now = 0;
+
+			(void)a3700_probe_read32(ep->reg + o, &now);
+			shell_print(sh, "%05x: reset %08x  writable %08x%s", o, v, v ^ w,
+				    now != v ? "  (did not restore)" : "");
+			n++;
+		}
+	}
+	shell_print(sh, "%u words with writable bits", n);
+	return 0;
+}
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -1338,6 +1383,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(bar, NULL, "<n> [axi] Inbound AXI base of BAR n", cmd_bar, 2, 1),
 	SHELL_CMD_ARG(copy, NULL, "<dst> <src> <len> Word copy, aborts read as deadbeef",
 		      cmd_copy, 4, 0),
+	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
+		      cmd_wmap, 3, 0),
 	SHELL_CMD_ARG(nz, NULL, "<start> <end> Non-zero words of a range", cmd_nz, 3, 0),
 	SHELL_CMD_ARG(map, NULL, "[start end] Readable ranges of the register space", cmd_map, 1,
 		      2),
