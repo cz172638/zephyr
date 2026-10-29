@@ -769,6 +769,109 @@ out:
 	return ret;
 }
 
+/*
+ * CPU address decode windows (0xd000cf00, 0x10 each: ctrl = attr << 8 |
+ * target << 4 | enable, size = (size/64K - 1), base and remap in 64K units).
+ * Targets per TF-A dram_win.c: 0 DRAM, 1 internal regs, 2 PCIe, 3 PCIe over
+ * MCI, 4 BootROM, 5 MCI external, 7 rWTM RAM, 8 CCI-400 regs.
+ */
+#define CPU_DEC_WIN 0xd000cf00UL
+
+static int cmd_cpuwin(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t *va;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	k_mem_map_phys_bare(&va, CPU_DEC_WIN & ~0xfffUL, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	for (int i = 0; i < 16; i++) {
+		uint32_t v[4];
+		bool ok = true;
+
+		for (int j = 0; j < 4; j++) {
+			ok &= a3700_probe_read32((uintptr_t)va + (CPU_DEC_WIN & 0xfff) + i * 0x10 + j * 4,
+						 &v[j]) == 0;
+		}
+		if (!ok) {
+			shell_print(sh, "win %2d: abort", i);
+			continue;
+		}
+		if ((v[0] | v[1] | v[2] | v[3]) == 0) {
+			continue;
+		}
+		shell_print(sh, "win %2d: %08x %08x %08x %08x  %s target %u attr 0x%02x "
+			    "0x%08llx+0x%llx remap 0x%08llx", i, v[0], v[1], v[2], v[3],
+			    (v[0] & 1) ? "on " : "off", (v[0] >> 4) & 0xf, (v[0] >> 8) & 0xff,
+			    (unsigned long long)(v[2] & 0xffff) << 16,
+			    (unsigned long long)((v[1] & 0xffff) + 1) << 16,
+			    (unsigned long long)(v[3] & 0xffff) << 16);
+	}
+	k_mem_unmap_phys_bare(va, 0x1000);
+	return 0;
+}
+
+/* bar <n> [axi]: show / set the inbound AXI base of BAR n (0x5800 + 8*n/2) */
+static int cmd_bar(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long n, axi;
+	uint32_t lo, hi;
+
+	if (parse_u(sh, argv[1], &n) != 0 || n > 5) {
+		return -EINVAL;
+	}
+	if (argc > 2) {
+		if (parse_u(sh, argv[2], &axi) != 0 || (axi & ~(uint64_t)ADVK_IB_ADDR_MASK & 0xffffffffULL) != 0) {
+			shell_error(sh, "axi must be 128-byte aligned");
+			return -EINVAL;
+		}
+		lo = advk_rd(ep, ADVK_IB_BAR_LO(n));
+		advk_wr(ep, ADVK_IB_BAR_HI(n), (uint32_t)(axi >> 32));
+		advk_wr(ep, ADVK_IB_BAR_LO(n), ((uint32_t)axi & ADVK_IB_ADDR_MASK) |
+						 (lo & ~ADVK_IB_ADDR_MASK));
+	}
+	lo = advk_rd(ep, ADVK_IB_BAR_LO(n));
+	hi = advk_rd(ep, ADVK_IB_BAR_HI(n));
+	shell_print(sh, "BAR%llu: %08x %08x -> axi 0x%llx (hw size 0x%zx)", n, lo, hi,
+		    ((unsigned long long)hi << 32) | (lo & ADVK_IB_ADDR_MASK),
+		    ep->bar_hw_size[n]);
+	return 0;
+}
+
+/* copy <dst> <src> <len>: word copy with probe reads (aborts become 0xdeadbeef) */
+static int cmd_copy(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long long dst, src, len;
+	uint8_t *d, *s;
+	uint32_t bad = 0;
+
+	ARG_UNUSED(argc);
+	if (parse_u(sh, argv[1], &dst) != 0 || parse_u(sh, argv[2], &src) != 0 ||
+	    parse_u(sh, argv[3], &len) != 0 || ((dst | src | len) & 3) != 0 || len == 0 ||
+	    len > 0x100000) {
+		return -EINVAL;
+	}
+	k_mem_map_phys_bare(&d, dst & ~0xfffULL, ROUND_UP(len + (dst & 0xfff), 0x1000),
+			    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	k_mem_map_phys_bare(&s, src & ~0xfffULL, ROUND_UP(len + (src & 0xfff), 0x1000),
+			    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	for (unsigned long long o = 0; o < len; o += 4) {
+		uint32_t v;
+
+		if (a3700_probe_read32((uintptr_t)s + (src & 0xfff) + o, &v) != 0) {
+			v = 0xdeadbeef;
+			bad++;
+		}
+		*(volatile uint32_t *)(d + (dst & 0xfff) + o) = v;
+	}
+	barrier_dsync_fence_full();
+	k_mem_unmap_phys_bare(s, ROUND_UP(len + (src & 0xfff), 0x1000));
+	k_mem_unmap_phys_bare(d, ROUND_UP(len + (dst & 0xfff), 0x1000));
+	shell_print(sh, "copied 0x%llx bytes 0x%llx -> 0x%llx, %u aborted words", len, src, dst,
+		    bad);
+	return 0;
+}
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -1144,10 +1247,14 @@ static int cmd_ibwin(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_iodec(const struct shell *sh, size_t argc, char **argv)
 {
-	unsigned long long w, base, size, remap;
+	unsigned long long w, base, size, remap, target = 0, attr = IODEC_ATTR;
 	uint8_t *va;
 	volatile uint32_t *r;
 
+	if ((argc > 5 && parse_u(sh, argv[5], &target) != 0) ||
+	    (argc > 6 && parse_u(sh, argv[6], &attr) != 0) || target > 0xf || attr > 0xff) {
+		return -EINVAL;
+	}
 	k_mem_map_phys_bare(&va, IODEC_PCIE & ~0xfffUL, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
 	r = (volatile uint32_t *)(va + (IODEC_PCIE & 0xfff));
 
@@ -1159,15 +1266,19 @@ static int cmd_iodec(const struct shell *sh, size_t argc, char **argv)
 			k_mem_unmap_phys_bare(va, 0x1000);
 			return -EINVAL;
 		}
-		uint32_t ctrl = (uint32_t)(((size >> 16) - 1) << 16) | (IODEC_ATTR << 8);
-		uint8_t *t;
+		uint32_t ctrl = (uint32_t)(((size >> 16) - 1) << 16) | ((uint32_t)attr << 8) |
+				((uint32_t)target << 4);
 
-		/* tag the remapped target */
-		k_mem_map_phys_bare(&t, remap, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
-		((volatile uint32_t *)t)[0] = IB_MAGIC | 0xee00 | (uint32_t)w;
-		((volatile uint32_t *)t)[1] = (uint32_t)remap;
-		barrier_dsync_fence_full();
-		k_mem_unmap_phys_bare(t, 0x1000);
+		if (target == 0) {
+			uint8_t *t;
+
+			/* tag the remapped DRAM target */
+			k_mem_map_phys_bare(&t, remap, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+			((volatile uint32_t *)t)[0] = IB_MAGIC | 0xee00 | (uint32_t)w;
+			((volatile uint32_t *)t)[1] = (uint32_t)remap;
+			barrier_dsync_fence_full();
+			k_mem_unmap_phys_bare(t, 0x1000);
+		}
 
 		r[w * 4 + 0] = ctrl;
 		r[w * 4 + 1] = (uint32_t)base;
@@ -1205,6 +1316,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(wr, NULL, "<off> <val> Write a controller register", cmd_wr, 3, 0),
 	SHELL_CMD_ARG(probe, NULL, "<off> [len] Writable bits (writes, then restores!)",
 		      cmd_probe, 2, 1),
+	SHELL_CMD_ARG(cpuwin, NULL, "CPU address decode windows (0xd000cf00)", cmd_cpuwin, 1, 0),
+	SHELL_CMD_ARG(bar, NULL, "<n> [axi] Inbound AXI base of BAR n", cmd_bar, 2, 1),
+	SHELL_CMD_ARG(copy, NULL, "<dst> <src> <len> Word copy, aborts read as deadbeef",
+		      cmd_copy, 4, 0),
 	SHELL_CMD_ARG(nz, NULL, "<start> <end> Non-zero words of a range", cmd_nz, 3, 0),
 	SHELL_CMD_ARG(map, NULL, "[start end] Readable ranges of the register space", cmd_map, 1,
 		      2),
@@ -1225,8 +1340,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
 		      1),
 	SHELL_CMD_ARG(iodec, NULL,
-		      "[<w> <base> <size> <remap> | reset] PCIe IO decode windows (0xd000c500)",
-		      cmd_iodec, 1, 4),
+		      "[<w> <base> <size> <remap> [target [attr]] | reset] PCIe IO decode windows"
+		      " (0xd000c500)",
+		      cmd_iodec, 1, 6),
 	SHELL_CMD_ARG(ibwin, NULL,
 		      "<w> [<pci> <axi> <size> [actions]] Guessed inbound window at 0x4d00",
 		      cmd_ibwin, 2, 4),
