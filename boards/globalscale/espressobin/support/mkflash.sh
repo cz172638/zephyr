@@ -16,7 +16,7 @@
 #             C100 -> CPU_1000_DDR_800            [CPU_800_DDR_800]
 #   DDR_TOPOLOGY  0 = 512 MiB DDR3 1CS, 2 = 1 GiB DDR3 2CS (v5),
 #                 see A3700-utils tim/ddr/DDR_TOPOLOGY_*.txt   [2]
-#   BOOTDEV   SPINOR or EMMCNORM                  [SPINOR]
+#   BOOTDEV   SPINOR, EMMCNORM or SATA            [SPINOR]
 #   CM3       Zephyr image for the Cortex-M3 (espressobin/armada3720_cm3)
 #             in place of the whole WTMI (sys_init + fuse app); needs the
 #             A3700-utils WTMI_EXEC_ADDR support                  [unset]
