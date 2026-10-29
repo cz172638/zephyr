@@ -322,7 +322,14 @@ static void dump_words(const struct shell *sh, struct advk_ep *ep, uint32_t off,
 	for (uint32_t o = off; o < off + len && o < ADVK_REG_SPACE; o += 16) {
 		shell_fprintf(sh, SHELL_NORMAL, "%05x:", o);
 		for (uint32_t i = 0; i < 16 && o + i < off + len; i += 4) {
-			shell_fprintf(sh, SHELL_NORMAL, " %08x", advk_rd(ep, o + i));
+			uint32_t v;
+
+			/* holes in the register space abort: show them, go on */
+			if (a3700_probe_read32(ep->reg + o + i, &v) < 0) {
+				shell_fprintf(sh, SHELL_NORMAL, " ????????");
+			} else {
+				shell_fprintf(sh, SHELL_NORMAL, " %08x", v);
+			}
 		}
 		shell_fprintf(sh, SHELL_NORMAL, "\n");
 	}
@@ -483,7 +490,15 @@ static int cmd_rd(const struct shell *sh, size_t argc, char **argv)
 	if (parse_u(sh, argv[1], &off) != 0 || off >= ADVK_REG_SPACE) {
 		return -EINVAL;
 	}
-	shell_print(sh, "%05llx: %08x", off & ~3ULL, advk_rd(advk_ep(EP_DEV), off & ~3U));
+	{
+		uint32_t v;
+
+		if (a3700_probe_read32(advk_ep(EP_DEV)->reg + (off & ~3U), &v) < 0) {
+			shell_print(sh, "%05llx: abort", off & ~3ULL);
+			return -EIO;
+		}
+		shell_print(sh, "%05llx: %08x", off & ~3ULL, v);
+	}
 	return 0;
 }
 
@@ -496,8 +511,19 @@ static int cmd_wr(const struct shell *sh, size_t argc, char **argv)
 	    off >= ADVK_REG_SPACE) {
 		return -EINVAL;
 	}
-	advk_wr(ep, off & ~3U, (uint32_t)val);
-	shell_print(sh, "%05llx: %08x", off & ~3ULL, advk_rd(ep, off & ~3U));
+	{
+		uint32_t v;
+
+		if (a3700_probe_write32(ep->reg + (off & ~3U), (uint32_t)val) < 0) {
+			shell_print(sh, "%05llx: write aborted", off & ~3ULL);
+			return -EIO;
+		}
+		if (a3700_probe_read32(ep->reg + (off & ~3U), &v) < 0) {
+			shell_print(sh, "%05llx: read back aborted", off & ~3ULL);
+			return -EIO;
+		}
+		shell_print(sh, "%05llx: %08x", off & ~3ULL, v);
+	}
 	return 0;
 }
 
@@ -513,18 +539,24 @@ static int cmd_probe(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	for (uint32_t o = off & ~3U; o < off + len && o < ADVK_REG_SPACE; o += 4) {
-		uint32_t orig = advk_rd(ep, o);
-		uint32_t inv, ones, zeros;
+		uintptr_t r = ep->reg + o;
+		uint32_t orig, inv, ones, zeros, now;
 
-		advk_wr(ep, o, ~orig);
-		inv = advk_rd(ep, o);
-		advk_wr(ep, o, UINT32_MAX);
-		ones = advk_rd(ep, o);
-		advk_wr(ep, o, 0);
-		zeros = advk_rd(ep, o);
-		advk_wr(ep, o, orig);
+		if (a3700_probe_read32(r, &orig) < 0) {
+			shell_print(sh, "%05x: read aborts", o);
+			continue;
+		}
+		if (a3700_probe_write32(r, ~orig) < 0 || a3700_probe_read32(r, &inv) < 0 ||
+		    a3700_probe_write32(r, UINT32_MAX) < 0 || a3700_probe_read32(r, &ones) < 0 ||
+		    a3700_probe_write32(r, 0) < 0 || a3700_probe_read32(r, &zeros) < 0) {
+			(void)a3700_probe_write32(r, orig);
+			shell_print(sh, "%05x: %08x  write aborts (read only?)", o, orig);
+			continue;
+		}
+		(void)a3700_probe_write32(r, orig);
+		(void)a3700_probe_read32(r, &now);
 		shell_print(sh, "%05x: %08x  rw %08x  ~ %08x  1s %08x  0s %08x  now %08x", o, orig,
-			    inv ^ orig, inv, ones, zeros, advk_rd(ep, o));
+			    inv ^ orig, inv, ones, zeros, now);
 	}
 	return 0;
 }
