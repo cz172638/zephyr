@@ -769,6 +769,29 @@ out:
 	return ret;
 }
 
+/* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
+static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long start, end;
+	uint32_t n = 0;
+
+	if (parse_u(sh, argv[1], &start) != 0 || parse_u(sh, argv[2], &end) != 0) {
+		return -EINVAL;
+	}
+	end = MIN(end, (unsigned long long)ADVK_REG_SPACE);
+	for (uint32_t o = start & ~3U; o < end; o += 4) {
+		uint32_t v;
+
+		if (a3700_probe_read32(ep->reg + o, &v) == 0 && v != 0) {
+			shell_print(sh, "%05x: %08x", o, v);
+			n++;
+		}
+	}
+	shell_print(sh, "%u non-zero words", n);
+	return 0;
+}
+
 /* Wait up to ms for the LTSSM to be (or not be) in L0..L2 */
 static bool wait_link(struct advk_ep *ep, bool up, uint32_t ms)
 {
@@ -1182,6 +1205,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(wr, NULL, "<off> <val> Write a controller register", cmd_wr, 3, 0),
 	SHELL_CMD_ARG(probe, NULL, "<off> [len] Writable bits (writes, then restores!)",
 		      cmd_probe, 2, 1),
+	SHELL_CMD_ARG(nz, NULL, "<start> <end> Non-zero words of a range", cmd_nz, 3, 0),
 	SHELL_CMD_ARG(map, NULL, "[start end] Readable ranges of the register space", cmd_map, 1,
 		      2),
 	SHELL_CMD_ARG(xor, NULL, "<dst> <src> <len> XOR engine memcpy, h:<pci addr> = host memory",
