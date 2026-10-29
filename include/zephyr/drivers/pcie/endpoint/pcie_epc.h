@@ -233,6 +233,9 @@ __subsystem struct pcie_epc_driver_api {
 	bool (*link_up)(const struct device *dev);
 	/** Optional: translate a CPU physical address to the controller's AXI view. */
 	uint64_t (*cpu_to_axi)(const struct device *dev, uintptr_t cpu_addr);
+	/** Optional: copy between local memory and host memory with a DMA engine. */
+	int (*xfer_dma)(const struct device *dev, uint8_t func, uint64_t pci_addr, void *local,
+			size_t size, bool to_host);
 };
 
 /** @endcond */
@@ -436,6 +439,24 @@ void pcie_epc_unmap_host(const struct device *dev, struct pcie_epc_host_map *map
  */
 int pcie_epc_xfer_memcpy(const struct device *dev, uint8_t func, uint64_t pci_addr,
 			 void *local, size_t size, bool to_host);
+
+/**
+ * @brief Copy between local memory and host memory with the controller's DMA.
+ *
+ * Same contract as pcie_epc_xfer_memcpy(): when it returns, the data is in
+ * place (toward the host: visible before a subsequent interrupt).
+ *
+ * @param to_host true: local -> host, false: host -> local
+ * @retval -ENOTSUP the controller has no DMA
+ */
+static inline int pcie_epc_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_addr,
+				    void *local, size_t size, bool to_host)
+{
+	const struct pcie_epc_driver_api *api = DEVICE_API_GET(pcie_epc, dev);
+
+	return api->xfer_dma ? api->xfer_dma(dev, func, pci_addr, local, size, to_host)
+			     : -ENOTSUP;
+}
 
 /** @cond INTERNAL_HIDDEN */
 

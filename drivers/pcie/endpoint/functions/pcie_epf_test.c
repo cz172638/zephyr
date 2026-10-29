@@ -69,6 +69,8 @@ LOG_MODULE_REGISTER(pcie_epf_test, CONFIG_PCIE_EP_LOG_LEVEL);
 #define STS_DST_ADDR_INVALID BIT(8)
 #define STS_NO_RESOURCE      BIT(18)
 
+#define FLAG_USE_DMA BIT(0)
+
 #define CAP_UNALIGNED_ACCESS BIT(0)
 #define CAP_MSI              BIT(1)
 #define CAP_MSIX             BIT(2)
@@ -170,6 +172,16 @@ static void raise_irq(const struct device *dev, struct epf_test_data *d)
 	}
 }
 
+/* One chunk to or from the host: DMA when the host asked for it (pcitest -d) */
+static int xfer(const struct epf_test_config *cfg, struct epf_test_data *d, uint64_t pci,
+		uint8_t *buf, size_t n, bool to_host)
+{
+	if (reg_rd(d, REG_FLAGS) & FLAG_USE_DMA) {
+		return pcie_epc_xfer_dma(cfg->epc, cfg->func, pci, buf, n, to_host);
+	}
+	return pcie_epc_xfer_memcpy(cfg->epc, cfg->func, pci, buf, n, to_host);
+}
+
 /* EP reads host buffer at SRC and checks it against the host's CRC. */
 static int cmd_read(const struct device *dev, struct epf_test_data *d)
 {
@@ -182,7 +194,7 @@ static int cmd_read(const struct device *dev, struct epf_test_data *d)
 	for (uint32_t off = 0; off < size; off += sizeof(d->chunk)) {
 		size_t n = MIN(sizeof(d->chunk), size - off);
 
-		ret = pcie_epc_xfer_memcpy(cfg->epc, cfg->func, src + off, d->chunk, n, false);
+		ret = xfer(cfg, d, src + off, d->chunk, n, false);
 		if (ret != 0) {
 			sts_set(d, STS_SRC_ADDR_INVALID);
 			return ret;
@@ -207,7 +219,7 @@ static int cmd_write(const struct device *dev, struct epf_test_data *d)
 
 		fill_pattern(d->chunk, n);
 		crc = crc32_ieee_update(crc, d->chunk, n);
-		ret = pcie_epc_xfer_memcpy(cfg->epc, cfg->func, dst + off, d->chunk, n, true);
+		ret = xfer(cfg, d, dst + off, d->chunk, n, true);
 		if (ret != 0) {
 			sts_set(d, STS_DST_ADDR_INVALID);
 			return ret;
@@ -230,12 +242,12 @@ static int cmd_copy(const struct device *dev, struct epf_test_data *d)
 	for (uint32_t off = 0; off < size; off += sizeof(d->chunk)) {
 		size_t n = MIN(sizeof(d->chunk), size - off);
 
-		ret = pcie_epc_xfer_memcpy(cfg->epc, cfg->func, src + off, d->chunk, n, false);
+		ret = xfer(cfg, d, src + off, d->chunk, n, false);
 		if (ret != 0) {
 			sts_set(d, STS_SRC_ADDR_INVALID);
 			return ret;
 		}
-		ret = pcie_epc_xfer_memcpy(cfg->epc, cfg->func, dst + off, d->chunk, n, true);
+		ret = xfer(cfg, d, dst + off, d->chunk, n, true);
 		if (ret != 0) {
 			sts_set(d, STS_DST_ADDR_INVALID);
 			return ret;
@@ -264,6 +276,8 @@ static void cmd_work_handler(struct k_work *work)
 		if (!d->bme) {
 			LOG_WRN("command 0x%x before bus mastering enabled", cmd);
 		}
+		int64_t t0 = k_uptime_get();
+
 		if (cmd & CMD_READ) {
 			ret = cmd_read(dev, d);
 			sts_set(d, ret == 0 ? STS_READ_SUCCESS : STS_READ_FAIL);
@@ -274,6 +288,9 @@ static void cmd_work_handler(struct k_work *work)
 			ret = cmd_copy(dev, d);
 			sts_set(d, ret == 0 ? STS_COPY_SUCCESS : STS_COPY_FAIL);
 		}
+		LOG_INF("cmd 0x%x %u bytes %s: %d, %lld ms", cmd, reg_rd(d, REG_SIZE),
+			(reg_rd(d, REG_FLAGS) & FLAG_USE_DMA) ? "dma" : "memcpy", ret,
+			k_uptime_get() - t0);
 		raise_irq(dev, d);
 	} else if (cmd & CMD_RAISE_INTX) {
 		reg_wr(d, REG_IRQ_TYPE, IRQ_TYPE_INTX);

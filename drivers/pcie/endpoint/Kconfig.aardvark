@@ -15,6 +15,20 @@ config PCIE_EPC_AARDVARK
 
 if PCIE_EPC_AARDVARK
 
+config PCIE_EPC_AARDVARK_DMA
+	bool "System DMA through the XOR engine"
+	default y
+	help
+	  pcie_epc_xfer_dma() with the Armada 3700 XOR engine. The DMA
+	  unit's IO decode window 1 is pointed at the outbound region.
+
+config PCIE_EPC_AARDVARK_DMA_ATTR
+	hex "Attribute of the DMA unit's IO decode window toward PCIe"
+	default 0x0
+	depends on PCIE_EPC_AARDVARK_DMA
+	help
+	  The CPU decode window for PCIe (target 2) has attribute 0.
+
 config PCIE_EPC_AARDVARK_INBOUND_LIMIT
 	hex "Inbound window (host access to DDR from 0)"
 	default 0x80000

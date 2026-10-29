@@ -256,6 +256,10 @@ static int a3700_ep_init(const struct device *dev)
 		inbound_window(0, CONFIG_PCIE_EPC_AARDVARK_INBOUND_LIMIT);
 	}
 
+#ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
+	a3700_xor_pcie_window(cfg->mem_phys, cfg->mem_size, CONFIG_PCIE_EPC_AARDVARK_DMA_ATTR);
+#endif
+
 	TRACE("controller setup");
 	ret = advk_ep_init(dev, cfg->autostart);
 	if (ret != 0) {
@@ -271,6 +275,51 @@ static int a3700_ep_init(const struct device *dev)
 		cfg->perst.port != NULL ? ", PERST# on GPIO" : "");
 	return 0;
 }
+
+#ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
+/*
+ * System DMA through the SoC XOR engine. The host side goes through an
+ * outbound window as for memcpy; the engine reaches it through the DMA
+ * unit's IO decode window set up at init. Short copies stay on the CPU.
+ */
+static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_addr,
+			     void *local, size_t size, bool to_host)
+{
+	struct pcie_epc_host_map map;
+	uint64_t host_axi, local_phys;
+	int ret;
+
+	if (size < 128) {
+		return pcie_epc_xfer_memcpy(dev, func, pci_addr, local, size, to_host);
+	}
+	if (size >= 0x1000000) {
+		return -EINVAL;
+	}
+	ret = pcie_epc_map_host(dev, func, pci_addr, size, &map);
+	if (ret != 0) {
+		return ret;
+	}
+	host_axi = advk_ep_cpu_to_axi(dev, (uintptr_t)map.ptr);
+	local_phys = k_mem_phys_addr(local);
+	if (((host_axi | local_phys) >> 32) != 0) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	sys_cache_data_flush_and_invd_range(local, size);
+	if (to_host) {
+		ret = a3700_xor_memcpy((uint32_t)host_axi, (uint32_t)local_phys, size, NULL);
+		/* non-posted read: the writes are at the host before an IRQ */
+		(void)sys_read8((mem_addr_t)map.ptr);
+	} else {
+		ret = a3700_xor_memcpy((uint32_t)local_phys, (uint32_t)host_axi, size, NULL);
+		sys_cache_data_invd_range(local, size);
+	}
+out:
+	pcie_epc_unmap_host(dev, &map);
+	return ret;
+}
+#endif
 
 static DEVICE_API(pcie_epc, a3700_ep_api) = {
 	.start = a3700_ep_start,
@@ -288,6 +337,9 @@ static DEVICE_API(pcie_epc, a3700_ep_api) = {
 	.get_features = advk_ep_get_features,
 	.link_up = advk_ep_link_up,
 	.cpu_to_axi = advk_ep_cpu_to_axi,
+#ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
+	.xfer_dma = a3700_ep_xfer_dma,
+#endif
 };
 
 #define A3700_EP_HAS_PINCTRL(n) DT_INST_PINCTRL_HAS_NAME(n, default)
