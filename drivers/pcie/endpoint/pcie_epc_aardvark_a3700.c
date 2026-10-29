@@ -579,6 +579,57 @@ static int cmd_setup(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* Wait up to ms for the LTSSM to be (or not be) in L0..L2 */
+static bool wait_link(struct advk_ep *ep, bool up, uint32_t ms)
+{
+	int64_t end = k_uptime_get() + ms;
+
+	do {
+		if (advk_ltssm_is_up(advk_ltssm(ep)) == up) {
+			return true;
+		}
+		k_msleep(1);
+	} while (k_uptime_get() < end);
+	return false;
+}
+
+/*
+ * down: link training off, the link goes to detect. On the host remove
+ * the device first (echo 1 > .../remove), it would see a surprise down.
+ */
+static int cmd_down(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	bool ok;
+
+	pcie_epc_stop(EP_DEV);
+	ok = wait_link(ep, false, 200);
+	shell_print(sh, "training off, ltssm 0x%02x %s%s", advk_ltssm(ep),
+		    advk_ltssm_name(advk_ltssm(ep)), ok ? "" : " (link still up)");
+	return 0;
+}
+
+/*
+ * up: controller set up again as at boot (EP mode, header, MSI
+ * capability; outbound windows cleared, IO decode window kept), then
+ * link training. Then rescan on the host.
+ */
+static int cmd_up(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	bool ok;
+
+	pcie_epc_stop(EP_DEV);
+	(void)wait_link(ep, false, 200);
+	advk_ep_restore(EP_DEV);
+	pcie_epc_start(EP_DEV);
+	ok = wait_link(ep, true, 1000);
+	shell_print(sh, "%s, ltssm 0x%02x %s, lnksta %04x", ok ? "link up" : "no link within 1 s",
+		    advk_ltssm(ep), advk_ltssm_name(advk_ltssm(ep)),
+		    advk_rd(ep, ADVK_CFG_LNKCTL_STA) >> 16);
+	return 0;
+}
+
 static int cmd_comphy(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = EP_DEV;
@@ -941,6 +992,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(wr, NULL, "<off> <val> Write a controller register", cmd_wr, 3, 0),
 	SHELL_CMD_ARG(probe, NULL, "<off> [len] Writable bits (writes, then restores!)",
 		      cmd_probe, 2, 1),
+	SHELL_CMD(up, NULL, "Set up the controller again and train the link", cmd_up),
+	SHELL_CMD(down, NULL, "Link training off (remove the device on the host first)",
+		  cmd_down),
 	SHELL_CMD(start, NULL, "Enable link training", cmd_start),
 	SHELL_CMD(stop, NULL, "Disable link training", cmd_stop),
 	SHELL_CMD(setup, NULL, "Reprogram the controller (EP mode, refclk in)", cmd_setup),

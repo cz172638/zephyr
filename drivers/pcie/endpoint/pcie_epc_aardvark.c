@@ -526,13 +526,22 @@ static void reapply(const struct device *dev)
 	ep->reapplies++;
 	LOG_WRN("%s: registers lost (class %06x), reprogramming", dev->name,
 		advk_rd(ep, ADVK_CFG_REV_CLASS) >> 8);
-	advk_ep_hw_setup(dev);
-	write_header(ep, &ep->hdr);
-	if (ep->msi_cap != 0) {
-		rmw(ep, ep->msi_cap, ADVK_MSI_CTRL_MMC, FIELD_PREP(ADVK_MSI_CTRL_MMC, ep->msi_mmc));
-	}
+	advk_ep_restore(dev);
 	if (training) {
 		advk_ep_start(dev);
+	}
+}
+
+void advk_ep_restore(const struct device *dev)
+{
+	struct advk_ep *ep = advk_ep(dev);
+
+	advk_ep_hw_setup(dev);
+	if (ep->hdr_valid) {
+		write_header(ep, &ep->hdr);
+	}
+	if (ep->msi_cap != 0) {
+		rmw(ep, ep->msi_cap, ADVK_MSI_CTRL_MMC, FIELD_PREP(ADVK_MSI_CTRL_MMC, ep->msi_mmc));
 	}
 }
 

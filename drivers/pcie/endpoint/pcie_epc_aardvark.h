@@ -208,6 +208,8 @@ int advk_ob_encode(uint64_t axi, uint64_t pci, size_t size, uint32_t regs[7]);
 
 /* Controller programming without the SoC glue (clock, COMPHY, IRQ) */
 void advk_ep_hw_setup(const struct device *dev);
+/* Controller setup again plus the header and MSI capability last written */
+void advk_ep_restore(const struct device *dev);
 int advk_ep_init(const struct device *dev, bool autostart);
 
 /* One poll of the link: LTSSM history, events to the EPC core */
