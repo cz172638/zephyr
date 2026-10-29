@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include <zephyr/arch/arm64/arm-smccc.h>
+#include <zephyr/cache.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/gpio.h>
@@ -600,6 +601,174 @@ static int cmd_setup(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * map [start end]: which words of the register space read without an
+ * abort; prints readable ranges and how many of their words are non-zero.
+ * Reads only (read-to-clear registers get cleared).
+ */
+static int cmd_map(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long start = 0, end = ADVK_REG_SPACE;
+	uint32_t run = 0, nz = 0;
+	bool in = false;
+
+	if (argc > 2 && (parse_u(sh, argv[1], &start) != 0 || parse_u(sh, argv[2], &end) != 0)) {
+		return -EINVAL;
+	}
+	end = MIN(end, (unsigned long long)ADVK_REG_SPACE);
+	for (uint32_t o = start & ~3U; o <= end; o += 4) {
+		uint32_t v = 0;
+		bool ok = o < end && a3700_probe_read32(ep->reg + o, &v) == 0;
+
+		if (ok && !in) {
+			in = true;
+			run = o;
+			nz = 0;
+		}
+		if (ok && v != 0) {
+			nz++;
+		}
+		if (!ok && in) {
+			in = false;
+			shell_print(sh, "%05x-%05x  %5u words, %u non-zero", run, o - 1, (o - run) / 4,
+				    nz);
+		}
+	}
+	return 0;
+}
+
+/*
+ * xor <dst> <src> <len>: one memcpy with the SoC XOR engine (unit 0,
+ * channel 0), as Linux mv_xor does on the A3700: an address prefixed
+ * with h: is host memory (PCI address), reached through an outbound
+ * window. Probing whether a system DMA master gets to PCIe at all.
+ */
+#define XOR_LOW   0xd0060900UL
+#define XOR_HIGH  0xd0060b00UL
+
+struct xor_desc {
+	uint32_t status;
+	uint32_t crc32;
+	uint32_t command;
+	uint32_t next;
+	uint32_t byte_count;
+	uint32_t dst;
+	uint32_t src[8];
+	uint32_t rsvd[2];
+} __aligned(64);
+
+static struct xor_desc xor_desc;
+
+static int xor_addr(const struct shell *sh, const char *arg, size_t len, uint64_t *axi,
+		    struct pcie_epc_host_map *map, bool *mapped)
+{
+	unsigned long long v;
+	bool host = strncmp(arg, "h:", 2) == 0;
+
+	if (parse_u(sh, host ? arg + 2 : arg, &v) != 0) {
+		return -EINVAL;
+	}
+	*mapped = false;
+	if (!host) {
+		*axi = v;
+		return 0;
+	}
+	if (pcie_epc_map_host(EP_DEV, 0, v, len, map) != 0) {
+		shell_error(sh, "no outbound window for host 0x%llx (bus mastering on?)", v);
+		return -ENOSPC;
+	}
+	*mapped = true;
+	*axi = pcie_epc_cpu_to_axi(EP_DEV, (uintptr_t)map->ptr);
+	return 0;
+}
+
+static int cmd_xor(const struct shell *sh, size_t argc, char **argv)
+{
+	struct pcie_epc_host_map dmap, smap;
+	bool dm = false, sm = false;
+	unsigned long long len;
+	uint64_t dst, src;
+	uint8_t *lo, *hi;
+	uint32_t cause = 0, err = 0, eaddr = 0;
+	int64_t t0, end;
+	int ret = -EINVAL;
+
+	if (parse_u(sh, argv[3], &len) != 0 || len < 128 || len >= 0x1000000) {
+		shell_error(sh, "len 128..16M-1");
+		return -EINVAL;
+	}
+	if (xor_addr(sh, argv[1], len, &dst, &dmap, &dm) != 0 ||
+	    xor_addr(sh, argv[2], len, &src, &smap, &sm) != 0) {
+		goto out;
+	}
+	if ((dst | src) >> 32) {
+		shell_error(sh, "XOR addresses are 32 bit");
+		goto out;
+	}
+
+	k_mem_map_phys_bare(&lo, XOR_LOW, 0x100, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	k_mem_map_phys_bare(&hi, XOR_HIGH, 0x100, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+
+	/* windows as Linux on the A3700: one 4 GiB window, DRAM decode at AXI level */
+	for (int w = 0; w < 8; w++) {
+		sys_write32(0, (mem_addr_t)hi + 0x50 + 4 * w);
+		sys_write32(0, (mem_addr_t)hi + 0x70 + 4 * w);
+	}
+	sys_write32(0xffff0000, (mem_addr_t)hi + 0x70);
+	sys_write32(1 | (3 << 16), (mem_addr_t)hi + 0x40);
+	sys_write32(0, (mem_addr_t)hi + 0xa0);
+
+	/* channel 0: stopped, descriptor mode, no swap */
+	sys_write32((sys_read32((mem_addr_t)lo + 0x10) & ~(0x7U | BIT(14))) | 7,
+		    (mem_addr_t)lo + 0x10);
+	sys_write32(0, (mem_addr_t)lo + 0x30); /* cause */
+
+	memset(&xor_desc, 0, sizeof(xor_desc));
+	xor_desc.status = BIT(31);
+	xor_desc.command = 2U << 24; /* memcpy */
+	xor_desc.byte_count = (uint32_t)len;
+	xor_desc.dst = (uint32_t)dst;
+	xor_desc.src[0] = (uint32_t)src;
+	sys_cache_data_flush_range(&xor_desc, sizeof(xor_desc));
+	barrier_dsync_fence_full();
+
+	sys_write32((uint32_t)(uintptr_t)&xor_desc, (mem_addr_t)hi + 0x00);
+	t0 = k_uptime_get();
+	sys_write32(BIT(0), (mem_addr_t)lo + 0x20);
+
+	end = t0 + 1000;
+	do {
+		cause = sys_read32((mem_addr_t)lo + 0x30);
+		if (cause & (BIT(1) | GENMASK(9, 4))) {
+			break;
+		}
+	} while (k_uptime_get() < end);
+	err = sys_read32((mem_addr_t)lo + 0x50);
+	eaddr = sys_read32((mem_addr_t)lo + 0x60);
+	sys_cache_data_invd_range(&xor_desc, sizeof(xor_desc));
+
+	shell_print(sh, "xor 0x%llx <- 0x%llx, %llu bytes: cause %08x error %08x @%08x, "
+		    "desc status %08x, %lld ms", (unsigned long long)dst, (unsigned long long)src,
+		    len, cause, err, eaddr, xor_desc.status, k_uptime_get() - t0);
+	ret = (cause & BIT(1)) && !(cause & GENMASK(9, 4)) ? 0 : -EIO;
+	if (ret != 0) {
+		/* stop the channel */
+		sys_write32(BIT(1), (mem_addr_t)lo + 0x20);
+	}
+	sys_write32(0, (mem_addr_t)lo + 0x30);
+	k_mem_unmap_phys_bare(lo, 0x100);
+	k_mem_unmap_phys_bare(hi, 0x100);
+out:
+	if (dm) {
+		pcie_epc_unmap_host(EP_DEV, &dmap);
+	}
+	if (sm) {
+		pcie_epc_unmap_host(EP_DEV, &smap);
+	}
+	return ret;
+}
+
 /* Wait up to ms for the LTSSM to be (or not be) in L0..L2 */
 static bool wait_link(struct advk_ep *ep, bool up, uint32_t ms)
 {
@@ -1013,6 +1182,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(wr, NULL, "<off> <val> Write a controller register", cmd_wr, 3, 0),
 	SHELL_CMD_ARG(probe, NULL, "<off> [len] Writable bits (writes, then restores!)",
 		      cmd_probe, 2, 1),
+	SHELL_CMD_ARG(map, NULL, "[start end] Readable ranges of the register space", cmd_map, 1,
+		      2),
+	SHELL_CMD_ARG(xor, NULL, "<dst> <src> <len> XOR engine memcpy, h:<pci addr> = host memory",
+		      cmd_xor, 4, 0),
 	SHELL_CMD(up, NULL, "Set up the controller again and train the link", cmd_up),
 	SHELL_CMD(down, NULL, "Link training off (remove the device on the host first)",
 		  cmd_down),
