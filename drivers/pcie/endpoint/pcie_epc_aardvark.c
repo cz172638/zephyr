@@ -215,10 +215,21 @@ int advk_ep_init(const struct device *dev, bool autostart)
 	 */
 	for (int b = 0; b < PCIE_EPC_NUM_BARS; b++) {
 		uint32_t v = advk_rd(ep, ADVK_CFG_BAR(b));
+		uint32_t mask;
 
-		if ((v & BIT(0)) != 0) {
+		/* size from the writable bits; training is off, the host is not there */
+		advk_wr(ep, ADVK_CFG_BAR(b), UINT32_MAX);
+		mask = advk_rd(ep, ADVK_CFG_BAR(b));
+		advk_wr(ep, ADVK_CFG_BAR(b), v);
+
+		if ((v & BIT(0)) != 0 || (mask & ~0xfU) == 0) {
+			/* I/O BAR or none: not offered */
 			ep->features.reserved_bar |= BIT(b);
-		} else if (FIELD_GET(GENMASK(2, 1), v) == 2 && b + 1 < PCIE_EPC_NUM_BARS) {
+			continue;
+		}
+		ep->bar_hw_size[b] = (size_t)(~(mask & ~0xfU) + 1U);
+		ep->features.bar_fixed_size[b] = ep->bar_hw_size[b];
+		if (FIELD_GET(GENMASK(2, 1), v) == 2 && b + 1 < PCIE_EPC_NUM_BARS) {
 			ep->features.bar_fixed_64bit |= BIT(b);
 			ep->features.reserved_bar |= BIT(b + 1);
 			b++;
@@ -292,14 +303,27 @@ int advk_ep_set_bar(const struct device *dev, uint8_t func, const struct pcie_ep
 	}
 
 	/*
-	 * The BAR sizes are fixed (reset defaults) and there is no inbound
-	 * translation: BAR offset N is DDR address N. A request works if its
-	 * backing store sits at DDR 0 + offset inside the hardware BAR; the
-	 * host then finds it at that offset.
+	 * The BAR sizes are fixed (reset defaults); the backing store is
+	 * placed with the inbound translation of the BAR, which takes the
+	 * address bits above the BAR size. Only BAR0/2/4 have one.
 	 */
+	size_t hw = ep->bar_hw_size[bar->barno];
+
+	if (hw == 0 || (bar->barno & 1) != 0) {
+		LOG_ERR("BAR%u is not implemented", bar->barno);
+		return -EINVAL;
+	}
+	if ((bar->phys & (hw - 1)) != 0 || (bar->phys & ~(uint64_t)ADVK_IB_ADDR_MASK &
+					    0xffffffffULL) != 0) {
+		LOG_ERR("BAR%u backing 0x%llx not aligned to the BAR size 0x%zx", bar->barno,
+			(unsigned long long)bar->phys, hw);
+		return -EINVAL;
+	}
 	ep->bar[bar->barno] = *bar;
-	LOG_INF("BAR%u: 0x%zx bytes at DDR 0x%llx = BAR offset 0x%llx", bar->barno, bar->size,
-		(unsigned long long)bar->phys, (unsigned long long)bar->phys);
+	advk_wr(ep, ADVK_IB_BAR_HI(bar->barno), (uint32_t)(bar->phys >> 32) & ADVK_IB_ADDR_MASK);
+	advk_wr(ep, ADVK_IB_BAR_LO(bar->barno), (uint32_t)bar->phys & ADVK_IB_ADDR_MASK);
+	LOG_INF("BAR%u: 0x%zx bytes (hardware 0x%zx) at AXI 0x%llx", bar->barno, bar->size, hw,
+		(unsigned long long)bar->phys);
 	return 0;
 }
 
@@ -309,6 +333,10 @@ void advk_ep_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
 
 	if (func == 0 && barno < PCIE_EPC_NUM_BARS) {
 		memset(&ep->bar[barno], 0, sizeof(ep->bar[barno]));
+		if ((barno & 1) == 0) {
+			advk_wr(ep, ADVK_IB_BAR_LO(barno), 0);
+			advk_wr(ep, ADVK_IB_BAR_HI(barno), 0);
+		}
 	}
 }
 
@@ -542,6 +570,13 @@ void advk_ep_restore(const struct device *dev)
 	}
 	if (ep->msi_cap != 0) {
 		rmw(ep, ep->msi_cap, ADVK_MSI_CTRL_MMC, FIELD_PREP(ADVK_MSI_CTRL_MMC, ep->msi_mmc));
+	}
+	for (int b = 0; b < PCIE_EPC_NUM_BARS; b += 2) {
+		if (ep->bar[b].size != 0) {
+			advk_wr(ep, ADVK_IB_BAR_HI(b), (uint32_t)(ep->bar[b].phys >> 32) &
+							   ADVK_IB_ADDR_MASK);
+			advk_wr(ep, ADVK_IB_BAR_LO(b), (uint32_t)ep->bar[b].phys & ADVK_IB_ADDR_MASK);
+		}
 	}
 }
 

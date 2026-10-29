@@ -20,7 +20,7 @@
 	 */
 	pcie_bar_mem: pcie-bar-mem@0 {
 		compatible = "mmio-sram";
-		reg = <0x0 DT_SIZE_K(256)>;
+		reg = <0x0 DT_SIZE_K(512)>;
 	};
 };
 

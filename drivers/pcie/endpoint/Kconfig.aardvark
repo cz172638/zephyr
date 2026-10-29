@@ -17,13 +17,14 @@ if PCIE_EPC_AARDVARK
 
 config PCIE_EPC_AARDVARK_INBOUND_LIMIT
 	hex "Inbound window (host access to DDR from 0)"
-	default 0x40000
+	default 0x80000
 	help
-	  The BARs land on DDR from address 0 (BAR offset = DDR address).
-	  The PCIe IO decode window is shrunk to this size so the host
-	  cannot reach anything above; the BAR backing store has to be there
-	  and BL33 above it (TF-A A3700_NS_IMAGE_OFFSET). 0 keeps TF-A's
-	  window (all of DRAM).
+	  Inbound TLPs reach DDR through the PCIe IO decode window; it is
+	  shrunk to DDR 0..this size so the host cannot reach anything
+	  else. Each BAR's inbound translation places it in that range,
+	  aligned to the fixed BAR size, so the BAR backing store has to be
+	  there and BL33 above it (TF-A A3700_NS_IMAGE_OFFSET). 0 keeps
+	  TF-A's window (all of DRAM).
 
 config PCIE_EPC_AARDVARK_POLL_MS
 	int "Link poll period [ms]"

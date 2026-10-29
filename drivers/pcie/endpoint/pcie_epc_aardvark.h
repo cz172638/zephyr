@@ -84,6 +84,20 @@
 #define ADVK_OB_FUNC_NUM_ENABLE  BIT(23)
 #define ADVK_OB_FUNC_NUM_SHIFT   24
 
+/*
+ * Inbound translation, found on hardware (2026-10-29): per memory BAR a
+ * 64-bit AXI base, low word bits 31:7 (+ bits 2:1 of unknown use), high
+ * word bits 31:7. BAR offset bits below the BAR size come from the TLP,
+ * so the base is effectively aligned down to the BAR size. Reset value
+ * 0: BAR offset N = AXI address N.
+ *   0x5800/0x5804 BAR0, 0x5808/0x580c BAR2 (I/O, untested), 0x5810/0x5814 BAR4
+ * The other entries in 0x5800-0x5fff (+0x20, +0x40, +0x80, +0xa0, and the
+ * blocks at 0x5a00, 0x5c00, 0x5e00) have the same shape; not understood.
+ */
+#define ADVK_IB_BAR_LO(bar)   (0x5800 + 4 * (bar))
+#define ADVK_IB_BAR_HI(bar)   (0x5800 + 4 * (bar) + 4)
+#define ADVK_IB_ADDR_MASK     0xffffff80U
+
 /* Local management interface */
 #define ADVK_LMI_CFG          0x6000
 #define ADVK_LMI_LTSSM_SHIFT  24
@@ -147,6 +161,8 @@ struct advk_ep {
 	struct pcie_epc_header hdr;
 	bool hdr_valid;
 	struct pcie_epc_bar bar[PCIE_EPC_NUM_BARS];
+	/* hardware BAR sizes, from the writable bits at init */
+	size_t bar_hw_size[PCIE_EPC_NUM_BARS];
 	uint8_t msi_mmc;
 	uint32_t msi_sent;
 

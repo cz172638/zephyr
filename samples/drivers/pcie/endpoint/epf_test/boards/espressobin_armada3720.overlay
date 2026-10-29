@@ -14,13 +14,15 @@
 
 / {
 	/*
-	 * BAR backing store: the BARs map DDR from 0 (BAR offset = DDR
-	 * address), so it is the bottom 256 KiB and Zephyr moves above it
-	 * (TF-A A3700_NS_IMAGE_OFFSET=0x100000).
+	 * BAR backing store, placed by the inbound translation of each BAR
+	 * (aligned to the fixed BAR size: BAR0 128 KiB at 0, BAR4 256 KiB at
+	 * 0x40000). It stays in the bottom 512 KiB, which the PCIe IO decode
+	 * window is limited to; Zephyr runs above it (TF-A
+	 * A3700_NS_IMAGE_OFFSET=0x100000).
 	 */
 	pcie_bar_mem: pcie-bar-mem@0 {
 		compatible = "mmio-sram";
-		reg = <0x0 DT_SIZE_K(256)>;
+		reg = <0x0 DT_SIZE_K(512)>;
 	};
 };
 
