@@ -54,6 +54,15 @@ properties:
       Default is the setup known to work: REFCLK not connected, the
       PHY's clock output off, each side on its own reference.
 
+  memory-region:
+    type: phandle
+    description: |
+      The DDR range inbound TLPs may reach, normally the functions' BAR
+      backing store: the PCIe IO decode window is set to exactly this
+      range (base and size in 64 KiB units), the host gets a completer
+      abort anywhere else. Without it the window is DDR 0 up to
+      CONFIG_PCIE_EPC_AARDVARK_INBOUND_LIMIT.
+
   marvell,comphy-skip:
     type: boolean
     description: Do not call the COMPHY SiP service (debugging).

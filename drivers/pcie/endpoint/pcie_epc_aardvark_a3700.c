@@ -45,6 +45,9 @@ struct a3700_ep_config {
 	uintptr_t mem_phys;
 	size_t mem_size;
 	uintptr_t comphy_phys;
+	/* DDR range inbound TLPs may reach (memory-region), size 0: Kconfig limit */
+	uint64_t inbound_base;
+	uint64_t inbound_size;
 	const struct pinctrl_dev_config *pcfg;
 	const struct device *clk_dev;
 	clock_control_subsys_t clk_id;
@@ -67,16 +70,16 @@ struct a3700_ep_data {
 	mm_reg_t comphy;
 };
 
-/* TF-A enables the PHY clock output to the REFCLK pins; an EP must not drive it */
 /*
- * Inbound: a TLP hitting a BAR goes to AXI address (BAR offset) and on
- * through the PCIe unit's IO decode window 0 (0xd000c500, set up by TF-A
- * for DRAM 0..1 GiB, no remap). Shrinking that window to the BAR backing
- * area at DDR 0 keeps the host out of the rest of memory.
+ * Inbound: a TLP hitting a BAR goes through the BAR's inbound translation
+ * (set_bar) to an AXI address, then through the PCIe unit's IO decode
+ * window 0 (0xd000c500, TF-A sets it to all of DRAM, no remap) into DDR.
+ * Shrinking that window to the BAR backing store keeps the host out of
+ * the rest of memory: anything else gets a completer abort.
  */
 #define IODEC_PCIE_WIN0 0xd000c500UL
 
-static void inbound_limit(uint32_t size)
+static void inbound_window(uint64_t base, uint64_t size)
 {
 	uint8_t *va;
 	volatile uint32_t *r;
@@ -85,18 +88,28 @@ static void inbound_limit(uint32_t size)
 	if (size == 0) {
 		return;
 	}
+	if ((base & 0xffff) != 0 || (size & 0xffff) != 0) {
+		LOG_ERR("inbound window 0x%llx+0x%llx not in 64 KiB units, TF-A's kept",
+			(unsigned long long)base, (unsigned long long)size);
+		return;
+	}
 	k_mem_map_phys_bare(&va, IODEC_PCIE_WIN0 & ~0xfffUL, 0x1000,
 			    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
 	r = (volatile uint32_t *)(va + (IODEC_PCIE_WIN0 & 0xfff));
-	ctrl = (r[0] & 0xffff) & ~1U;
+	/* window 1 off, window 0: attr and target as TF-A set them */
+	r[4] = r[4] & ~1U;
+	ctrl = (r[0] & 0xfff0) | ((uint32_t)((size >> 16) - 1) << 16);
+	r[0] = r[0] & ~1U;
+	r[1] = (uint32_t)(base >> 16) << 16;
+	r[2] = 0;
 	r[0] = ctrl;
-	r[1] = 0;
-	r[0] = (((size >> 16) - 1) << 16) | ctrl;
-	r[0] |= 1;
-	LOG_INF("inbound limited to DDR 0x0-0x%x (IO decode ctrl %08x)", size - 1, r[0]);
+	r[0] = ctrl | 1;
+	LOG_INF("inbound limited to DDR 0x%llx-0x%llx (IO decode ctrl %08x base %08x)",
+		(unsigned long long)base, (unsigned long long)(base + size - 1), r[0], r[1]);
 	k_mem_unmap_phys_bare(va, 0x1000);
 }
 
+/* TF-A enables the PHY clock output to the REFCLK pins; an EP must not drive it */
 static void comphy_clkout_off(const struct device *dev)
 {
 	struct a3700_ep_data *data = dev->data;
@@ -235,7 +248,11 @@ static int a3700_ep_init(const struct device *dev)
 		data->perst_asserted = gpio_pin_get_dt(&cfg->perst) > 0;
 	}
 
-	inbound_limit(CONFIG_PCIE_EPC_AARDVARK_INBOUND_LIMIT);
+	if (cfg->inbound_size != 0) {
+		inbound_window(cfg->inbound_base, cfg->inbound_size);
+	} else {
+		inbound_window(0, CONFIG_PCIE_EPC_AARDVARK_INBOUND_LIMIT);
+	}
 
 	TRACE("controller setup");
 	ret = advk_ep_init(dev, cfg->autostart);
@@ -283,6 +300,10 @@ static DEVICE_API(pcie_epc, a3700_ep_api) = {
 		.mem_phys = DT_INST_REG_ADDR_BY_NAME(n, mem),                                      \
 		.mem_size = DT_INST_REG_SIZE_BY_NAME(n, mem),                                      \
 		.comphy_phys = DT_INST_REG_ADDR_BY_NAME(n, comphy),                                \
+		.inbound_base = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, memory_region),              \
+				(DT_REG_ADDR(DT_INST_PHANDLE(n, memory_region))), (0)),            \
+		.inbound_size = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, memory_region),              \
+				(DT_REG_SIZE(DT_INST_PHANDLE(n, memory_region))), (0)),            \
 		.clk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                                  \
 		.clk_id = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, index),                   \
 		.perst = GPIO_DT_SPEC_INST_GET_OR(n, perst_gpios, {0}),                            \

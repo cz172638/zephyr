@@ -14,23 +14,22 @@
 
 / {
 	/*
-	 * BAR backing store: the BARs map DDR from 0 (BAR offset = DDR
-	 * address), so it is the bottom 256 KiB and Zephyr moves above it
-	 * (TF-A A3700_NS_IMAGE_OFFSET=0x100000, mkflash.sh EP_LOW=1).
+	 * BAR backing store, outside Zephyr's RAM (ddr0 = 0..64 MiB) and
+	 * TF-A (0x04000000..): nothing else uses it. Each BAR's inbound
+	 * translation places it here, aligned to the fixed BAR size (BAR0
+	 * 128 KiB at +0, BAR4 256 KiB at +0x40000), and the PCIe IO decode
+	 * window is limited to it, so the host sees nothing else of DDR.
 	 */
-	pcie_bar_mem: pcie-bar-mem@0 {
+	pcie_bar_mem: pcie-bar-mem@10000000 {
 		compatible = "mmio-sram";
-		reg = <0x0 DT_SIZE_K(512)>;
+		reg = <0x10000000 DT_SIZE_K(512)>;
 	};
 };
 
-/* Zephyr from 1 MiB, below TF-A at 0x04000000 */
-&ddr0 {
-	reg = <0x00100000 DT_SIZE_M(63)>;
-};
 
 &pcie_ep {
 	status = "okay";
+	memory-region = <&pcie_bar_mem>;
 	pinctrl-0 = <&pcie_ep_default>;
 	pinctrl-names = "default";
 	/*
@@ -51,8 +50,8 @@
 		class-code = <0xff0000>;
 		memory-region = <&pcie_bar_mem>;
 		/*
-		 * Hardware BARs: 0 (64-bit), 2 (I/O, reserved), 4 (64-bit);
-		 * BAR3 reads as unused, the driver keeps it offered.
+		 * Hardware BARs, fixed sizes: 0 (64-bit, 128 KiB), 2 (I/O,
+		 * reserved), 4 (64-bit, 256 KiB); BAR3 does not exist.
 		 */
 		bar-sizes = <512 0 0 16384 131072 0>;
 	};
