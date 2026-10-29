@@ -30,7 +30,11 @@
 #define BYTE_TIMEOUT_MS   1000
 #define PACKET_TIMEOUT_MS 3000
 #define MAX_ERRORS        10
-/* XMODEM: 'C' this many times (1 s apart) before falling back to NAK */
+/*
+ * XMODEM: 'C' only for this many seconds, then 'C' and NAK alternate, so
+ * both a CRC-only sender (tio, which ignores NAK) and a checksum-only one
+ * get their request whenever they are started
+ */
 #define XMODEM_CRC_TRIES  3
 
 enum state {
@@ -140,10 +144,11 @@ static int receive(const struct ymodem_ops *ops, void *ctx, int start_timeout_s,
 					cancel(&y);
 					return -ETIMEDOUT;
 				}
-				if (xmodem && waited >= XMODEM_CRC_TRIES) {
-					/* Checksum-only sender, ask with NAK */
-					y.crc = false;
-				}
+				/*
+				 * The mode is the one of the last request: a sender
+				 * answers at once, the next request is 1 s later
+				 */
+				y.crc = !xmodem || waited < XMODEM_CRC_TRIES || (waited & 1) == 0;
 				tx(&y, y.crc ? CRC_C : NAK);
 				continue;
 			}

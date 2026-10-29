@@ -22,7 +22,8 @@ config FWUPDATE_YMODEM
 	  "fwupdate ymodem [dry]" receives the image with YMODEM (CRC-16,
 	  1 KiB blocks) on the shell's own UART, e.g. with tio (ctrl-t y)
 	  or lrzsz sb. "fwupdate xmodem [dry]" does the same with XMODEM or
-	  XMODEM-1K (CRC-16 or 8-bit checksum), e.g. lrzsz sx or a script
+	  XMODEM-1K (CRC-16, or the 8-bit checksum when the sender answers the
+	  NAK that alternates with 'C' after 3 s), e.g. tio, lrzsz sx or a script
 	  with an XMODEM library; the image arrives padded to whole blocks.
 
 config FWUPDATE_YMODEM_START_TIMEOUT
