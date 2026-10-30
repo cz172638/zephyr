@@ -283,9 +283,23 @@ static int a3700_ep_init(const struct device *dev)
  * outbound window as for memcpy; the engine reaches it through the DMA
  * unit's IO decode window set up at init. Short copies stay on the CPU.
  */
+/*
+ * DMA statistics: XOR time per direction and, toward the host, the time of
+ * the non-posted read that is meant to flush the posted writes before an
+ * MSI. A flush much shorter than the link needs for the data means the
+ * CPU read overtook the XOR writes (two AXI masters, no ordering between
+ * them). Shell: advk_ep dmastat [clear].
+ */
+static struct {
+	uint32_t n_to, n_from;
+	uint64_t bytes_to, bytes_from;
+	uint64_t cyc_to, cyc_from, cyc_flush, cyc_flush_max, cyc_flush_min;
+} dma_stat = {.cyc_flush_min = UINT64_MAX};
+
 static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_addr,
 			     void *local, size_t size, bool to_host)
 {
+	uint64_t t0, t1;
 	struct pcie_epc_host_map map;
 	uint64_t host_axi, local_phys;
 	int ret;
@@ -311,12 +325,25 @@ static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pc
 	}
 
 	sys_cache_data_flush_and_invd_range(local, size);
+	t0 = k_cycle_get_64();
 	if (to_host) {
 		ret = a3700_xor_memcpy((uint32_t)host_axi, (uint32_t)local_phys, size, NULL);
+		t1 = k_cycle_get_64();
 		/* non-posted read: the writes are at the host before an IRQ */
-		(void)sys_read8((mem_addr_t)map.ptr);
+		(void)sys_read8((mem_addr_t)map.ptr + size - 1);
+		uint64_t f = k_cycle_get_64() - t1;
+
+		dma_stat.n_to++;
+		dma_stat.bytes_to += size;
+		dma_stat.cyc_to += t1 - t0;
+		dma_stat.cyc_flush += f;
+		dma_stat.cyc_flush_max = MAX(dma_stat.cyc_flush_max, f);
+		dma_stat.cyc_flush_min = MIN(dma_stat.cyc_flush_min, f);
 	} else {
 		ret = a3700_xor_memcpy((uint32_t)local_phys, (uint32_t)host_axi, size, NULL);
+		dma_stat.n_from++;
+		dma_stat.bytes_from += size;
+		dma_stat.cyc_from += k_cycle_get_64() - t0;
 		sys_cache_data_invd_range(local, size);
 	}
 out:
@@ -1206,6 +1233,36 @@ static int cmd_aer(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+#ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
+static int cmd_dmastat(const struct shell *sh, size_t argc, char **argv)
+{
+	uint64_t us_to = k_cyc_to_us_floor64(dma_stat.cyc_to);
+	uint64_t us_from = k_cyc_to_us_floor64(dma_stat.cyc_from);
+	uint64_t us_flush = k_cyc_to_us_floor64(dma_stat.cyc_flush);
+
+	shell_print(sh, "to host:   %u xfers, %llu B, XOR %llu us (%llu MB/s), "
+		    "+ flush %llu us (%llu MB/s with it)", dma_stat.n_to,
+		    (unsigned long long)dma_stat.bytes_to, us_to,
+		    us_to ? dma_stat.bytes_to / us_to : 0, us_flush,
+		    (us_to + us_flush) ? dma_stat.bytes_to / (us_to + us_flush) : 0);
+	if (dma_stat.n_to != 0) {
+		shell_print(sh, "           flush per xfer: avg %llu us, min %llu us, max %llu us",
+			    us_flush / dma_stat.n_to,
+			    k_cyc_to_us_floor64(dma_stat.cyc_flush_min),
+			    k_cyc_to_us_floor64(dma_stat.cyc_flush_max));
+	}
+	shell_print(sh, "from host: %u xfers, %llu B, XOR %llu us (%llu MB/s)", dma_stat.n_from,
+		    (unsigned long long)dma_stat.bytes_from, us_from,
+		    us_from ? dma_stat.bytes_from / us_from : 0);
+	if (argc > 1 && strcmp(argv[1], "clear") == 0) {
+		memset(&dma_stat, 0, sizeof(dma_stat));
+		dma_stat.cyc_flush_min = UINT64_MAX;
+		shell_print(sh, "cleared");
+	}
+	return 0;
+}
+#endif
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -1678,6 +1735,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_coh, 3, 0),
 	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
 		      cmd_wmap, 3, 0),
+#ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
+	SHELL_CMD_ARG(dmastat, NULL, "[clear] XOR DMA times, flush of the writes toward the host",
+		      cmd_dmastat, 1, 1),
+#endif
 	SHELL_CMD_ARG(nz, NULL, "<start> <end> Non-zero words of a range", cmd_nz, 3, 0),
 	SHELL_CMD_ARG(map, NULL, "[start end] Readable ranges of the register space", cmd_map, 1,
 		      2),

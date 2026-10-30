@@ -34,6 +34,12 @@
 &pcie_ep {
 	status = "okay";
 	memory-region = <&pcie_bar_mem>;
+	/*
+	 * Gen1 for now: at Gen2 the crossover link shows RxErr / BadTLP /
+	 * replay timeouts in both directions and drops into Recovery now and
+	 * then. Remove (or 2) for 5 GT/s.
+	 */
+	max-link-speed = <1>;
 	pinctrl-0 = <&pcie_ep_default>;
 	pinctrl-names = "default";
 	/*
