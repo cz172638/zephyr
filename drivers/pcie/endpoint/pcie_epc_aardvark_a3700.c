@@ -907,6 +907,166 @@ static int cmd_wmap(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * coh: is a master cache coherent with the A53 cluster? Old pattern in
+ * DDR, new pattern only in the (write-back) cache, or the other way round,
+ * then look from the other side. The cacheable and non-cacheable aliases
+ * show both views.
+ *
+ *   coh xor rd   XOR reads a buffer whose new data is only in the cache
+ *   coh xor wr   XOR writes a buffer whose old data is cached (clean)
+ *   coh bar4 rd|wr|show|flush|inval   the same for host accesses to BAR4,
+ *                the host part done with pcitest (-P to read, -b 4 to write)
+ */
+#define COH_LEN   4096
+#define COH_OLD(i) (0x01d00000U | (i))
+#define COH_NEW(i) (0x5e500000U | (i))
+
+static uint32_t coh_src[COH_LEN / 4] __aligned(4096);
+static uint32_t coh_dst[COH_LEN / 4] __aligned(4096);
+static volatile uint32_t *bar4_wb, *bar4_nc;
+
+static const char *coh_class(uint32_t v, uint32_t i)
+{
+	return v == COH_NEW(i) ? "new" : v == COH_OLD(i) ? "old" : "other";
+}
+
+static void coh_fill(volatile uint32_t *p, bool new)
+{
+	for (uint32_t i = 0; i < COH_LEN / 4; i++) {
+		p[i] = new ? COH_NEW(i) : COH_OLD(i);
+	}
+}
+
+/* how many words of p are new / old */
+static void coh_count(const struct shell *sh, const char *what, volatile uint32_t *p)
+{
+	uint32_t n = 0, o = 0;
+
+	for (uint32_t i = 0; i < COH_LEN / 4; i++) {
+		n += p[i] == COH_NEW(i);
+		o += p[i] == COH_OLD(i);
+	}
+	shell_print(sh, "  %-28s %08x %08x ..  new %4u old %4u of %u (%s)", what, p[0], p[1], n, o,
+		    COH_LEN / 4, coh_class(p[0], 0));
+}
+
+static volatile uint32_t *nc_alias(void *buf)
+{
+	uint8_t *va;
+
+	k_mem_map_phys_bare(&va, k_mem_phys_addr(buf), COH_LEN, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	return (volatile uint32_t *)va;
+}
+
+static int coh_xor(const struct shell *sh, bool rd)
+{
+	volatile uint32_t *src_nc = nc_alias(coh_src), *dst_nc = nc_alias(coh_dst);
+	uint32_t src = (uint32_t)k_mem_phys_addr(coh_src), dst = (uint32_t)k_mem_phys_addr(coh_dst);
+	struct a3700_xor_result r;
+	int ret;
+
+	if (rd) {
+		/* DDR old, cache new (dirty): what does the XOR read? */
+		coh_fill(coh_src, false);
+		sys_cache_data_flush_and_invd_range(coh_src, COH_LEN);
+		coh_fill(coh_src, true);
+		coh_fill(dst_nc, false);
+		sys_cache_data_invd_range(coh_dst, COH_LEN);
+		coh_count(sh, "src cached (CPU)", coh_src);
+		coh_count(sh, "src DDR (NC alias)", src_nc);
+		ret = a3700_xor_memcpy(dst, src, COH_LEN, &r);
+		coh_count(sh, "dst after XOR (NC)", dst_nc);
+		shell_print(sh, "XOR read a dirty line: %s", ret != 0 ? "XOR failed" :
+			    dst_nc[0] == COH_NEW(0) ? "snooped -> COHERENT" :
+			    "from DDR -> not coherent");
+		sys_cache_data_flush_range(coh_src, COH_LEN);
+		ret = a3700_xor_memcpy(dst, src, COH_LEN, &r);
+		coh_count(sh, "control: after clean + XOR", dst_nc);
+	} else {
+		/* src new in DDR; dst old, cached clean: does the XOR write reach the cache? */
+		coh_fill(src_nc, true);
+		sys_cache_data_invd_range(coh_src, COH_LEN);
+		coh_fill(coh_dst, false);
+		sys_cache_data_flush_range(coh_dst, COH_LEN);
+		coh_count(sh, "dst cached before (CPU)", coh_dst);
+		ret = a3700_xor_memcpy(dst, src, COH_LEN, &r);
+		coh_count(sh, "dst DDR after XOR (NC)", dst_nc);
+		coh_count(sh, "dst cached after (CPU)", coh_dst);
+		shell_print(sh, "XOR wrote over a cached line: %s", ret != 0 ? "XOR failed" :
+			    coh_dst[0] == COH_NEW(0) ? "CPU sees it -> COHERENT" :
+			    "CPU sees stale -> not coherent");
+		sys_cache_data_invd_range(coh_dst, COH_LEN);
+		coh_count(sh, "control: after invalidate", coh_dst);
+	}
+	if (ret != 0) {
+		shell_print(sh, "xor %d: cause %08x error %08x @%08x status %08x", ret, r.cause,
+			    r.err, r.err_addr, r.status);
+	}
+	k_mem_unmap_phys_bare((uint8_t *)src_nc, COH_LEN);
+	k_mem_unmap_phys_bare((uint8_t *)dst_nc, COH_LEN);
+	return ret;
+}
+
+static int coh_bar4(const struct shell *sh, const char *op)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+
+	if (bar4_wb == NULL) {
+		uint64_t pa = ((uint64_t)advk_rd(ep, ADVK_IB_BAR_HI(4)) << 32) |
+			      (advk_rd(ep, ADVK_IB_BAR_LO(4)) & ADVK_IB_ADDR_MASK);
+		uint8_t *wb, *nc;
+
+		k_mem_map_phys_bare(&wb, pa, COH_LEN, K_MEM_CACHE_WB | K_MEM_PERM_RW);
+		k_mem_map_phys_bare(&nc, pa, COH_LEN, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+		bar4_wb = (volatile uint32_t *)wb;
+		bar4_nc = (volatile uint32_t *)nc;
+		shell_print(sh, "BAR4 offset 0 = DDR 0x%llx", (unsigned long long)pa);
+	}
+
+	if (strcmp(op, "rd") == 0) {
+		coh_fill(bar4_wb, false);
+		sys_cache_data_flush_and_invd_range((void *)bar4_wb, COH_LEN);
+		coh_fill(bar4_wb, true);
+		shell_print(sh, "DDR old (%08x..), cache new (%08x..), dirty", COH_OLD(0), COH_NEW(0));
+		shell_print(sh, "host: pcitest -P $P/resource4 0x20  -> new = coherent, old = not");
+		shell_print(sh, "then: advk_ep coh bar4 flush, host again -> must be new");
+	} else if (strcmp(op, "wr") == 0) {
+		coh_fill(bar4_wb, false);
+		sys_cache_data_flush_range((void *)bar4_wb, COH_LEN);
+		coh_count(sh, "cached (CPU)", bar4_wb);
+		shell_print(sh, "old cached clean. host: pcitest -b 4 (writes the BAR)");
+		shell_print(sh, "then: advk_ep coh bar4 show -> cached = DDR: coherent, cached old: not");
+	} else if (strcmp(op, "show") == 0) {
+		coh_count(sh, "cached (CPU)", bar4_wb);
+		coh_count(sh, "DDR (NC alias)", bar4_nc);
+	} else if (strcmp(op, "flush") == 0) {
+		sys_cache_data_flush_range((void *)bar4_wb, COH_LEN);
+		coh_count(sh, "DDR after clean (NC)", bar4_nc);
+	} else if (strcmp(op, "inval") == 0) {
+		sys_cache_data_invd_range((void *)bar4_wb, COH_LEN);
+		coh_count(sh, "cached after invalidate", bar4_wb);
+	} else {
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int cmd_coh(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	if (strcmp(argv[1], "xor") == 0) {
+		if (strcmp(argv[2], "rd") != 0 && strcmp(argv[2], "wr") != 0) {
+			return -EINVAL;
+		}
+		return coh_xor(sh, strcmp(argv[2], "rd") == 0);
+	}
+	if (strcmp(argv[1], "bar4") == 0) {
+		return coh_bar4(sh, argv[2]);
+	}
+	return -EINVAL;
+}
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -1373,6 +1533,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(bar, NULL, "<n> [axi] Inbound AXI base of BAR n", cmd_bar, 2, 1),
 	SHELL_CMD_ARG(copy, NULL, "<dst> <src> <len> Word copy, aborts read as deadbeef",
 		      cmd_copy, 4, 0),
+	SHELL_CMD_ARG(coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
+		      cmd_coh, 3, 0),
 	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
 		      cmd_wmap, 3, 0),
 	SHELL_CMD_ARG(nz, NULL, "<start> <end> Non-zero words of a range", cmd_nz, 3, 0),
