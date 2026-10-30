@@ -10,6 +10,7 @@
 
 #define DT_DRV_COMPAT marvell_armada_3700_pcie_ep
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1067,6 +1068,138 @@ static int cmd_coh(const struct shell *sh, size_t argc, char **argv)
 	return -EINVAL;
 }
 
+/*
+ * aer [clear | count [ms] | stop]: the endpoint's own AER registers
+ * (extended capability at 0x100, the controller registers are the config
+ * space) and Device Status. Status bits are RW1C; the host's AER driver
+ * clears them too after an ERR_* message, so "count" polls and clears
+ * them here and keeps per-bit counters (racy against the host by nature).
+ */
+#define AER_BASE     0x100
+#define AER_UNC_STA  (AER_BASE + 0x04)
+#define AER_UNC_MASK (AER_BASE + 0x08)
+#define AER_UNC_SEV  (AER_BASE + 0x0c)
+#define AER_COR_STA  (AER_BASE + 0x10)
+#define AER_COR_MASK (AER_BASE + 0x14)
+#define AER_CAP_CTL  (AER_BASE + 0x18)
+#define AER_HDR_LOG  (AER_BASE + 0x1c)
+#define DEVCTL_STA   (ADVK_CFG_PCIE_CAP + 0x08)
+
+static const char *const aer_unc_name[32] = {
+	[4] = "DLP", [5] = "SDES", [12] = "PoisonTLP", [13] = "FCP", [14] = "CmpltTO",
+	[15] = "CmpltAbrt", [16] = "UnxCmplt", [17] = "RxOF", [18] = "MalfTLP", [19] = "ECRC",
+	[20] = "UnsupReq", [21] = "ACSViol", [22] = "UncorrIntErr", [23] = "MCBlkTLP",
+	[24] = "AtomicOpBlk", [25] = "TLPBlkPfx", [26] = "PoisonBlk",
+};
+static const char *const aer_cor_name[32] = {
+	[0] = "RxErr", [6] = "BadTLP", [7] = "BadDLLP", [8] = "Rollover", [12] = "Timeout",
+	[13] = "AdvNonFatal", [14] = "CorrIntErr", [15] = "HdrLogOvfl",
+};
+
+static uint32_t aer_unc_cnt[32], aer_cor_cnt[32];
+static uint32_t aer_period_ms;
+static struct k_work_delayable aer_work;
+
+static void aer_bits(const struct shell *sh, const char *what, uint32_t v,
+		     const char *const name[32], const uint32_t *cnt)
+{
+	char line[160];
+	int n = snprintf(line, sizeof(line), "  %-8s %08x", what, v);
+
+	for (int b = 0; b < 32 && n < (int)sizeof(line); b++) {
+		if (v & BIT(b)) {
+			n += snprintf(line + n, sizeof(line) - n, " %s", name[b] ? name[b] : "?");
+		}
+	}
+	shell_print(sh, "%s", line);
+	if (cnt == NULL) {
+		return;
+	}
+	for (int b = 0; b < 32; b++) {
+		if (cnt[b] != 0) {
+			shell_print(sh, "    %-12s %u", name[b] ? name[b] : "?", cnt[b]);
+		}
+	}
+}
+
+static void aer_poll(struct k_work *work)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	uint32_t u = advk_rd(ep, AER_UNC_STA), c = advk_rd(ep, AER_COR_STA);
+
+	for (int b = 0; b < 32; b++) {
+		aer_unc_cnt[b] += (u >> b) & 1;
+		aer_cor_cnt[b] += (c >> b) & 1;
+	}
+	if (u != 0) {
+		advk_wr(ep, AER_UNC_STA, u);
+	}
+	if (c != 0) {
+		advk_wr(ep, AER_COR_STA, c);
+	}
+	if (aer_period_ms != 0) {
+		k_work_schedule(&aer_work, K_MSEC(aer_period_ms));
+	}
+}
+
+static int cmd_aer(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	static bool init;
+	uint32_t h[4], ds, cc;
+
+	if (!init) {
+		k_work_init_delayable(&aer_work, aer_poll);
+		init = true;
+	}
+	if (argc > 1 && strcmp(argv[1], "clear") == 0) {
+		advk_wr(ep, AER_UNC_STA, 0xffffffff);
+		advk_wr(ep, AER_COR_STA, 0xffffffff);
+		advk_wr(ep, DEVCTL_STA, advk_rd(ep, DEVCTL_STA) | GENMASK(19, 16));
+		memset(aer_unc_cnt, 0, sizeof(aer_unc_cnt));
+		memset(aer_cor_cnt, 0, sizeof(aer_cor_cnt));
+	} else if (argc > 1 && strcmp(argv[1], "count") == 0) {
+		unsigned long long ms = 10;
+
+		if (argc > 2 && (parse_u(sh, argv[2], &ms) != 0 || ms == 0)) {
+			return -EINVAL;
+		}
+		aer_period_ms = (uint32_t)ms;
+		k_work_schedule(&aer_work, K_NO_WAIT);
+		shell_print(sh, "counting every %u ms (clears the status bits)", aer_period_ms);
+	} else if (argc > 1 && strcmp(argv[1], "stop") == 0) {
+		aer_period_ms = 0;
+		k_work_cancel_delayable(&aer_work);
+	} else if (argc > 1) {
+		return -EINVAL;
+	}
+
+	ds = advk_rd(ep, DEVCTL_STA);
+	cc = advk_rd(ep, AER_CAP_CTL);
+	for (int i = 0; i < 4; i++) {
+		h[i] = advk_rd(ep, AER_HDR_LOG + 4 * i);
+	}
+	shell_print(sh, "AER cap %08x, devctl %04x devsta %04x (%s%s%s%s), %s", advk_rd(ep, AER_BASE),
+		    ds & 0xffff, ds >> 16, (ds & BIT(16)) ? "CorrErr " : "",
+		    (ds & BIT(17)) ? "NonFatal " : "", (ds & BIT(18)) ? "Fatal " : "",
+		    (ds & BIT(19)) ? "UnsupReq" : "",
+		    aer_period_ms ? "counting" : "not counting");
+	aer_bits(sh, "UESta", advk_rd(ep, AER_UNC_STA), aer_unc_name,
+		 aer_period_ms || argc == 1 ? aer_unc_cnt : NULL);
+	aer_bits(sh, "UEMsk", advk_rd(ep, AER_UNC_MASK), aer_unc_name, NULL);
+	aer_bits(sh, "UESvrt", advk_rd(ep, AER_UNC_SEV), aer_unc_name, NULL);
+	aer_bits(sh, "CESta", advk_rd(ep, AER_COR_STA), aer_cor_name,
+		 aer_period_ms || argc == 1 ? aer_cor_cnt : NULL);
+	aer_bits(sh, "CEMsk", advk_rd(ep, AER_COR_MASK), aer_cor_name, NULL);
+	shell_print(sh, "  CapCtl   %08x  first error %u, ECRC gen %s%s, check %s%s", cc, cc & 0x1f,
+		    (cc & BIT(5)) ? "cap" : "-", (cc & BIT(6)) ? "+en" : "",
+		    (cc & BIT(7)) ? "cap" : "-", (cc & BIT(8)) ? "+en" : "");
+	shell_print(sh, "  HdrLog   %08x %08x %08x %08x  fmt %u type 0x%02x len %u req %04x tag %02x",
+		    h[0], h[1], h[2], h[3], h[0] >> 29, (h[0] >> 24) & 0x1f, h[0] & 0x3ff,
+		    h[1] >> 16, (h[1] >> 8) & 0xff);
+	return 0;
+}
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -1533,6 +1666,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(bar, NULL, "<n> [axi] Inbound AXI base of BAR n", cmd_bar, 2, 1),
 	SHELL_CMD_ARG(copy, NULL, "<dst> <src> <len> Word copy, aborts read as deadbeef",
 		      cmd_copy, 4, 0),
+	SHELL_CMD_ARG(aer, NULL, "[clear | count [ms] | stop] AER status, masks, header log, counters",
+		      cmd_aer, 1, 2),
 	SHELL_CMD_ARG(coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
 		      cmd_coh, 3, 0),
 	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
