@@ -22,6 +22,7 @@
 #include <zephyr/pm/device_runtime.h>
 
 #include "spi_nor.h"
+#include <zephyr/drivers/flash/spi_nor_ex.h>
 #include "jesd216.h"
 #include "flash_priv.h"
 
@@ -927,7 +928,6 @@ static int flash_spi_nor_ex_op(const struct device *dev, uint16_t code,
 	int ret;
 
 	ARG_UNUSED(in);
-	ARG_UNUSED(out);
 
 	if (pm_device_runtime_get(dev) < 0) {
 		return -EIO;
@@ -942,6 +942,20 @@ static int flash_spi_nor_ex_op(const struct device *dev, uint16_t code,
 			ret = spi_nor_cmd_write(dev, SPI_NOR_CMD_RESET_MEM);
 		}
 		break;
+	case FLASH_EX_OP_SPI_NOR_READ_UID: {
+		/* 0x4B, three address bytes as dummies, one more dummy, the ID */
+		uint8_t buf[1 + SPI_NOR_UID_LEN];
+
+		if (out == NULL) {
+			ret = -EINVAL;
+			break;
+		}
+		ret = spi_nor_cmd_addr_read_3b(dev, SPI_NOR_CMD_READ_UID, 0, buf, sizeof(buf));
+		if (ret == 0) {
+			memcpy(out, &buf[1], SPI_NOR_UID_LEN);
+		}
+		break;
+	}
 	default:
 		ret = -ENOTSUP;
 		break;
