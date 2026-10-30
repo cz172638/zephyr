@@ -294,11 +294,30 @@ static struct {
 	uint32_t n_to, n_from;
 	uint64_t bytes_to, bytes_from;
 	uint64_t cyc_to, cyc_from, cyc_flush, cyc_flush_max, cyc_flush_min;
+	uint32_t n_err;
+	struct a3700_xor_result last_err;
+	bool last_err_to_host;
+	uint32_t last_err_len;
 } dma_stat = {.cyc_flush_min = UINT64_MAX};
+
+static void dma_err(int ret, const struct a3700_xor_result *r, bool to_host, size_t size,
+		    uint64_t host_axi)
+{
+	dma_stat.n_err++;
+	dma_stat.last_err = *r;
+	dma_stat.last_err_to_host = to_host;
+	dma_stat.last_err_len = size;
+	if (dma_stat.n_err <= 5) {
+		LOG_WRN("XOR %s host 0x%llx, %zu B: %d, cause %08x error %08x @%08x, desc %08x",
+			to_host ? "to" : "from", (unsigned long long)host_axi, size, ret, r->cause,
+			r->err, r->err_addr, r->status);
+	}
+}
 
 static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_addr,
 			     void *local, size_t size, bool to_host)
 {
+	struct a3700_xor_result xr;
 	uint64_t t0, t1;
 	struct pcie_epc_host_map map;
 	uint64_t host_axi, local_phys;
@@ -327,8 +346,11 @@ static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pc
 	sys_cache_data_flush_and_invd_range(local, size);
 	t0 = k_cycle_get_64();
 	if (to_host) {
-		ret = a3700_xor_memcpy((uint32_t)host_axi, (uint32_t)local_phys, size, NULL);
+		ret = a3700_xor_memcpy((uint32_t)host_axi, (uint32_t)local_phys, size, &xr);
 		t1 = k_cycle_get_64();
+		if (ret != 0) {
+			dma_err(ret, &xr, true, size, host_axi);
+		}
 		/* non-posted read: the writes are at the host before an IRQ */
 		(void)sys_read8((mem_addr_t)map.ptr + size - 1);
 		uint64_t f = k_cycle_get_64() - t1;
@@ -340,7 +362,10 @@ static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pc
 		dma_stat.cyc_flush_max = MAX(dma_stat.cyc_flush_max, f);
 		dma_stat.cyc_flush_min = MIN(dma_stat.cyc_flush_min, f);
 	} else {
-		ret = a3700_xor_memcpy((uint32_t)local_phys, (uint32_t)host_axi, size, NULL);
+		ret = a3700_xor_memcpy((uint32_t)local_phys, (uint32_t)host_axi, size, &xr);
+		if (ret != 0) {
+			dma_err(ret, &xr, false, size, host_axi);
+		}
 		dma_stat.n_from++;
 		dma_stat.bytes_from += size;
 		dma_stat.cyc_from += k_cycle_get_64() - t0;
@@ -1254,6 +1279,13 @@ static int cmd_dmastat(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "from host: %u xfers, %llu B, XOR %llu us (%llu MB/s)", dma_stat.n_from,
 		    (unsigned long long)dma_stat.bytes_from, us_from,
 		    us_from ? dma_stat.bytes_from / us_from : 0);
+	if (dma_stat.n_err != 0) {
+		const struct a3700_xor_result *r = &dma_stat.last_err;
+
+		shell_print(sh, "errors:    %u, last %s host, %u B: cause %08x error %08x @%08x "
+			    "desc %08x", dma_stat.n_err, dma_stat.last_err_to_host ? "to" : "from",
+			    dma_stat.last_err_len, r->cause, r->err, r->err_addr, r->status);
+	}
 	if (argc > 1 && strcmp(argv[1], "clear") == 0) {
 		memset(&dma_stat, 0, sizeof(dma_stat));
 		dma_stat.cyc_flush_min = UINT64_MAX;
