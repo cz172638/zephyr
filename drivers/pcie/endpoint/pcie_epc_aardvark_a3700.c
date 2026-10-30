@@ -1443,7 +1443,8 @@ static int cmd_barhunt(const struct shell *sh, size_t argc, char **argv)
  * BARs (0x5818, 0x581c). With an AXI address (in the carveout, aligned to
  * the ROM size): write a ROM image there (0x55AA header, PCIR data
  * structure 11ab:0100, last image, length from the ROM BAR size, then
- * "ROM!" + word index) and point inbound slot <slot> (default 0x5818) at
+ * "ROM!" + word index) and point inbound slot <slot> (default 0x5808, the
+ * slot of the switched-off BAR2; 0x5818 and up abort) at
  * it. The host reads it with: echo 1 > rom; od -t x4 rom; echo 0 > rom.
  */
 static int cmd_rom(const struct shell *sh, size_t argc, char **argv)
@@ -1451,7 +1452,7 @@ static int cmd_rom(const struct shell *sh, size_t argc, char **argv)
 	struct advk_ep *ep = advk_ep(EP_DEV);
 	uint32_t m = rom_mask(ep);
 	size_t size = (m & 0xfffff800U) ? (size_t)(~(m & 0xfffff800U) + 1U) : 0;
-	unsigned long long axi, slot = 0x5818;
+	unsigned long long axi, slot = 0x5808;
 
 	shell_print(sh, "ROM BAR %08x, writable %08x: %s 0x%zx", advk_rd(ep, 0x30), m,
 		    size ? "size" : "no ROM BAR,", size);
@@ -1505,10 +1506,18 @@ static int cmd_rom(const struct shell *sh, size_t argc, char **argv)
 	barrier_dsync_fence_full();
 	k_mem_unmap_phys_bare(va, size);
 
-	advk_wr(ep, (uint32_t)slot + 4, (uint32_t)(axi >> 32));
-	advk_wr(ep, (uint32_t)slot, (uint32_t)axi | (advk_rd(ep, (uint32_t)slot) & 0x7f));
+	uint32_t lo = 0, hi = 0;
+
+	if (a3700_probe_read32(ep->reg + (uint32_t)slot, &lo) != 0 ||
+	    a3700_probe_write32(ep->reg + (uint32_t)slot + 4, (uint32_t)(axi >> 32)) != 0 ||
+	    a3700_probe_write32(ep->reg + (uint32_t)slot, (uint32_t)axi | (lo & 0x7f)) != 0) {
+		shell_error(sh, "slot %05llx aborts", slot);
+		return -EIO;
+	}
+	(void)a3700_probe_read32(ep->reg + (uint32_t)slot, &lo);
+	(void)a3700_probe_read32(ep->reg + (uint32_t)slot + 4, &hi);
 	shell_print(sh, "ROM image 0x%zx B at AXI 0x%llx, slot %05llx = %08x %08x", size, axi, slot,
-		    advk_rd(ep, (uint32_t)slot), advk_rd(ep, (uint32_t)slot + 4));
+		    lo, hi);
 	return 0;
 }
 
