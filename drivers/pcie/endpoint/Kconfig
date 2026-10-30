@@ -59,6 +59,25 @@ config PCIE_EPC_DSN_SETTINGS
 	  controller with a DSN capability before link autostart, as the
 	  netshell does with its MAC addresses. Shell command pcie_dsn.
 
+config PCIE_EPC_DSN_SPI_NOR_UID
+	bool "First DSN from the SPI NOR unique ID"
+	default y
+	depends on PCIE_EPC_DSN_SETTINGS && SPI_NOR
+	select FLASH_EX_OP_ENABLED
+	help
+	  On the first boot (nothing in settings) the DSN is made from the
+	  64-bit factory unique ID of the SPI NOR (command 0x4B), with the
+	  locally administered bit set; random without it.
+
+config PCIE_EPC_DSN_POLL_MS
+	int "Poll for a DSN written by the host [ms]"
+	default 1000
+	depends on PCIE_EPC_DSN_SETTINGS
+	help
+	  Some controllers let the host write the DSN capability (setpci
+	  ECAP_DSN+4.l=... ECAP_DSN+8.l=...). A changed value is saved to
+	  settings. 0 disables the poll.
+
 config PCIE_EPC_DSN_INIT_PRIORITY
 	int "DSN init priority"
 	default 85

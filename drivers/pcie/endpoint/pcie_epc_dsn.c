@@ -3,16 +3,21 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Device Serial Number kept in settings, as the netshell keeps its MAC
- * addresses: generated on the first boot (locally administered EUI-64),
- * saved under pcie/dsn<n>, programmed into every EPC with a DSN
- * capability before link autostart. Shell: pcie_dsn [show | set <hex> |
- * new].
+ * addresses: made on the first boot (locally administered EUI-64 from the
+ * SPI NOR unique ID, else random), saved under pcie/dsn<n>, programmed
+ * into every EPC with a DSN capability before link autostart. A value the
+ * host writes into the capability (setpci ECAP_DSN+4.l / +8.l, where the
+ * controller lets it) is picked up by a poll and saved too.
+ * Shell: pcie_dsn [show | set <hex> | new].
  */
 
 #include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/flash.h>
+#include <zephyr/drivers/flash/spi_nor_ex.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
@@ -33,9 +38,16 @@ BUILD_ASSERT(CONFIG_PCIE_EPC_DSN_INIT_PRIORITY > CONFIG_SPI_NOR_INIT_PRIORITY,
 
 #define MAX_EPC 4
 
+#define PCI_EXT_CAP_ID_DSN 0x0003
+
 static const struct device *epc[MAX_EPC];
 static uint64_t dsn[MAX_EPC];
+static uint16_t dsn_cap[MAX_EPC];
 static int n_epc;
+static bool settings_ok;
+#if CONFIG_PCIE_EPC_DSN_POLL_MS > 0
+static struct k_work_delayable dsn_work;
+#endif
 
 struct dsn_read {
 	uint64_t v;
@@ -59,15 +71,83 @@ static void dsn_key(char *key, size_t len, int i)
 	snprintf(key, len, "pcie/dsn%d", i);
 }
 
-/* Locally administered, unicast EUI-64; the cycle counter mixes in boot timing */
-static uint64_t dsn_generate(void)
+/* The DSN capability in the extended config space, 0 if there is none */
+static uint16_t find_dsn_cap(const struct device *dev)
+{
+	uint32_t off = 0x100, hdr;
+
+	for (int n = 0; n < 64 && off >= 0x100 && off < 0x1000; n++) {
+		if (pcie_epc_cfg_read(dev, 0, off, &hdr) != 0 || hdr == 0 || hdr == 0xffffffff) {
+			return 0;
+		}
+		if ((hdr & 0xffff) == PCI_EXT_CAP_ID_DSN) {
+			return (uint16_t)off;
+		}
+		off = (hdr >> 20) & 0xffc;
+	}
+	return 0;
+}
+
+static uint64_t dsn_read_hw(int i)
+{
+	uint32_t lo = 0, hi = 0;
+
+	(void)pcie_epc_cfg_read(epc[i], 0, dsn_cap[i] + 4, &lo);
+	(void)pcie_epc_cfg_read(epc[i], 0, dsn_cap[i] + 8, &hi);
+	return ((uint64_t)hi << 32) | lo;
+}
+
+/* Locally administered, unicast EUI-64 */
+static uint64_t dsn_local(uint64_t v)
+{
+	return (v & ~(0x01ULL << 56)) | (0x02ULL << 56);
+}
+
+static bool dsn_from_uid(uint64_t *v)
+{
+#if defined(CONFIG_PCIE_EPC_DSN_SPI_NOR_UID) && DT_HAS_COMPAT_STATUS_OKAY(jedec_spi_nor)
+	const struct device *nor = DEVICE_DT_GET_ANY(jedec_spi_nor);
+	uint8_t uid[SPI_NOR_UID_LEN];
+	uint64_t u = 0;
+
+	if (!device_is_ready(nor) ||
+	    flash_ex_op(nor, FLASH_EX_OP_SPI_NOR_READ_UID, 0, uid) != 0) {
+		return false;
+	}
+	for (int b = 0; b < SPI_NOR_UID_LEN; b++) {
+		u = (u << 8) | uid[b];
+	}
+	if (u == 0 || u == UINT64_MAX) {
+		return false;
+	}
+	*v = dsn_local(u);
+	return true;
+#else
+	ARG_UNUSED(v);
+	return false;
+#endif
+}
+
+/* The cycle counter mixes in boot timing: the test generator is not seeded */
+static uint64_t dsn_random(void)
 {
 	uint64_t v;
 
 	sys_rand_get(&v, sizeof(v));
 	v ^= k_cycle_get_64() * 0x9e3779b97f4a7c15ULL;
-	v = (v & ~(0x01ULL << 56)) | (0x02ULL << 56);
-	return v;
+	return dsn_local(v);
+}
+
+static uint64_t dsn_generate(const char **src)
+{
+	uint64_t v;
+
+	if (dsn_from_uid(&v)) {
+		*src = "SPI NOR unique ID";
+		return v;
+	}
+	*src = "random";
+	return dsn_random();
 }
 
 static int dsn_apply(int i, uint64_t v, bool save)
@@ -89,6 +169,24 @@ static int dsn_apply(int i, uint64_t v, bool save)
 	return 0;
 }
 
+#if CONFIG_PCIE_EPC_DSN_POLL_MS > 0
+/* The host wrote the capability (setpci): keep its value */
+static void dsn_poll(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	for (int i = 0; i < n_epc; i++) {
+		uint64_t v = dsn_read_hw(i);
+
+		if (v != dsn[i]) {
+			LOG_INF("%s: DSN %016llx written by the host", epc[i]->name,
+				(unsigned long long)v);
+			(void)dsn_apply(i, v, settings_ok);
+		}
+	}
+	k_work_schedule(&dsn_work, K_MSEC(CONFIG_PCIE_EPC_DSN_POLL_MS));
+}
+#endif
+
 static int dsn_init(void)
 {
 	const struct device *devs;
@@ -98,31 +196,45 @@ static int dsn_init(void)
 	if (ret != 0) {
 		LOG_WRN("settings unavailable (%d), DSN will not persist", ret);
 	}
+	settings_ok = ret == 0;
 
 	for (size_t d = 0; d < n && n_epc < MAX_EPC; d++) {
 		const struct device *dev = &devs[d];
 		struct dsn_read r = {0};
+		const char *src = "saved";
+		uint16_t cap;
 		char key[16];
 		bool save;
 
 		if (!DEVICE_API_IS(pcie_epc, dev) || !device_is_ready(dev)) {
 			continue;
 		}
+		cap = find_dsn_cap(dev);
+		if (cap == 0) {
+			continue;
+		}
 		epc[n_epc] = dev;
+		dsn_cap[n_epc] = cap;
 		dsn_key(key, sizeof(key), n_epc);
-		if (ret == 0) {
+		if (settings_ok) {
 			(void)settings_load_subtree_direct(key, dsn_read_cb, &r);
 		}
 		save = !r.found;
 		if (!r.found) {
-			r.v = dsn_generate();
+			r.v = dsn_generate(&src);
 		}
-		if (dsn_apply(n_epc, r.v, save && ret == 0) == 0) {
-			LOG_INF("%s: DSN %016llx (%s)", dev->name, (unsigned long long)r.v,
-				save ? "generated" : "saved");
+		if (dsn_apply(n_epc, r.v, save && settings_ok) == 0) {
+			LOG_INF("%s: DSN %016llx (%s, cap 0x%x)", dev->name, (unsigned long long)r.v,
+				src, cap);
 			n_epc++;
 		}
 	}
+#if CONFIG_PCIE_EPC_DSN_POLL_MS > 0
+	if (n_epc != 0) {
+		k_work_init_delayable(&dsn_work, dsn_poll);
+		k_work_schedule(&dsn_work, K_MSEC(CONFIG_PCIE_EPC_DSN_POLL_MS));
+	}
+#endif
 	return 0;
 }
 
@@ -132,8 +244,16 @@ SYS_INIT(dsn_init, POST_KERNEL, CONFIG_PCIE_EPC_DSN_INIT_PRIORITY);
 static int cmd_dsn(const struct shell *sh, size_t argc, char **argv)
 {
 	for (int i = 0; i < n_epc; i++) {
+		const char *src = NULL;
+
 		if (argc >= 2 && strcmp(argv[1], "new") == 0) {
-			(void)dsn_apply(i, dsn_generate(), true);
+			/* new: random, so it differs from the one the UID gives */
+			(void)dsn_apply(i, dsn_random(), settings_ok);
+		} else if (argc >= 2 && strcmp(argv[1], "uid") == 0) {
+			uint64_t v = dsn_generate(&src);
+
+			(void)dsn_apply(i, v, settings_ok);
+			shell_print(sh, "from %s", src);
 		} else if (argc >= 3 && strcmp(argv[1], "set") == 0) {
 			char *end;
 			uint64_t v = strtoull(argv[2], &end, 16);
@@ -142,12 +262,14 @@ static int cmd_dsn(const struct shell *sh, size_t argc, char **argv)
 				shell_error(sh, "hex EUI-64, e.g. 02aabbfffe010203");
 				return -EINVAL;
 			}
-			(void)dsn_apply(i, v, true);
+			(void)dsn_apply(i, v, settings_ok);
 		} else if (argc >= 2 && strcmp(argv[1], "show") != 0) {
 			return -EINVAL;
 		}
-		shell_print(sh, "%s: DSN %016llx  (lspci: %02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x)",
+		shell_print(sh, "%s: DSN %016llx, hw %016llx  (lspci: "
+			    "%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x)",
 			    epc[i]->name, (unsigned long long)dsn[i],
+			    (unsigned long long)dsn_read_hw(i),
 			    (uint8_t)(dsn[i] >> 56), (uint8_t)(dsn[i] >> 48), (uint8_t)(dsn[i] >> 40),
 			    (uint8_t)(dsn[i] >> 32), (uint8_t)(dsn[i] >> 24), (uint8_t)(dsn[i] >> 16),
 			    (uint8_t)(dsn[i] >> 8), (uint8_t)dsn[i]);
@@ -158,6 +280,6 @@ static int cmd_dsn(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-SHELL_CMD_ARG_REGISTER(pcie_dsn, NULL, "[show | set <hex> | new] PCIe Device Serial Number",
+SHELL_CMD_ARG_REGISTER(pcie_dsn, NULL, "[show | set <hex> | uid | new] PCIe Device Serial Number",
 		       cmd_dsn, 1, 2);
 #endif
