@@ -13,6 +13,10 @@
 #include <mem.h>
 
 / {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+
 	/*
 	 * BAR backing store, outside Zephyr's RAM (ddr0 = 0..64 MiB) and
 	 * TF-A (0x04000000..): nothing else uses it. Each BAR's inbound

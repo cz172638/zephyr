@@ -33,6 +33,9 @@
 #define ADVK_CFG_CAP_PTR     0x34
 #define ADVK_CFG_INTR        0x3c
 #define ADVK_CFG_PCIE_CAP    0xc0
+/* Device Serial Number extended capability (0x150): lower, upper dword */
+#define ADVK_CFG_DSN_LO      0x154
+#define ADVK_CFG_DSN_HI      0x158
 #define ADVK_CFG_LNKCTL_STA  (ADVK_CFG_PCIE_CAP + 0x10)
 #define ADVK_CFG_LNKCTL2     (ADVK_CFG_PCIE_CAP + 0x30)
 
@@ -162,6 +165,8 @@ struct advk_ep {
 	struct pcie_epc_features features;
 	struct pcie_epc_header hdr;
 	bool hdr_valid;
+	uint64_t dsn;
+	bool dsn_valid;
 	struct pcie_epc_bar bar[PCIE_EPC_NUM_BARS];
 	/* hardware BAR sizes, from the writable bits at init */
 	size_t bar_hw_size[PCIE_EPC_NUM_BARS];
@@ -251,6 +256,7 @@ int advk_ep_cfg_read(const struct device *dev, uint8_t func, uint32_t offset, ui
 int advk_ep_cfg_write(const struct device *dev, uint8_t func, uint32_t offset, uint32_t val);
 const struct pcie_epc_features *advk_ep_get_features(const struct device *dev, uint8_t func);
 bool advk_ep_link_up(const struct device *dev);
+int advk_ep_set_dsn(const struct device *dev, uint8_t func, uint64_t dsn);
 uint64_t advk_ep_cpu_to_axi(const struct device *dev, uintptr_t cpu_addr);
 
 #endif /* ZEPHYR_DRIVERS_PCIE_ENDPOINT_PCIE_EPC_AARDVARK_H_ */

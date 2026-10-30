@@ -44,10 +44,28 @@ config PCIE_EPF_INIT_PRIORITY
 
 config PCIE_EPC_AUTOSTART_PRIORITY
 	int "Endpoint link autostart priority"
+	default 90 if PCIE_EPC_DSN_SETTINGS
 	default 80
 	help
 	  POST_KERNEL priority at which controllers with at least one bound
 	  function start link training. After PCIE_EPF_INIT_PRIORITY.
+
+config PCIE_EPC_DSN_SETTINGS
+	bool "Device Serial Number kept in settings"
+	depends on SETTINGS
+	help
+	  Generate a locally administered EUI-64 on the first boot, keep it
+	  in settings (pcie/dsn<n>) and program it into every endpoint
+	  controller with a DSN capability before link autostart, as the
+	  netshell does with its MAC addresses. Shell command pcie_dsn.
+
+config PCIE_EPC_DSN_INIT_PRIORITY
+	int "DSN init priority"
+	default 85
+	depends on PCIE_EPC_DSN_SETTINGS
+	help
+	  POST_KERNEL priority: after the settings flash (SPI_NOR_INIT_PRIORITY)
+	  and the controllers, before PCIE_EPC_AUTOSTART_PRIORITY.
 
 config PCIE_EPC_OB_PAGES
 	int "Outbound window allocator granules"

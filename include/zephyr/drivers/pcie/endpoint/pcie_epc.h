@@ -233,6 +233,8 @@ __subsystem struct pcie_epc_driver_api {
 	bool (*link_up)(const struct device *dev);
 	/** Optional: translate a CPU physical address to the controller's AXI view. */
 	uint64_t (*cpu_to_axi)(const struct device *dev, uintptr_t cpu_addr);
+	/** Optional: Device Serial Number capability (EUI-64, byte 0 in bits 63:56). */
+	int (*set_dsn)(const struct device *dev, uint8_t func, uint64_t dsn);
 	/** Optional: copy between local memory and host memory with a DMA engine. */
 	int (*xfer_dma)(const struct device *dev, uint8_t func, uint64_t pci_addr, void *local,
 			size_t size, bool to_host);
@@ -439,6 +441,20 @@ void pcie_epc_unmap_host(const struct device *dev, struct pcie_epc_host_map *map
  */
 int pcie_epc_xfer_memcpy(const struct device *dev, uint8_t func, uint64_t pci_addr,
 			 void *local, size_t size, bool to_host);
+
+/**
+ * @brief Set the Device Serial Number of function @p func.
+ *
+ * @param dsn EUI-64, first byte in bits 63:56 (lspci prints it as
+ *            "Device Serial Number xx-xx-...", most significant first)
+ * @retval -ENOTSUP the controller has no DSN capability
+ */
+static inline int pcie_epc_set_dsn(const struct device *dev, uint8_t func, uint64_t dsn)
+{
+	const struct pcie_epc_driver_api *api = DEVICE_API_GET(pcie_epc, dev);
+
+	return api->set_dsn ? api->set_dsn(dev, func, dsn) : -ENOTSUP;
+}
 
 /**
  * @brief Copy between local memory and host memory with the controller's DMA.

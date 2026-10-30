@@ -338,6 +338,7 @@ static DEVICE_API(pcie_epc, a3700_ep_api) = {
 	.get_features = advk_ep_get_features,
 	.link_up = advk_ep_link_up,
 	.cpu_to_axi = advk_ep_cpu_to_axi,
+	.set_dsn = advk_ep_set_dsn,
 #ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
 	.xfer_dma = a3700_ep_xfer_dma,
 #endif

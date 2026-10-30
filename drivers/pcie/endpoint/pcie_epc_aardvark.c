@@ -560,6 +560,25 @@ static void reapply(const struct device *dev)
 	}
 }
 
+static void write_dsn(struct advk_ep *ep)
+{
+	advk_wr(ep, ADVK_CFG_DSN_HI, (uint32_t)(ep->dsn >> 32));
+	advk_wr(ep, ADVK_CFG_DSN_LO, (uint32_t)ep->dsn);
+}
+
+int advk_ep_set_dsn(const struct device *dev, uint8_t func, uint64_t dsn)
+{
+	struct advk_ep *ep = advk_ep(dev);
+
+	if (func != 0) {
+		return -EINVAL;
+	}
+	ep->dsn = dsn;
+	ep->dsn_valid = true;
+	write_dsn(ep);
+	return 0;
+}
+
 void advk_ep_restore(const struct device *dev)
 {
 	struct advk_ep *ep = advk_ep(dev);
@@ -567,6 +586,9 @@ void advk_ep_restore(const struct device *dev)
 	advk_ep_hw_setup(dev);
 	if (ep->hdr_valid) {
 		write_header(ep, &ep->hdr);
+	}
+	if (ep->dsn_valid) {
+		write_dsn(ep);
 	}
 	if (ep->msi_cap != 0) {
 		rmw(ep, ep->msi_cap, ADVK_MSI_CTRL_MMC, FIELD_PREP(ADVK_MSI_CTRL_MMC, ep->msi_mmc));
