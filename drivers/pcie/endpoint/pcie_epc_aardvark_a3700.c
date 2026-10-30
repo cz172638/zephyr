@@ -1318,6 +1318,112 @@ static int cmd_dmastat(const struct shell *sh, size_t argc, char **argv)
 }
 #endif
 
+/*
+ * barhunt <start> <end>: look for the register that sizes the BARs. For
+ * every word in the range: complement its writable bits, size the six BAR
+ * registers (write ffffffff, read back, restore), restore the word; when
+ * a BAR mask changed, repeat per bit and print which ones. The host must
+ * not use the BARs meanwhile (remove the device first, rescan after).
+ * The BAR registers themselves and the core control page are skipped.
+ */
+static void bar_masks(struct advk_ep *ep, uint32_t m[6])
+{
+	uint32_t save[6];
+
+	for (int b = 0; b < 6; b++) {
+		save[b] = advk_rd(ep, 0x10 + 4 * b);
+	}
+	for (int b = 0; b < 6; b++) {
+		advk_wr(ep, 0x10 + 4 * b, 0xffffffff);
+		m[b] = advk_rd(ep, 0x10 + 4 * b);
+	}
+	for (int b = 0; b < 6; b++) {
+		advk_wr(ep, 0x10 + 4 * b, save[b]);
+	}
+}
+
+static bool bar_masks_differ(const uint32_t a[6], const uint32_t b[6])
+{
+	return memcmp(a, b, 6 * sizeof(uint32_t)) != 0;
+}
+
+static void print_masks(const struct shell *sh, const char *what, const uint32_t m[6])
+{
+	shell_print(sh, "  %s %08x %08x %08x %08x %08x %08x", what, m[0], m[1], m[2], m[3], m[4],
+		    m[5]);
+}
+
+static int cmd_barhunt(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long start, end;
+	uint32_t ref[6], m[6], hits = 0, tested = 0;
+
+	ARG_UNUSED(argc);
+	if (parse_u(sh, argv[1], &start) != 0 || parse_u(sh, argv[2], &end) != 0) {
+		return -EINVAL;
+	}
+	end = MIN(end, (unsigned long long)ADVK_REG_SPACE);
+	bar_masks(ep, ref);
+	print_masks(sh, "reference", ref);
+
+	for (uint32_t o = start & ~3U; o < end; o += 4) {
+		uint32_t v, w;
+
+		if (o >= 0x10 && o < 0x28) {
+			continue; /* the BARs */
+		}
+		if (o >= 0x18000 && o < 0x19000) {
+			o = 0x19000 - 4;
+			continue;
+		}
+		if (a3700_probe_read32(ep->reg + o, &v) != 0) {
+			continue;
+		}
+		if (a3700_probe_write32(ep->reg + o, ~v) != 0 ||
+		    a3700_probe_read32(ep->reg + o, &w) != 0) {
+			(void)a3700_probe_write32(ep->reg + o, v);
+			continue;
+		}
+		uint32_t wr = v ^ w;
+
+		if (wr == 0) {
+			(void)a3700_probe_write32(ep->reg + o, v);
+			continue;
+		}
+		tested++;
+		bar_masks(ep, m);
+		(void)a3700_probe_write32(ep->reg + o, v);
+		if (!bar_masks_differ(m, ref)) {
+			continue;
+		}
+
+		shell_print(sh, "%05x: value %08x writable %08x changes the BAR masks:", o, v, wr);
+		print_masks(sh, "all bits ", m);
+		for (int b = 0; b < 32; b++) {
+			if (!(wr & BIT(b))) {
+				continue;
+			}
+			(void)a3700_probe_write32(ep->reg + o, v ^ BIT(b));
+			bar_masks(ep, m);
+			(void)a3700_probe_write32(ep->reg + o, v);
+			if (bar_masks_differ(m, ref)) {
+				char what[16];
+
+				snprintf(what, sizeof(what), "bit %2d   ", b);
+				print_masks(sh, what, m);
+			}
+		}
+		hits++;
+	}
+	bar_masks(ep, m);
+	if (bar_masks_differ(m, ref)) {
+		print_masks(sh, "AFTER (not restored!)", m);
+	}
+	shell_print(sh, "%u writable words tested, %u change the BAR masks", tested, hits);
+	return 0;
+}
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -1788,6 +1894,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_aer, 1, 2),
 	SHELL_CMD_ARG(coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
 		      cmd_coh, 3, 0),
+	SHELL_CMD_ARG(barhunt, NULL, "<start> <end> Registers that change the BAR sizes "
+		      "(writes, restores; host must not use the BARs)", cmd_barhunt, 3, 0),
 	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
 		      cmd_wmap, 3, 0),
 #ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
