@@ -52,6 +52,8 @@
 		vendor-id = <0x11ab>;
 		device-id = <0x0100>;
 		class-code = <0xff0000>;
+		/* MSI-X table at register BAR + 0x40, PBA after it (16 x 16 B) */
+		msix-interrupts = <16>;
 		memory-region = <&pcie_bar_mem>;
 		/*
 		 * Hardware BARs, fixed sizes: 0 (64-bit, 128 KiB), 2 (I/O,

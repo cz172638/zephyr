@@ -44,6 +44,14 @@
 #define ADVK_STS_CAPLIST BIT(20)
 
 #define ADVK_CAP_ID_MSI 0x05
+#define ADVK_CAP_ID_MSIX 0x11
+/* MSI-X capability (0xb0 on the A3720): table and PBA live in a BAR, i.e.
+ * in local memory the host writes; locally all of it is writable.
+ */
+#define ADVK_MSIX_CTRL_EN    BIT(31)
+#define ADVK_MSIX_CTRL_FMASK BIT(30)
+#define ADVK_MSIX_CTRL_TSIZE GENMASK(26, 16)
+#define ADVK_MSIX_MAX        2048
 #define ADVK_MSI_CTRL_EN    BIT(16)
 #define ADVK_MSI_CTRL_MMC   GENMASK(19, 17)
 #define ADVK_MSI_CTRL_MME   GENMASK(22, 20)
@@ -172,6 +180,15 @@ struct advk_ep {
 	size_t bar_hw_size[PCIE_EPC_NUM_BARS];
 	uint8_t msi_mmc;
 	uint32_t msi_sent;
+	/* MSI-X: capability, layout set by set_msix, local view of table + PBA */
+	uint8_t msix_cap;
+	uint8_t msix_bir;
+	uint16_t msix_nr;
+	uint32_t msix_off;
+	volatile uint32_t *msix_tbl;
+	uint8_t *msix_va;
+	size_t msix_map_size;
+	uint32_t msix_sent;
 
 	/* link state seen by the last poll */
 	uint8_t ltssm;
@@ -250,6 +267,9 @@ int advk_ep_map_addr(const struct device *dev, uint8_t func, uintptr_t cpu_addr,
 void advk_ep_unmap_addr(const struct device *dev, uint8_t func, uintptr_t cpu_addr);
 int advk_ep_set_msi(const struct device *dev, uint8_t func, uint8_t nr_irqs);
 int advk_ep_get_msi(const struct device *dev, uint8_t func);
+int advk_ep_set_msix(const struct device *dev, uint8_t func, uint16_t nr_irqs, uint8_t bir,
+		     uint32_t offset);
+int advk_ep_get_msix(const struct device *dev, uint8_t func);
 int advk_ep_raise_irq(const struct device *dev, uint8_t func, enum pcie_epc_irq_type type,
 		      uint16_t irq_num);
 int advk_ep_cfg_read(const struct device *dev, uint8_t func, uint32_t offset, uint32_t *val);

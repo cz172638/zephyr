@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/kernel/internal/mm.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
@@ -179,6 +180,18 @@ void advk_ep_hw_setup(const struct device *dev)
 	advk_wr(ep, ADVK_HOST_INT_STATUS, UINT32_MAX);
 
 	ep->msi_cap = find_cap(ep, ADVK_CAP_ID_MSI);
+	ep->msix_cap = find_cap(ep, ADVK_CAP_ID_MSIX);
+}
+
+/* Table size, table and PBA offset / BIR from the layout set_msix chose */
+static void write_msix(struct advk_ep *ep)
+{
+	uint32_t pba = ep->msix_off + ep->msix_nr * 16U;
+
+	rmw(ep, ep->msix_cap, ADVK_MSIX_CTRL_TSIZE | ADVK_MSIX_CTRL_EN | ADVK_MSIX_CTRL_FMASK,
+	    FIELD_PREP(ADVK_MSIX_CTRL_TSIZE, ep->msix_nr - 1));
+	advk_wr(ep, ep->msix_cap + 4, ep->msix_off | ep->msix_bir);
+	advk_wr(ep, ep->msix_cap + 8, pba | ep->msix_bir);
 }
 
 int advk_ep_init(const struct device *dev, bool autostart)
@@ -202,6 +215,7 @@ int advk_ep_init(const struct device *dev, bool autostart)
 	ep->features = (struct pcie_epc_features){
 		.linkup_notifier = true,
 		.msi_capable = ep->msi_cap != 0,
+		.msix_capable = ep->msix_cap != 0,
 		.intx_capable = true,
 		.align = ADVK_OB_MIN_SIZE,
 		.max_functions = 1,
@@ -437,6 +451,122 @@ int advk_ep_get_msi(const struct device *dev, uint8_t func)
 	return 1 << FIELD_GET(ADVK_MSI_CTRL_MME, ctrl);
 }
 
+int advk_ep_set_msix(const struct device *dev, uint8_t func, uint16_t nr_irqs, uint8_t bir,
+		     uint32_t offset)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	const struct pcie_epc_bar *bar;
+	size_t len = nr_irqs * 16U + DIV_ROUND_UP(nr_irqs, 64) * 8U;
+	uint64_t phys;
+	uint8_t *va;
+
+	if (func != 0 || nr_irqs == 0 || nr_irqs > ADVK_MSIX_MAX || bir >= PCIE_EPC_NUM_BARS ||
+	    (offset & 7) != 0) {
+		return -EINVAL;
+	}
+	if (ep->msix_cap == 0) {
+		return -ENOTSUP;
+	}
+	bar = &ep->bar[bir];
+	if (bar->size == 0 || offset + len > bar->size) {
+		return -EINVAL;
+	}
+
+	/* Local view of table and PBA: the host writes them into the BAR memory */
+	if (ep->msix_va != NULL) {
+		k_mem_unmap_phys_bare(ep->msix_va, ep->msix_map_size);
+		ep->msix_va = NULL;
+		ep->msix_tbl = NULL;
+	}
+	phys = bar->phys + offset;
+	ep->msix_map_size = ROUND_UP(len + (phys & 0xfff), 0x1000);
+	k_mem_map_phys_bare(&va, phys & ~0xfffULL, ep->msix_map_size,
+			    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	ep->msix_va = va;
+	ep->msix_tbl = (volatile uint32_t *)(va + (phys & 0xfff));
+
+	/* reset state: every vector masked, nothing pending */
+	for (uint16_t v = 0; v < nr_irqs; v++) {
+		ep->msix_tbl[v * 4 + 0] = 0;
+		ep->msix_tbl[v * 4 + 1] = 0;
+		ep->msix_tbl[v * 4 + 2] = 0;
+		ep->msix_tbl[v * 4 + 3] = 1;
+	}
+	for (uint16_t w = 0; w < DIV_ROUND_UP(nr_irqs, 64) * 2; w++) {
+		ep->msix_tbl[nr_irqs * 4 + w] = 0;
+	}
+
+	ep->msix_nr = nr_irqs;
+	ep->msix_bir = bir;
+	ep->msix_off = offset;
+	write_msix(ep);
+	return 0;
+}
+
+int advk_ep_get_msix(const struct device *dev, uint8_t func)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	uint32_t ctrl;
+
+	if (func != 0 || ep->msix_cap == 0 || ep->msix_nr == 0) {
+		return -EINVAL;
+	}
+	ctrl = advk_rd(ep, ep->msix_cap);
+	if ((ctrl & ADVK_MSIX_CTRL_EN) == 0) {
+		return -EINVAL;
+	}
+	return FIELD_GET(ADVK_MSIX_CTRL_TSIZE, ctrl) + 1;
+}
+
+/*
+ * MSI-X in software: the entry the host wrote into the table (BAR memory)
+ * gives address and data, the write goes out through an outbound window.
+ * Masked (function or vector): only the pending bit is set.
+ */
+static int raise_msix(const struct device *dev, uint16_t irq_num)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	struct pcie_epc_host_map map;
+	volatile uint32_t *e, *pba;
+	uint32_t ctrl = advk_rd(ep, ep->msix_cap);
+	uint64_t addr;
+	uint32_t data;
+	int ret;
+
+	if ((ctrl & ADVK_MSIX_CTRL_EN) == 0 || ep->msix_tbl == NULL) {
+		return -EINVAL;
+	}
+	if (irq_num == 0 || irq_num > ep->msix_nr) {
+		return -EINVAL;
+	}
+	e = &ep->msix_tbl[(irq_num - 1) * 4];
+	pba = &ep->msix_tbl[ep->msix_nr * 4];
+	if ((ctrl & ADVK_MSIX_CTRL_FMASK) != 0 || (e[3] & 1) != 0) {
+		pba[(irq_num - 1) / 32] |= BIT((irq_num - 1) % 32);
+		return -EBUSY;
+	}
+	pba[(irq_num - 1) / 32] &= ~BIT((irq_num - 1) % 32);
+
+	addr = ((uint64_t)e[1] << 32) | e[0];
+	data = e[2];
+	if (addr == 0 || (addr & 3) != 0) {
+		return -EINVAL;
+	}
+	ret = pcie_epc_map_host(dev, 0, addr, 4, &map);
+	if (ret != 0) {
+		return ret;
+	}
+	/* no read back, as for MSI */
+	sys_write32(data, (mem_addr_t)map.ptr);
+	barrier_dsync_fence_full();
+	pcie_epc_unmap_host(dev, &map);
+	if (ep->msix_sent++ == 0) {
+		LOG_INF("MSI-X %u: 0x%08x -> 0x%llx (first one)", irq_num, data,
+			(unsigned long long)addr);
+	}
+	return 0;
+}
+
 static int raise_msi(const struct device *dev, uint16_t irq_num)
 {
 	struct advk_ep *ep = advk_ep(dev);
@@ -502,6 +632,8 @@ int advk_ep_raise_irq(const struct device *dev, uint8_t func, enum pcie_epc_irq_
 	}
 	case PCIE_EPC_IRQ_MSI:
 		return ep->msi_cap != 0 ? raise_msi(dev, irq_num) : -ENOTSUP;
+	case PCIE_EPC_IRQ_MSIX:
+		return ep->msix_cap != 0 ? raise_msix(dev, irq_num) : -ENOTSUP;
 	default:
 		return -ENOTSUP;
 	}
@@ -589,6 +721,9 @@ void advk_ep_restore(const struct device *dev)
 	}
 	if (ep->dsn_valid) {
 		write_dsn(ep);
+	}
+	if (ep->msix_cap != 0 && ep->msix_nr != 0) {
+		write_msix(ep);
 	}
 	if (ep->msi_cap != 0) {
 		rmw(ep, ep->msi_cap, ADVK_MSI_CTRL_MMC, FIELD_PREP(ADVK_MSI_CTRL_MMC, ep->msi_mmc));
