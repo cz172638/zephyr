@@ -22,7 +22,7 @@ KEEP=0
 DISK=$1 IMG=$2
 
 [ -b "$DISK" ] || { echo "$DISK is not a block device" >&2; exit 1; }
-if ! dd if="$IMG" bs=4 count=1 skip=1 2>/dev/null | grep -q 2TAS; then
+if ! dd if="$IMG" bs=4 count=1 skip=10 2>/dev/null | grep -qa 2TAS; then
 	echo "$IMG has no SATA boot TIM (build with BOOTDEV=SATA)" >&2
 	exit 1
 fi
