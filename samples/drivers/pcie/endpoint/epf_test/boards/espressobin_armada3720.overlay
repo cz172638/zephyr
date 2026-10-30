@@ -20,13 +20,13 @@
 	/*
 	 * BAR backing store, outside Zephyr's RAM (ddr0 = 0..64 MiB) and
 	 * TF-A (0x04000000..): nothing else uses it. Each BAR's inbound
-	 * translation places it here, aligned to the fixed BAR size (BAR0
-	 * 128 KiB at +0, BAR4 256 KiB at +0x40000), and the PCIe IO decode
+	 * translation places it here, aligned to the BAR size (BAR0 8 KiB
+	 * at +0, BAR4 16 MiB at +16 MiB), and the PCIe IO decode
 	 * window is limited to it, so the host sees nothing else of DDR.
 	 */
 	pcie_bar_mem: pcie-bar-mem@10000000 {
 		compatible = "mmio-sram";
-		reg = <0x10000000 DT_SIZE_K(512)>;
+		reg = <0x10000000 DT_SIZE_M(32)>;
 	};
 };
 
@@ -62,9 +62,10 @@
 		msix-interrupts = <16>;
 		memory-region = <&pcie_bar_mem>;
 		/*
-		 * Hardware BARs, fixed sizes: 0 (64-bit, 128 KiB), 2 (I/O,
-		 * reserved), 4 (64-bit, 256 KiB); BAR3 does not exist.
+		 * BAR0 and BAR4, 64-bit memory, sized through the LMI BAR
+		 * configuration (powers of two); BAR2 (I/O) is switched off.
+		 * BAR0 gets the registers, MSI-X table and DSN mailbox.
 		 */
-		bar-sizes = <512 0 0 16384 131072 0>;
+		bar-sizes = <8192 0 0 0 0x1000000 0>;
 	};
 };

@@ -107,6 +107,25 @@
  */
 #define ADVK_IB_BAR_LO(bar)   (0x5800 + 4 * (bar))
 #define ADVK_IB_BAR_HI(bar)   (0x5800 + 4 * (bar) + 4)
+/*
+ * BAR configuration in the LMI (found with advk_ep barhunt). 0x6240: 7
+ * bits per BAR, BAR0 at bit 0, BAR2 at bit 7, BAR4 at bit 19: aperture
+ * [4:0] (size = 2^(aperture + 7)), enable [5], prefetchable [6]. 0x6244:
+ * 64-bit BAR0/2/4 at bits 16/17/18, I/O BAR0/2/4 at bits 26/28/30.
+ * Reset: BAR0 64-bit 128 KiB, BAR2 I/O 128 KiB, BAR4 64-bit 256 KiB.
+ */
+#define ADVK_LMI_BAR_CFG0      0x6240
+#define ADVK_LMI_BAR_CFG1      0x6244
+#define ADVK_BAR_CFG_SHIFT(b)  ((b) == 0 ? 0 : (b) == 2 ? 7 : 19)
+#define ADVK_BAR_CFG_APERTURE  GENMASK(4, 0)
+#define ADVK_BAR_CFG_EN        BIT(5)
+#define ADVK_BAR_CFG_PREF      BIT(6)
+#define ADVK_BAR_CFG_FIELD     GENMASK(6, 0)
+#define ADVK_BAR_CFG1_64(b)    BIT(16 + (b) / 2)
+#define ADVK_BAR_CFG1_IO(b)    BIT(26 + (b))
+#define ADVK_BAR_MIN_SIZE      128U
+#define ADVK_BAR_MAX_SIZE      (1ULL << 31)
+
 #define ADVK_IB_ADDR_MASK     0xffffff80U
 
 /* Local management interface */
@@ -176,8 +195,11 @@ struct advk_ep {
 	uint64_t dsn;
 	bool dsn_valid;
 	struct pcie_epc_bar bar[PCIE_EPC_NUM_BARS];
-	/* hardware BAR sizes, from the writable bits at init */
+	/* programmed BAR sizes */
 	size_t bar_hw_size[PCIE_EPC_NUM_BARS];
+	/* LMI BAR configuration (0x6240 / 0x6244) as last written */
+	uint32_t bar_cfg0;
+	uint32_t bar_cfg1;
 	uint8_t msi_mmc;
 	uint32_t msi_sent;
 	/* MSI-X: capability, layout set by set_msix, local view of table + PBA */

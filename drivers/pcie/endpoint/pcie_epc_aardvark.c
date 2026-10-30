@@ -222,32 +222,22 @@ int advk_ep_init(const struct device *dev, bool autostart)
 	};
 
 	/*
-	 * The BAR layout is fixed by the hardware (seen on the A3720: BAR0
-	 * 64-bit memory, BAR2 I/O, BAR4 64-bit memory). Offer the memory
-	 * BARs only: I/O BARs and the upper halves of 64-bit BARs are
-	 * reserved.
+	 * BARs 0 and 4: 64-bit memory, sized by set_bar through the LMI BAR
+	 * configuration. BAR2 (I/O at reset) is switched off; the upper halves
+	 * of the 64-bit BARs and BAR3 are not offered.
 	 */
-	for (int b = 0; b < PCIE_EPC_NUM_BARS; b++) {
-		uint32_t v = advk_rd(ep, ADVK_CFG_BAR(b));
-		uint32_t mask;
+	ep->bar_cfg0 = advk_rd(ep, ADVK_LMI_BAR_CFG0) &
+		       ~(ADVK_BAR_CFG_EN << ADVK_BAR_CFG_SHIFT(2));
+	ep->bar_cfg1 = advk_rd(ep, ADVK_LMI_BAR_CFG1);
+	advk_wr(ep, ADVK_LMI_BAR_CFG0, ep->bar_cfg0);
+	ep->features.bar_fixed_64bit = BIT(0) | BIT(4);
+	ep->features.reserved_bar = BIT(1) | BIT(2) | BIT(3) | BIT(5);
+	for (int b = 0; b < PCIE_EPC_NUM_BARS; b += 2) {
+		uint32_t f = (ep->bar_cfg0 >> ADVK_BAR_CFG_SHIFT(b)) & ADVK_BAR_CFG_FIELD;
 
-		/* size from the writable bits; training is off, the host is not there */
-		advk_wr(ep, ADVK_CFG_BAR(b), UINT32_MAX);
-		mask = advk_rd(ep, ADVK_CFG_BAR(b));
-		advk_wr(ep, ADVK_CFG_BAR(b), v);
-
-		if ((v & BIT(0)) != 0 || (mask & ~0xfU) == 0) {
-			/* I/O BAR or none: not offered */
-			ep->features.reserved_bar |= BIT(b);
-			continue;
-		}
-		ep->bar_hw_size[b] = (size_t)(~(mask & ~0xfU) + 1U);
-		ep->features.bar_fixed_size[b] = ep->bar_hw_size[b];
-		if (FIELD_GET(GENMASK(2, 1), v) == 2 && b + 1 < PCIE_EPC_NUM_BARS) {
-			ep->features.bar_fixed_64bit |= BIT(b);
-			ep->features.reserved_bar |= BIT(b + 1);
-			b++;
-		}
+		ep->bar_hw_size[b] = (f & ADVK_BAR_CFG_EN)
+					     ? (size_t)1 << (FIELD_GET(ADVK_BAR_CFG_APERTURE, f) + 7)
+					     : 0;
 	}
 
 	LOG_INF("%s: id %08x class %08x ctrl0 %08x ltssm %s, MSI cap 0x%02x, BARs 64-bit "
@@ -317,23 +307,37 @@ int advk_ep_set_bar(const struct device *dev, uint8_t func, const struct pcie_ep
 	}
 
 	/*
-	 * The BAR sizes are fixed (reset defaults); the backing store is
-	 * placed with the inbound translation of the BAR, which takes the
-	 * address bits above the BAR size. Only BAR0/2/4 have one.
+	 * Size, enable and prefetchable from the LMI BAR configuration; the
+	 * backing store is placed with the inbound translation of the BAR,
+	 * which takes the address bits above the BAR size. BAR0 and BAR4 only.
 	 */
-	size_t hw = ep->bar_hw_size[bar->barno];
+	uint8_t b = bar->barno;
+	size_t hw = MAX((size_t)ADVK_BAR_MIN_SIZE, bar->size);
+	uint32_t field;
 
-	if (hw == 0 || (bar->barno & 1) != 0) {
-		LOG_ERR("BAR%u is not implemented", bar->barno);
+	if (b != 0 && b != 4) {
+		LOG_ERR("BAR%u is not offered", b);
+		return -EINVAL;
+	}
+	if ((hw & (hw - 1)) != 0 || (uint64_t)hw > ADVK_BAR_MAX_SIZE) {
+		LOG_ERR("BAR%u size 0x%zx: a power of two up to 2 GiB", b, bar->size);
 		return -EINVAL;
 	}
 	if ((bar->phys & (hw - 1)) != 0 || (bar->phys & ~(uint64_t)ADVK_IB_ADDR_MASK &
 					    0xffffffffULL) != 0) {
-		LOG_ERR("BAR%u backing 0x%llx not aligned to the BAR size 0x%zx", bar->barno,
+		LOG_ERR("BAR%u backing 0x%llx not aligned to the BAR size 0x%zx", b,
 			(unsigned long long)bar->phys, hw);
 		return -EINVAL;
 	}
-	ep->bar[bar->barno] = *bar;
+	field = FIELD_PREP(ADVK_BAR_CFG_APERTURE, (uint32_t)(LOG2(hw) - 7)) | ADVK_BAR_CFG_EN |
+		((bar->flags & PCIE_EPC_BAR_PREFETCH) ? ADVK_BAR_CFG_PREF : 0);
+	ep->bar_cfg0 = (ep->bar_cfg0 & ~(ADVK_BAR_CFG_FIELD << ADVK_BAR_CFG_SHIFT(b))) |
+		       (field << ADVK_BAR_CFG_SHIFT(b));
+	ep->bar_cfg1 = (ep->bar_cfg1 | ADVK_BAR_CFG1_64(b)) & ~ADVK_BAR_CFG1_IO(b);
+	advk_wr(ep, ADVK_LMI_BAR_CFG1, ep->bar_cfg1);
+	advk_wr(ep, ADVK_LMI_BAR_CFG0, ep->bar_cfg0);
+	ep->bar_hw_size[b] = hw;
+	ep->bar[b] = *bar;
 	advk_wr(ep, ADVK_IB_BAR_HI(bar->barno), (uint32_t)(bar->phys >> 32) & ADVK_IB_ADDR_MASK);
 	advk_wr(ep, ADVK_IB_BAR_LO(bar->barno), (uint32_t)bar->phys & ADVK_IB_ADDR_MASK);
 	LOG_INF("BAR%u: 0x%zx bytes (hardware 0x%zx) at AXI 0x%llx", bar->barno, bar->size, hw,
@@ -350,6 +354,9 @@ void advk_ep_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
 		if ((barno & 1) == 0) {
 			advk_wr(ep, ADVK_IB_BAR_LO(barno), 0);
 			advk_wr(ep, ADVK_IB_BAR_HI(barno), 0);
+			ep->bar_cfg0 &= ~(ADVK_BAR_CFG_EN << ADVK_BAR_CFG_SHIFT(barno));
+			advk_wr(ep, ADVK_LMI_BAR_CFG0, ep->bar_cfg0);
+			ep->bar_hw_size[barno] = 0;
 		}
 	}
 }
@@ -734,6 +741,8 @@ void advk_ep_restore(const struct device *dev)
 	if (ep->msi_cap != 0) {
 		rmw(ep, ep->msi_cap, ADVK_MSI_CTRL_MMC, FIELD_PREP(ADVK_MSI_CTRL_MMC, ep->msi_mmc));
 	}
+	advk_wr(ep, ADVK_LMI_BAR_CFG1, ep->bar_cfg1);
+	advk_wr(ep, ADVK_LMI_BAR_CFG0, ep->bar_cfg0);
 	for (int b = 0; b < PCIE_EPC_NUM_BARS; b += 2) {
 		if (ep->bar[b].size != 0) {
 			advk_wr(ep, ADVK_IB_BAR_HI(b), (uint32_t)(ep->bar[b].phys >> 32) &
