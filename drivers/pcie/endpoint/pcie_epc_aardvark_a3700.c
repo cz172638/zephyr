@@ -1326,7 +1326,19 @@ static int cmd_dmastat(const struct shell *sh, size_t argc, char **argv)
  * not use the BARs meanwhile (remove the device first, rescan after).
  * The BAR registers themselves and the core control page are skipped.
  */
-static void bar_masks(struct advk_ep *ep, uint32_t m[6])
+#define NMASK 7 /* BAR0..5 and the expansion ROM BAR (0x30) */
+
+static uint32_t rom_mask(struct advk_ep *ep)
+{
+	uint32_t save = advk_rd(ep, 0x30), m;
+
+	advk_wr(ep, 0x30, 0xfffff800);
+	m = advk_rd(ep, 0x30);
+	advk_wr(ep, 0x30, save);
+	return m;
+}
+
+static void bar_masks(struct advk_ep *ep, uint32_t m[NMASK])
 {
 	uint32_t save[6];
 
@@ -1340,24 +1352,25 @@ static void bar_masks(struct advk_ep *ep, uint32_t m[6])
 	for (int b = 0; b < 6; b++) {
 		advk_wr(ep, 0x10 + 4 * b, save[b]);
 	}
+	m[6] = rom_mask(ep);
 }
 
-static bool bar_masks_differ(const uint32_t a[6], const uint32_t b[6])
+static bool bar_masks_differ(const uint32_t a[NMASK], const uint32_t b[NMASK])
 {
-	return memcmp(a, b, 6 * sizeof(uint32_t)) != 0;
+	return memcmp(a, b, NMASK * sizeof(uint32_t)) != 0;
 }
 
-static void print_masks(const struct shell *sh, const char *what, const uint32_t m[6])
+static void print_masks(const struct shell *sh, const char *what, const uint32_t m[NMASK])
 {
-	shell_print(sh, "  %s %08x %08x %08x %08x %08x %08x", what, m[0], m[1], m[2], m[3], m[4],
-		    m[5]);
+	shell_print(sh, "  %s %08x %08x %08x %08x %08x %08x  rom %08x", what, m[0], m[1], m[2],
+		    m[3], m[4], m[5], m[6]);
 }
 
 static int cmd_barhunt(const struct shell *sh, size_t argc, char **argv)
 {
 	struct advk_ep *ep = advk_ep(EP_DEV);
 	unsigned long long start, end;
-	uint32_t ref[6], m[6], hits = 0, tested = 0;
+	uint32_t ref[NMASK], m[NMASK], hits = 0, tested = 0;
 
 	ARG_UNUSED(argc);
 	if (parse_u(sh, argv[1], &start) != 0 || parse_u(sh, argv[2], &end) != 0) {
@@ -1370,8 +1383,8 @@ static int cmd_barhunt(const struct shell *sh, size_t argc, char **argv)
 	for (uint32_t o = start & ~3U; o < end; o += 4) {
 		uint32_t v, w;
 
-		if (o >= 0x10 && o < 0x28) {
-			continue; /* the BARs */
+		if ((o >= 0x10 && o < 0x28) || o == 0x30) {
+			continue; /* the BARs, the ROM BAR */
 		}
 		if (o >= 0x18000 && o < 0x19000) {
 			o = 0x19000 - 4;
@@ -1421,6 +1434,81 @@ static int cmd_barhunt(const struct shell *sh, size_t argc, char **argv)
 		print_masks(sh, "AFTER (not restored!)", m);
 	}
 	shell_print(sh, "%u writable words tested, %u change the BAR masks", tested, hits);
+	return 0;
+}
+
+/*
+ * rom [<axi> [<slot>]]: expansion ROM experiments. Without arguments: the
+ * ROM BAR (0x30), its writable bits and the inbound candidates after the
+ * BARs (0x5818, 0x581c). With an AXI address (in the carveout, aligned to
+ * the ROM size): write a ROM image there (0x55AA header, PCIR data
+ * structure 11ab:0100, last image, length from the ROM BAR size, then
+ * "ROM!" + word index) and point inbound slot <slot> (default 0x5818) at
+ * it. The host reads it with: echo 1 > rom; od -t x4 rom; echo 0 > rom.
+ */
+static int cmd_rom(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	uint32_t m = rom_mask(ep);
+	size_t size = (m & 0xfffff800U) ? (size_t)(~(m & 0xfffff800U) + 1U) : 0;
+	unsigned long long axi, slot = 0x5818;
+
+	shell_print(sh, "ROM BAR %08x, writable %08x: %s 0x%zx", advk_rd(ep, 0x30), m,
+		    size ? "size" : "no ROM BAR,", size);
+	for (uint32_t o = 0x5808; o <= 0x581c; o += 4) {
+		uint32_t v, w = 0;
+
+		if (a3700_probe_read32(ep->reg + o, &v) == 0) {
+			(void)a3700_probe_write32(ep->reg + o, ~v);
+			(void)a3700_probe_read32(ep->reg + o, &w);
+			(void)a3700_probe_write32(ep->reg + o, v);
+			shell_print(sh, "  %05x: %08x writable %08x", o, v, v ^ w);
+		}
+	}
+	if (argc < 2) {
+		return 0;
+	}
+	if (parse_u(sh, argv[1], &axi) != 0 || (argc > 2 && parse_u(sh, argv[2], &slot) != 0)) {
+		return -EINVAL;
+	}
+	if (size == 0) {
+		size = 0x20000;
+	}
+	if ((axi & (size - 1)) != 0) {
+		shell_error(sh, "axi must be aligned to the ROM size 0x%zx", size);
+		return -EINVAL;
+	}
+
+	uint8_t *va;
+	volatile uint8_t *r;
+	volatile uint32_t *w;
+
+	k_mem_map_phys_bare(&va, axi, size, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	r = va;
+	w = (volatile uint32_t *)va;
+	for (size_t i = 0; i < size / 4; i++) {
+		w[i] = 0x214d4f52U ^ (uint32_t)i; /* "ROM!" ^ index */
+	}
+	/* option ROM header + PCI data structure at 0x1c */
+	w[0] = 0x0000aa55U | ((uint32_t)MIN(size / 512, 255U) << 16);
+	for (int i = 1; i < 0x1c / 4; i++) {
+		w[i] = 0;
+	}
+	r[0x18] = 0x1c;
+	r[0x19] = 0x00;
+	w[0x1c / 4] = 0x52494350U;			/* "PCIR" */
+	w[0x20 / 4] = (0x0100U << 16) | 0x11abU;	/* device, vendor */
+	w[0x24 / 4] = 0x0018U << 16;			/* structure length 0x18 */
+	w[0x28 / 4] = 0xff000000U;			/* class ff0000, revision 0 */
+	w[0x2c / 4] = (uint32_t)(size / 512);		/* image length, code revision 0 */
+	w[0x30 / 4] = 0x000080ffU;			/* code type ff, last image */
+	barrier_dsync_fence_full();
+	k_mem_unmap_phys_bare(va, size);
+
+	advk_wr(ep, (uint32_t)slot + 4, (uint32_t)(axi >> 32));
+	advk_wr(ep, (uint32_t)slot, (uint32_t)axi | (advk_rd(ep, (uint32_t)slot) & 0x7f));
+	shell_print(sh, "ROM image 0x%zx B at AXI 0x%llx, slot %05llx = %08x %08x", size, axi, slot,
+		    advk_rd(ep, (uint32_t)slot), advk_rd(ep, (uint32_t)slot + 4));
 	return 0;
 }
 
@@ -1894,6 +1982,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_aer, 1, 2),
 	SHELL_CMD_ARG(coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
 		      cmd_coh, 3, 0),
+	SHELL_CMD_ARG(rom, NULL, "[<axi> [<slot>]] Expansion ROM BAR: show, or write an image and "
+		      "point an inbound slot at it", cmd_rom, 1, 2),
 	SHELL_CMD_ARG(barhunt, NULL, "<start> <end> Registers that change the BAR sizes "
 		      "(writes, restores; host must not use the BARs)", cmd_barhunt, 3, 0),
 	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
