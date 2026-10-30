@@ -112,7 +112,10 @@
  * bits per BAR, BAR0 at bit 0, BAR2 at bit 7, BAR4 at bit 19: aperture
  * [4:0] (size = 2^(aperture + 7)), enable [5], prefetchable [6]. 0x6244:
  * 64-bit BAR0/2/4 at bits 16/17/18, I/O BAR0/2/4 at bits 26/28/30.
- * Reset: BAR0 64-bit 128 KiB, BAR2 I/O 128 KiB, BAR4 64-bit 256 KiB.
+ * The expansion ROM BAR is in 0x6240 [31:26] (below).
+ * Reset: BAR0 64-bit 128 KiB, BAR2 I/O 128 KiB, BAR4 64-bit 256 KiB,
+ * ROM 128 KiB (its inbound target is unknown: host reads end in an
+ * external abort, so it is switched off).
  */
 #define ADVK_LMI_BAR_CFG0      0x6240
 #define ADVK_LMI_BAR_CFG1      0x6244
@@ -121,6 +124,9 @@
 #define ADVK_BAR_CFG_EN        BIT(5)
 #define ADVK_BAR_CFG_PREF      BIT(6)
 #define ADVK_BAR_CFG_FIELD     GENMASK(6, 0)
+/* expansion ROM BAR: aperture [30:26] (size = 2^(aperture + 7)), enable [31] */
+#define ADVK_BAR_CFG_ROM_APERTURE GENMASK(30, 26)
+#define ADVK_BAR_CFG_ROM_EN       BIT(31)
 #define ADVK_BAR_CFG1_64(b)    BIT(16 + (b) / 2)
 #define ADVK_BAR_CFG1_IO(b)    BIT(26 + (b))
 #define ADVK_BAR_MIN_SIZE      128U

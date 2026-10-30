@@ -1521,6 +1521,35 @@ static int cmd_rom(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* barcfg: the LMI BAR configuration decoded, and the sizes as the host sees them */
+static int cmd_barcfg(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	uint32_t c0 = advk_rd(ep, ADVK_LMI_BAR_CFG0), c1 = advk_rd(ep, ADVK_LMI_BAR_CFG1);
+	uint32_t m[NMASK];
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	shell_print(sh, "0x6240 %08x  0x6244 %08x", c0, c1);
+	for (int b = 0; b < PCIE_EPC_NUM_BARS; b += 2) {
+		uint32_t f = (c0 >> ADVK_BAR_CFG_SHIFT(b)) & ADVK_BAR_CFG_FIELD;
+
+		shell_print(sh, "  BAR%d: %s, %s%s%s, aperture %u = 0x%llx", b,
+			    (f & ADVK_BAR_CFG_EN) ? "on " : "off",
+			    (c1 & ADVK_BAR_CFG1_IO(b)) ? "I/O" : "mem",
+			    (c1 & ADVK_BAR_CFG1_64(b)) ? " 64-bit" : " 32-bit",
+			    (f & ADVK_BAR_CFG_PREF) ? " prefetchable" : "",
+			    (unsigned int)FIELD_GET(ADVK_BAR_CFG_APERTURE, f),
+			    1ULL << (FIELD_GET(ADVK_BAR_CFG_APERTURE, f) + 7));
+	}
+	shell_print(sh, "  ROM:  %s, aperture %u = 0x%llx", (c0 & ADVK_BAR_CFG_ROM_EN) ? "on " : "off",
+		    (unsigned int)FIELD_GET(ADVK_BAR_CFG_ROM_APERTURE, c0),
+		    1ULL << (FIELD_GET(ADVK_BAR_CFG_ROM_APERTURE, c0) + 7));
+	bar_masks(ep, m);
+	print_masks(sh, "masks", m);
+	return 0;
+}
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -1991,6 +2020,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_aer, 1, 2),
 	SHELL_CMD_ARG(coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
 		      cmd_coh, 3, 0),
+	SHELL_CMD_ARG(barcfg, NULL, "LMI BAR configuration decoded, BAR masks", cmd_barcfg, 1, 0),
 	SHELL_CMD_ARG(rom, NULL, "[<axi> [<slot>]] Expansion ROM BAR: show, or write an image and "
 		      "point an inbound slot at it", cmd_rom, 1, 2),
 	SHELL_CMD_ARG(barhunt, NULL, "<start> <end> Registers that change the BAR sizes "

@@ -223,11 +223,12 @@ int advk_ep_init(const struct device *dev, bool autostart)
 
 	/*
 	 * BARs 0 and 4: 64-bit memory, sized by set_bar through the LMI BAR
-	 * configuration. BAR2 (I/O at reset) is switched off; the upper halves
-	 * of the 64-bit BARs and BAR3 are not offered.
+	 * configuration. BAR2 (I/O at reset) and the expansion ROM BAR are
+	 * switched off; the upper halves of the 64-bit BARs and BAR3 are not
+	 * offered.
 	 */
 	ep->bar_cfg0 = advk_rd(ep, ADVK_LMI_BAR_CFG0) &
-		       ~(ADVK_BAR_CFG_EN << ADVK_BAR_CFG_SHIFT(2));
+		       ~((ADVK_BAR_CFG_EN << ADVK_BAR_CFG_SHIFT(2)) | ADVK_BAR_CFG_ROM_EN);
 	ep->bar_cfg1 = advk_rd(ep, ADVK_LMI_BAR_CFG1);
 	advk_wr(ep, ADVK_LMI_BAR_CFG0, ep->bar_cfg0);
 	ep->features.bar_fixed_64bit = BIT(0) | BIT(4);
