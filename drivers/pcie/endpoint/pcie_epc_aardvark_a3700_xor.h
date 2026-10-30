@@ -13,6 +13,8 @@ struct a3700_xor_result {
 	uint32_t err;
 	uint32_t err_addr;
 	uint32_t status;
+	/* time spent waiting for the descriptor write-back after EOC */
+	uint32_t wb_wait_us;
 };
 
 /* DMA unit IO decode window 1 -> PCIe (target 2), 64K granularity */

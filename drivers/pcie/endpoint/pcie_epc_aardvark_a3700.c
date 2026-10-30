@@ -290,7 +290,11 @@ static int a3700_ep_init(const struct device *dev)
  * CPU read overtook the XOR writes (two AXI masters, no ordering between
  * them). Shell: advk_ep dmastat [clear].
  */
+#define XOR_FLUSH_LEN 128
+static uint8_t flush_buf[XOR_FLUSH_LEN] __aligned(64);
+
 static struct {
+	uint32_t wb_us, wb_max_us;
 	uint32_t n_to, n_from;
 	uint64_t bytes_to, bytes_from;
 	uint64_t cyc_to, cyc_from, cyc_flush, cyc_flush_max, cyc_flush_min;
@@ -326,7 +330,7 @@ static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pc
 	if (!advk_bme(advk_ep(dev))) {
 		return -EACCES;
 	}
-	if (size < 128) {
+	if (size < XOR_FLUSH_LEN) {
 		return pcie_epc_xfer_memcpy(dev, func, pci_addr, local, size, to_host);
 	}
 	if (size >= 0x1000000) {
@@ -351,8 +355,24 @@ static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pc
 		if (ret != 0) {
 			dma_err(ret, &xr, true, size, host_axi);
 		}
-		/* non-posted read: the writes are at the host before an IRQ */
-		(void)sys_read8((mem_addr_t)map.ptr + size - 1);
+		dma_stat.wb_us += xr.wb_wait_us;
+		dma_stat.wb_max_us = MAX(dma_stat.wb_max_us, xr.wb_wait_us);
+		/*
+		 * Flush the posted writes before the caller raises an MSI. A CPU
+		 * read does not do it: it takes 1 us while the data still drains
+		 * (CPU and XOR are different AXI masters). Read the last bytes
+		 * back with the XOR itself, behind its own writes.
+		 */
+		if (ret == 0) {
+			struct a3700_xor_result fr;
+			uint32_t tail = (uint32_t)host_axi + size - XOR_FLUSH_LEN;
+
+			ret = a3700_xor_memcpy((uint32_t)k_mem_phys_addr(flush_buf), tail,
+					       XOR_FLUSH_LEN, &fr);
+			if (ret != 0) {
+				dma_err(ret, &fr, false, XOR_FLUSH_LEN, tail);
+			}
+		}
 		uint64_t f = k_cycle_get_64() - t1;
 
 		dma_stat.n_to++;
@@ -1276,6 +1296,9 @@ static int cmd_dmastat(const struct shell *sh, size_t argc, char **argv)
 			    k_cyc_to_us_floor64(dma_stat.cyc_flush_min),
 			    k_cyc_to_us_floor64(dma_stat.cyc_flush_max));
 	}
+	shell_print(sh, "           descriptor write-back wait: total %u us, max %u us "
+		    "(flush = XOR read-back of the last %u B)", dma_stat.wb_us, dma_stat.wb_max_us,
+		    XOR_FLUSH_LEN);
 	shell_print(sh, "from host: %u xfers, %llu B, XOR %llu us (%llu MB/s)", dma_stat.n_from,
 		    (unsigned long long)dma_stat.bytes_from, us_from,
 		    us_from ? dma_stat.bytes_from / us_from : 0);

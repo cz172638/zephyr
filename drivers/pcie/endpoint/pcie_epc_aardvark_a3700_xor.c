@@ -140,6 +140,23 @@ int a3700_xor_memcpy(uint32_t dst, uint32_t src, uint32_t len, struct a3700_xor_
 	sys_cache_data_invd_range(&desc, sizeof(desc));
 	r.status = desc.status;
 
+	/*
+	 * End of chain can come before the descriptor status is written back
+	 * (seen toward PCIe at Gen1: EOC, no error bits, owner still set):
+	 * wait for the write-back.
+	 */
+	if ((r.cause & XOR_CAUSE_EOC) && !(r.cause & XOR_CAUSE_ERRS) &&
+	    (r.status & XOR_DESC_OWNER)) {
+		int64_t wb_end = k_uptime_get() + 100;
+		uint64_t t0 = k_cycle_get_64();
+
+		while ((r.status & XOR_DESC_OWNER) && k_uptime_get() < wb_end) {
+			sys_cache_data_invd_range(&desc, sizeof(desc));
+			r.status = desc.status;
+		}
+		r.wb_wait_us = (uint32_t)k_cyc_to_us_floor64(k_cycle_get_64() - t0);
+	}
+
 	if (!(r.cause & XOR_CAUSE_EOC)) {
 		ret = -ETIMEDOUT;
 	} else if ((r.cause & XOR_CAUSE_ERRS) || !(r.status & XOR_DESC_SUCCESS)) {
