@@ -51,6 +51,18 @@ LOG_MODULE_REGISTER(pcie_epf_test, CONFIG_PCIE_EP_LOG_LEVEL);
 #define REG_DB_DATA    0x3c
 #define REG_BLOCK_SIZE 0x40
 
+/*
+ * DSN mailbox, outside the Linux register block: the host writes the
+ * EUI-64 (lower, upper dword) and then the magic; the EPF programs it
+ * (the DSN capability itself is read-only from the link on some
+ * controllers) and clears the magic, or leaves a negative errno.
+ * CONFIG_PCIE_EPC_DSN_SETTINGS then notices the new value and saves it.
+ */
+#define REG_DSN_CTRL   0x1000
+#define REG_DSN_LO     0x1004
+#define REG_DSN_HI     0x1008
+#define DSN_MAGIC      0x44534e21 /* "DSN!" */
+
 #define CMD_RAISE_INTX BIT(0)
 #define CMD_RAISE_MSI  BIT(1)
 #define CMD_RAISE_MSIX BIT(2)
@@ -265,6 +277,14 @@ static void cmd_work_handler(struct k_work *work)
 	uint32_t cmd = reg_rd(d, REG_COMMAND);
 	int ret;
 
+	if (reg_rd(d, REG_DSN_CTRL) == DSN_MAGIC) {
+		uint64_t v = ((uint64_t)reg_rd(d, REG_DSN_HI) << 32) | reg_rd(d, REG_DSN_LO);
+
+		ret = pcie_epc_set_dsn(cfg->epc, cfg->func, v);
+		LOG_INF("DSN %016llx from the host: %d", (unsigned long long)v, ret);
+		reg_wr(d, REG_DSN_CTRL, (uint32_t)ret);
+	}
+
 	if (cmd == 0) {
 		goto resched;
 	}
@@ -361,7 +381,7 @@ static int epf_test_setup_bars(const struct device *dev)
 		uintptr_t base;
 
 		if (b == cfg->reg_bar) {
-			want = MAX(want, REG_BLOCK_SIZE);
+			want = MAX(want, REG_DSN_HI + 4);
 			if (cfg->msix_irqs != 0) {
 				/* table + PBA after the register block */
 				want = MAX(want, REG_BLOCK_SIZE + cfg->msix_irqs * 16U +
