@@ -22,6 +22,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/crc.h>
+#include <zephyr/toolchain.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
@@ -115,6 +116,10 @@ struct epf_test_data {
 	uintptr_t mem_virt;
 	bool bme;
 	bool link;
+	/* per command, in cycles: transfers, CRC, pattern fill */
+	uint64_t t_xfer;
+	uint64_t t_crc;
+	uint64_t t_fill;
 	uint8_t chunk[CONFIG_PCIE_EPF_TEST_CHUNK] __aligned(8);
 };
 
@@ -137,16 +142,73 @@ static inline void sts_set(struct epf_test_data *d, uint32_t bits)
 static void fill_pattern(uint8_t *buf, size_t len)
 {
 	static uint32_t state;
+	size_t i = 0;
 
 	if (state == 0) {
 		state = k_cycle_get_32() | 1U;
 	}
-	for (size_t i = 0; i < len; i++) {
+	/* a word per xorshift step; chunk is 8-byte aligned */
+	for (; i + 4 <= len; i += 4) {
+		state ^= state << 13;
+		state ^= state >> 17;
+		state ^= state << 5;
+		UNALIGNED_PUT(state, (uint32_t *)&buf[i]);
+	}
+	for (; i < len; i++) {
 		state ^= state << 13;
 		state ^= state >> 17;
 		state ^= state << 5;
 		buf[i] = (uint8_t)state;
 	}
+}
+
+/*
+ * crc32_ieee_update() semantics. Armv8 CRC32 instructions where the core
+ * has them (Cortex-A53: 8 bytes per instruction), the 4-bit table of the
+ * library otherwise.
+ */
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+/* inline asm: arm_acle.h clashes with Zephyr's stdint types */
+static inline uint32_t crc32b(uint32_t c, uint8_t v)
+{
+	__asm__("crc32b %w0, %w0, %w1" : "+r"(c) : "r"(v));
+	return c;
+}
+
+static inline uint32_t crc32x(uint32_t c, uint64_t v)
+{
+	__asm__("crc32x %w0, %w0, %x1" : "+r"(c) : "r"(v));
+	return c;
+}
+
+static uint32_t crc_update(uint32_t crc, const uint8_t *p, size_t len)
+{
+	uint32_t c = ~crc;
+
+	while (len != 0 && ((uintptr_t)p & 7) != 0) {
+		c = crc32b(c, *p++);
+		len--;
+	}
+	for (; len >= 8; len -= 8, p += 8) {
+		c = crc32x(c, *(const uint64_t *)p);
+	}
+	while (len-- != 0) {
+		c = crc32b(c, *p++);
+	}
+	return ~c;
+}
+#else
+#define crc_update crc32_ieee_update
+#endif
+
+static inline uint64_t t_start(void)
+{
+	return k_cycle_get_64();
+}
+
+static inline void t_add(uint64_t *acc, uint64_t t0)
+{
+	*acc += k_cycle_get_64() - t0;
 }
 
 /* Linux crc32_le(~0, ...) == ~(Zephyr crc32_ieee chained from 0) */
@@ -206,12 +268,17 @@ static int cmd_read(const struct device *dev, struct epf_test_data *d)
 	for (uint32_t off = 0; off < size; off += sizeof(d->chunk)) {
 		size_t n = MIN(sizeof(d->chunk), size - off);
 
+		uint64_t t0 = t_start();
+
 		ret = xfer(cfg, d, src + off, d->chunk, n, false);
+		t_add(&d->t_xfer, t0);
 		if (ret != 0) {
 			sts_set(d, STS_SRC_ADDR_INVALID);
 			return ret;
 		}
-		crc = crc32_ieee_update(crc, d->chunk, n);
+		t0 = t_start();
+		crc = crc_update(crc, d->chunk, n);
+		t_add(&d->t_crc, t0);
 	}
 
 	return crc_linux(crc) == reg_rd(d, REG_CHECKSUM) ? 0 : -EIO;
@@ -229,9 +296,16 @@ static int cmd_write(const struct device *dev, struct epf_test_data *d)
 	for (uint32_t off = 0; off < size; off += sizeof(d->chunk)) {
 		size_t n = MIN(sizeof(d->chunk), size - off);
 
+		uint64_t t0 = t_start();
+
 		fill_pattern(d->chunk, n);
-		crc = crc32_ieee_update(crc, d->chunk, n);
+		t_add(&d->t_fill, t0);
+		t0 = t_start();
+		crc = crc_update(crc, d->chunk, n);
+		t_add(&d->t_crc, t0);
+		t0 = t_start();
 		ret = xfer(cfg, d, dst + off, d->chunk, n, true);
+		t_add(&d->t_xfer, t0);
 		if (ret != 0) {
 			sts_set(d, STS_DST_ADDR_INVALID);
 			return ret;
@@ -254,12 +328,16 @@ static int cmd_copy(const struct device *dev, struct epf_test_data *d)
 	for (uint32_t off = 0; off < size; off += sizeof(d->chunk)) {
 		size_t n = MIN(sizeof(d->chunk), size - off);
 
+		uint64_t t0 = t_start();
+
 		ret = xfer(cfg, d, src + off, d->chunk, n, false);
 		if (ret != 0) {
+			t_add(&d->t_xfer, t0);
 			sts_set(d, STS_SRC_ADDR_INVALID);
 			return ret;
 		}
 		ret = xfer(cfg, d, dst + off, d->chunk, n, true);
+		t_add(&d->t_xfer, t0);
 		if (ret != 0) {
 			sts_set(d, STS_DST_ADDR_INVALID);
 			return ret;
@@ -296,8 +374,11 @@ static void cmd_work_handler(struct k_work *work)
 		if (!d->bme) {
 			LOG_WRN("command 0x%x before bus mastering enabled", cmd);
 		}
-		int64_t t0 = k_uptime_get();
+		uint64_t t0 = k_cycle_get_64();
 
+		d->t_xfer = 0;
+		d->t_crc = 0;
+		d->t_fill = 0;
 		if (cmd & CMD_READ) {
 			ret = cmd_read(dev, d);
 			sts_set(d, ret == 0 ? STS_READ_SUCCESS : STS_READ_FAIL);
@@ -308,9 +389,19 @@ static void cmd_work_handler(struct k_work *work)
 			ret = cmd_copy(dev, d);
 			sts_set(d, ret == 0 ? STS_COPY_SUCCESS : STS_COPY_FAIL);
 		}
-		LOG_INF("cmd 0x%x %u bytes %s: %d, %lld ms", cmd, reg_rd(d, REG_SIZE),
-			(reg_rd(d, REG_FLAGS) & FLAG_USE_DMA) ? "dma" : "memcpy", ret,
-			k_uptime_get() - t0);
+		{
+			uint32_t size = reg_rd(d, REG_SIZE);
+			uint64_t total = k_cyc_to_us_floor64(k_cycle_get_64() - t0);
+			uint64_t xfer_us = k_cyc_to_us_floor64(d->t_xfer);
+			/* bytes per us = MB/s; copy moves the data twice */
+			uint64_t moved = (cmd & CMD_COPY) ? 2ULL * size : size;
+
+			LOG_INF("cmd 0x%x %u B %s: %d, %llu us: xfer %llu us (%llu MB/s), crc %llu us, "
+				"fill %llu us", cmd, size,
+				(reg_rd(d, REG_FLAGS) & FLAG_USE_DMA) ? "dma" : "memcpy", ret, total,
+				xfer_us, xfer_us ? moved / xfer_us : 0,
+				k_cyc_to_us_floor64(d->t_crc), k_cyc_to_us_floor64(d->t_fill));
+		}
 		raise_irq(dev, d);
 	} else if (cmd & CMD_RAISE_INTX) {
 		reg_wr(d, REG_IRQ_TYPE, IRQ_TYPE_INTX);
