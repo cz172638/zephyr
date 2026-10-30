@@ -216,6 +216,17 @@ static inline struct advk_ep *advk_ep(const struct device *dev)
 	return &((struct advk_ep_data *)dev->data)->ep;
 }
 
+/*
+ * Bus Master Enable in our own Command register. Without it the
+ * controller rejects outbound requests: a CPU store through an outbound
+ * window ends in an SError, the XOR engine in an MBUS error. The host
+ * clears it with a reset (EP reboot, hot reset, driver unbind).
+ */
+static inline bool advk_bme(const struct advk_ep *ep)
+{
+	return (sys_read32(ep->reg + 0x04) & BIT(2)) != 0;
+}
+
 static inline uint32_t advk_rd(const struct advk_ep *ep, uint32_t off)
 {
 	return sys_read32(ep->reg + off);

@@ -536,6 +536,9 @@ static int raise_msix(const struct device *dev, uint16_t irq_num)
 	if ((ctrl & ADVK_MSIX_CTRL_EN) == 0 || ep->msix_tbl == NULL) {
 		return -EINVAL;
 	}
+	if (!advk_bme(ep)) {
+		return -EACCES;
+	}
 	if (irq_num == 0 || irq_num > ep->msix_nr) {
 		return -EINVAL;
 	}
@@ -578,6 +581,9 @@ static int raise_msi(const struct device *dev, uint16_t irq_num)
 
 	if ((ctrl & ADVK_MSI_CTRL_EN) == 0) {
 		return -EINVAL;
+	}
+	if (!advk_bme(ep)) {
+		return -EACCES;
 	}
 	vectors = 1 << FIELD_GET(ADVK_MSI_CTRL_MME, ctrl);
 	if (irq_num == 0 || irq_num > vectors) {

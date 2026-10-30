@@ -371,8 +371,20 @@ static void cmd_work_handler(struct k_work *work)
 	reg_wr(d, REG_STATUS, 0);
 
 	if (cmd & (CMD_READ | CMD_WRITE | CMD_COPY)) {
-		if (!d->bme) {
-			LOG_WRN("command 0x%x before bus mastering enabled", cmd);
+		uint32_t cmdsts = 0;
+
+		/*
+		 * The controller's own Command register, not the cached flag:
+		 * without Bus Master Enable an outbound access faults (SError
+		 * on the Armada 3700). No IRQ either, an MSI is a memory write.
+		 */
+		(void)pcie_epc_cfg_read(cfg->epc, cfg->func, 0x04, &cmdsts);
+		if ((cmdsts & BIT(2)) == 0) {
+			LOG_ERR("command 0x%x without bus mastering (command register %04x): "
+				"rebind the host driver", cmd, cmdsts & 0xffff);
+			sts_set(d, (cmd & CMD_READ) ? STS_READ_FAIL :
+				   (cmd & CMD_WRITE) ? STS_WRITE_FAIL : STS_COPY_FAIL);
+			goto resched;
 		}
 		uint64_t t0 = k_cycle_get_64();
 

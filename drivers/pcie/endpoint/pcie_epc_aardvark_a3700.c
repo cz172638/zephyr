@@ -290,6 +290,9 @@ static int a3700_ep_xfer_dma(const struct device *dev, uint8_t func, uint64_t pc
 	uint64_t host_axi, local_phys;
 	int ret;
 
+	if (!advk_bme(advk_ep(dev))) {
+		return -EACCES;
+	}
 	if (size < 128) {
 		return pcie_epc_xfer_memcpy(dev, func, pci_addr, local, size, to_host);
 	}
