@@ -115,6 +115,7 @@ struct epf_test_data {
 	/* CPU view of the memory-region (mapped on MMU targets) */
 	uintptr_t mem_virt;
 	bool bme;
+	bool bme_wait;
 	bool link;
 	/* per command, in cycles: transfers, CRC, pattern fill */
 	uint64_t t_xfer;
@@ -367,25 +368,37 @@ static void cmd_work_handler(struct k_work *work)
 		goto resched;
 	}
 
+	/*
+	 * Everything but INTx needs Bus Master Enable in the controller's own
+	 * Command register: without it an outbound access faults (SError on
+	 * the Armada 3700), and an MSI is a memory write too. The host driver
+	 * waits for the IRQ without a timeout, so the command stays pending
+	 * until the host sets BME again (rebind, or setpci COMMAND) and then
+	 * runs normally.
+	 */
+	if ((cmd & ~CMD_RAISE_INTX) != 0) {
+		uint32_t cmdsts = 0;
+
+		(void)pcie_epc_cfg_read(cfg->epc, cfg->func, 0x04, &cmdsts);
+		if ((cmdsts & BIT(2)) == 0) {
+			if (!d->bme_wait) {
+				LOG_ERR("command 0x%x waits for bus mastering (command register "
+					"%04x): rebind the host driver or setpci COMMAND",
+					cmd, cmdsts & 0xffff);
+				d->bme_wait = true;
+			}
+			goto resched;
+		}
+		if (d->bme_wait) {
+			LOG_INF("bus mastering on, running command 0x%x", cmd);
+			d->bme_wait = false;
+		}
+	}
+
 	reg_wr(d, REG_COMMAND, 0);
 	reg_wr(d, REG_STATUS, 0);
 
 	if (cmd & (CMD_READ | CMD_WRITE | CMD_COPY)) {
-		uint32_t cmdsts = 0;
-
-		/*
-		 * The controller's own Command register, not the cached flag:
-		 * without Bus Master Enable an outbound access faults (SError
-		 * on the Armada 3700). No IRQ either, an MSI is a memory write.
-		 */
-		(void)pcie_epc_cfg_read(cfg->epc, cfg->func, 0x04, &cmdsts);
-		if ((cmdsts & BIT(2)) == 0) {
-			LOG_ERR("command 0x%x without bus mastering (command register %04x): "
-				"rebind the host driver", cmd, cmdsts & 0xffff);
-			sts_set(d, (cmd & CMD_READ) ? STS_READ_FAIL :
-				   (cmd & CMD_WRITE) ? STS_WRITE_FAIL : STS_COPY_FAIL);
-			goto resched;
-		}
 		uint64_t t0 = k_cycle_get_64();
 
 		d->t_xfer = 0;
