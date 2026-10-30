@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include <zephyr/device.h>
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/barrier.h>
@@ -114,6 +115,8 @@ struct epf_test_data {
 	volatile uint8_t *regs;
 	/* CPU view of the memory-region (mapped on MMU targets) */
 	uintptr_t mem_virt;
+	/* header in use: from DT, replaced by settings or the epf_hdr shell */
+	struct pcie_epc_header hdr;
 	bool bme;
 	bool bme_wait;
 	bool link;
@@ -561,6 +564,162 @@ static int epf_test_setup_bars(const struct device *dev)
 	return 0;
 }
 
+/* instances, for the header settings and the epf_hdr shell */
+static const struct device *inst[4];
+static int n_inst;
+
+#ifdef CONFIG_PCIE_EPF_TEST_SETTINGS
+#include <zephyr/settings/settings.h>
+
+BUILD_ASSERT(CONFIG_PCIE_EPF_TEST_SETTINGS_PRIORITY < CONFIG_PCIE_EPC_AUTOSTART_PRIORITY,
+	     "the saved header has to be in place before link autostart");
+
+struct hdr_read {
+	struct pcie_epc_header h;
+	bool found;
+};
+
+static int hdr_read_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+		       void *param)
+{
+	struct hdr_read *r = param;
+
+	ARG_UNUSED(key);
+	if (len == sizeof(r->h) && read_cb(cb_arg, &r->h, len) == len) {
+		r->found = true;
+	}
+	return 0;
+}
+
+static void hdr_key(char *key, size_t len, int i)
+{
+	snprintf(key, len, "epf_test/hdr%d", i);
+}
+
+/* A header saved by epf_hdr replaces the DT one, before the link comes up */
+static int hdr_settings_init(void)
+{
+	if (settings_subsys_init() != 0) {
+		return 0;
+	}
+	for (int i = 0; i < n_inst; i++) {
+		const struct epf_test_config *cfg = inst[i]->config;
+		struct epf_test_data *d = inst[i]->data;
+		struct hdr_read r = {0};
+		char key[20];
+
+		hdr_key(key, sizeof(key), i);
+		(void)settings_load_subtree_direct(key, hdr_read_cb, &r);
+		if (r.found) {
+			d->hdr = r.h;
+			(void)pcie_epc_write_header(cfg->epc, cfg->func, &d->hdr);
+			LOG_INF("%s: saved header %04x:%04x sub %04x:%04x class %02x%02x%02x",
+				inst[i]->name, r.h.vendor_id, r.h.device_id, r.h.subsys_vendor_id,
+				r.h.subsys_id, r.h.baseclass, r.h.subclass, r.h.prog_if);
+		}
+	}
+	return 0;
+}
+
+SYS_INIT(hdr_settings_init, POST_KERNEL, CONFIG_PCIE_EPF_TEST_SETTINGS_PRIORITY);
+#endif
+
+#ifdef CONFIG_SHELL
+#include <zephyr/shell/shell.h>
+#include <stdlib.h>
+
+static void hdr_print(const struct shell *sh, int i, const struct pcie_epc_header *h)
+{
+	shell_print(sh, "%d %s: %04x:%04x rev %02x sub %04x:%04x class %02x%02x%02x", i,
+		    inst[i]->name, h->vendor_id, h->device_id, h->revision_id, h->subsys_vendor_id,
+		    h->subsys_id, h->baseclass, h->subclass, h->prog_if);
+}
+
+static int parse_pair(const char *s, uint16_t *a, uint16_t *b)
+{
+	char *end;
+	unsigned long x = strtoul(s, &end, 16), y;
+
+	if (*end != ':' || x > 0xffff) {
+		return -EINVAL;
+	}
+	y = strtoul(end + 1, &end, 16);
+	if (*end != '\0' || y > 0xffff) {
+		return -EINVAL;
+	}
+	*a = (uint16_t)x;
+	*b = (uint16_t)y;
+	return 0;
+}
+
+/*
+ * epf_hdr [set <vid:pid> [<svid:ssid> [<class>]] | reset]: header of every
+ * epf_test instance. Written at once (the host sees it after a remove +
+ * rescan) and saved with CONFIG_PCIE_EPF_TEST_SETTINGS. 104c:b500 (TI
+ * DRA74x) is in the Linux pci_endpoint_test table with BAR0 registers and
+ * 4 KiB alignment, so the driver binds without new_id.
+ */
+static int cmd_epf_hdr(const struct shell *sh, size_t argc, char **argv)
+{
+	for (int i = 0; i < n_inst; i++) {
+		const struct epf_test_config *cfg = inst[i]->config;
+		struct epf_test_data *d = inst[i]->data;
+		struct pcie_epc_header h = d->hdr;
+		bool save = false;
+
+		if (argc >= 3 && strcmp(argv[1], "set") == 0) {
+			if (parse_pair(argv[2], &h.vendor_id, &h.device_id) != 0 ||
+			    (argc >= 4 && parse_pair(argv[3], &h.subsys_vendor_id,
+						     &h.subsys_id) != 0)) {
+				shell_error(sh, "vid:pid [svid:ssid [class]] in hex");
+				return -EINVAL;
+			}
+			if (argc >= 5) {
+				unsigned long c = strtoul(argv[4], NULL, 16);
+
+				h.baseclass = (uint8_t)(c >> 16);
+				h.subclass = (uint8_t)(c >> 8);
+				h.prog_if = (uint8_t)c;
+			}
+			save = true;
+		} else if (argc >= 2 && strcmp(argv[1], "reset") == 0) {
+			h = cfg->hdr;
+			save = true;
+		} else if (argc >= 2) {
+			return -EINVAL;
+		}
+		if (save) {
+			int ret = pcie_epc_write_header(cfg->epc, cfg->func, &h);
+
+			if (ret != 0) {
+				shell_error(sh, "write header: %d", ret);
+				return ret;
+			}
+			d->hdr = h;
+#ifdef CONFIG_PCIE_EPF_TEST_SETTINGS
+			char key[20];
+
+			hdr_key(key, sizeof(key), i);
+			if (argc >= 2 && strcmp(argv[1], "reset") == 0) {
+				(void)settings_delete(key);
+			} else {
+				(void)settings_save_one(key, &h, sizeof(h));
+			}
+#endif
+		}
+		hdr_print(sh, i, &d->hdr);
+	}
+	if (argc >= 2) {
+		shell_print(sh, "host: echo 1 > .../remove; echo 1 > /sys/bus/pci/rescan");
+	}
+	return 0;
+}
+
+SHELL_CMD_ARG_REGISTER(epf_hdr, NULL,
+		       "[set <vid:pid> [<svid:ssid> [<class>]] | reset] epf_test header "
+		       "(104c:b500 binds pci_endpoint_test)", cmd_epf_hdr, 1, 4);
+#endif
+
 static int epf_test_init(const struct device *dev)
 {
 	const struct epf_test_config *cfg = dev->config;
@@ -580,9 +739,13 @@ static int epf_test_init(const struct device *dev)
 		return ret;
 	}
 
-	ret = pcie_epc_write_header(cfg->epc, cfg->func, &cfg->hdr);
+	d->hdr = cfg->hdr;
+	ret = pcie_epc_write_header(cfg->epc, cfg->func, &d->hdr);
 	if (ret != 0) {
 		return ret;
+	}
+	if (n_inst < ARRAY_SIZE(inst)) {
+		inst[n_inst++] = dev;
 	}
 
 #ifdef CONFIG_MMU

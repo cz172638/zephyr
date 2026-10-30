@@ -22,6 +22,19 @@ config PCIE_EPF_TEST_POLL_US
 	default 1000
 	depends on PCIE_EPF_TEST
 
+config PCIE_EPF_TEST_SETTINGS
+	bool "Keep a header set by the epf_hdr shell command in settings"
+	default y
+	depends on PCIE_EPF_TEST && SETTINGS
+
+config PCIE_EPF_TEST_SETTINGS_PRIORITY
+	int "Saved header init priority"
+	default 86
+	depends on PCIE_EPF_TEST_SETTINGS
+	help
+	  POST_KERNEL priority: after the settings flash and the EPF, before
+	  PCIE_EPC_AUTOSTART_PRIORITY.
+
 config PCIE_EPF_TEST_CHUNK
 	int "Transfer chunk size"
 	default 65536
