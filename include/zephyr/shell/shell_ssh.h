@@ -70,6 +70,31 @@ struct shell_ssh_context {
 	bool in_use;
 };
 
+#if defined(CONFIG_SHELL_SSH_SCP) || defined(__DOXYGEN__)
+/**
+ * @brief Destination of files sent with legacy scp (scp -O host:<path>).
+ *
+ * The callbacks run in the SSH exec work queue thread.
+ */
+struct shell_ssh_scp_sink {
+	/**
+	 * Start a file. path: target given to scp, name: source file name,
+	 * size: announced length. 0 to accept, negative errno to refuse.
+	 */
+	int (*open)(const char *path, const char *name, size_t size, void **handle);
+	/** File data, in order. Negative errno aborts the transfer. */
+	int (*write)(void *handle, const uint8_t *data, size_t len);
+	/**
+	 * End of the file. ok: all data arrived. A one-line message for the
+	 * user can be left in msg. 0 or a negative errno.
+	 */
+	int (*close)(void *handle, bool ok, char *msg, size_t msg_len);
+};
+
+/** @brief Register the scp sink (one, replaces the previous one). */
+void shell_ssh_scp_sink_set(const struct shell_ssh_scp_sink *sink);
+#endif
+
 /** @cond INTERNAL_HIDDEN */
 extern const struct shell_transport_api shell_ssh_transport_api;
 /** @endcond */

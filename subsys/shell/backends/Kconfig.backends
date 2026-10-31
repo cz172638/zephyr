@@ -526,6 +526,39 @@ config SHELL_PROMPT_SSH
 	help
 	  Displayed prompt name for SSH backend.
 
+config SHELL_SSH_EXEC
+	bool "Commands from SSH exec requests"
+	depends on SSH_SERVER
+	select SHELL_BACKEND_DUMMY
+	help
+	  "ssh <host> '<command>'" runs the command on the dummy shell
+	  backend and returns its output and an exit status. The output is
+	  limited to SHELL_BACKEND_DUMMY_BUF_SIZE and is sent when the
+	  command has finished.
+
+if SHELL_SSH_EXEC
+
+config SHELL_SSH_EXEC_STACK_SIZE
+	int "Exec work queue stack size"
+	default 8192
+
+config SHELL_SSH_EXEC_PRIORITY
+	int "Exec work queue priority"
+	default 7
+
+config SHELL_SSH_SCP
+	bool "Legacy scp sink (scp -O)"
+	help
+	  Serve "scp -t <path>" (what scp -O, the original scp protocol,
+	  runs on the remote side) with a sink registered by
+	  shell_ssh_scp_sink_set(). Single files only. SFTP, the default of
+	  OpenSSH >= 9.0, is not supported.
+
+endif # SHELL_SSH_EXEC
+
+configdefault SHELL_BACKEND_DUMMY_BUF_SIZE
+	default 16384 if SHELL_SSH_EXEC
+
 module = SHELL_SSH
 module-str = SSH shell backend
 source "subsys/logging/Kconfig.template.log_config"
