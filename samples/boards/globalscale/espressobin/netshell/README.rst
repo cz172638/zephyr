@@ -17,7 +17,9 @@ For a board without a working serial console. On boot the sample:
 * starts the SSH server with the Zephyr shell, allowing a built-in public
   key and/or a password.
 
-From the shell, ``fwupdate tcp`` replaces the SPI NOR boot image.
+``scp -O flash-image.bin <board>:/fw`` (or ``fwupdate tcp`` from the
+shell) replaces the SPI NOR boot image; ``ssh <board> '<command>'`` runs
+one shell command.
 
 Building
 ********
@@ -95,6 +97,23 @@ Using
    zephyr:~$ fwupdate tcp
    $ nc -N espressobinf0ad4e03858d.local 6969 < flash-image.bin
    zephyr:~$ kernel reboot cold
+
+Without an interactive session, over the SSH key authentication:
+
+.. code-block:: console
+
+   $ B=root@espressobinf0ad4e03858d.local
+   $ scp -O flash-image.bin $B:/fw-dry    # receive and check only
+   $ scp -O flash-image.bin $B:/fw        # write, verify
+   fwupdate: 800176 bytes, crc32 ... written and verified, start it with: kernel reboot cold
+   $ ssh $B 'kernel reboot cold'
+   $ ssh $B 'net iface'                   # exit status = command result
+
+``scp -O`` selects the original scp protocol (``scp -t`` on the board);
+SFTP, the default of OpenSSH 9.0 and later, is not served. Single files
+only; the image is collected in RAM and only programmed when complete,
+with the TIM header checked. Command output comes back when the command
+has finished, up to ``CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE`` (16 KiB).
 
 Limitations
 ***********
