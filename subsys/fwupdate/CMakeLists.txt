@@ -3,6 +3,6 @@
 
 zephyr_library()
 zephyr_library_sources_ifdef(CONFIG_FWUPDATE_YMODEM ymodem.c)
-if(CONFIG_FWUPDATE_YMODEM OR CONFIG_FWUPDATE_TCP)
+if(CONFIG_FWUPDATE_YMODEM OR CONFIG_FWUPDATE_TCP OR CONFIG_FWUPDATE_SCP)
   zephyr_library_sources(fwupdate_shell.c)
 endif()

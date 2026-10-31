@@ -23,6 +23,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/shell/shell.h>
@@ -176,19 +177,37 @@ static const struct ymodem_ops fw_ymodem_ops = {
 /* ---------------------------------------------------------------------- */
 /* Image check and flash programming                                       */
 
+/* Without a shell (scp) the messages go to the console */
+#define FW_ERR(sh, fmt, ...)                                                                     \
+	do {                                                                                     \
+		if ((sh) != NULL) {                                                              \
+			shell_error(sh, fmt, ##__VA_ARGS__);                                     \
+		} else {                                                                         \
+			printk("fwupdate: " fmt "\n", ##__VA_ARGS__);                            \
+		}                                                                                \
+	} while (0)
+#define FW_PRINT(sh, fmt, ...)                                                                   \
+	do {                                                                                     \
+		if ((sh) != NULL) {                                                              \
+			shell_print(sh, fmt, ##__VA_ARGS__);                                     \
+		} else {                                                                         \
+			printk("fwupdate: " fmt "\n", ##__VA_ARGS__);                            \
+		}                                                                                \
+	} while (0)
+
 static int fw_check(const struct shell *sh, size_t len)
 {
 	if (len == 0) {
-		shell_error(sh, "empty image");
+		FW_ERR(sh, "empty image");
 		return -ENODATA;
 	}
 	if (fw.size != 0 && fw.size != len) {
-		shell_error(sh, "size mismatch: announced %zu, received %zu", fw.size, len);
+		FW_ERR(sh, "size mismatch: announced %zu, received %zu", fw.size, len);
 		return -EIO;
 	}
 	if (IS_ENABLED(CONFIG_FWUPDATE_TIM_HEADER) &&
 	    (len < TIM_MAGIC_OFFSET + 4 || sys_get_le32(&fw_buf[TIM_MAGIC_OFFSET]) != TIM_MAGIC)) {
-		shell_error(sh, "no Marvell TIM header (TIMH) at offset 4, refusing to flash");
+		FW_ERR(sh, "no Marvell TIM header (TIMH) at offset 4, refusing to flash");
 		return -ENOEXEC;
 	}
 	return 0;
@@ -200,14 +219,14 @@ static int fw_program(const struct shell *sh, size_t len)
 	uint32_t crc = 0;
 	int ret;
 
-	shell_print(sh, "handing %zu bytes to the firmware programmer...", len);
+	FW_PRINT(sh, "handing %zu bytes to the firmware programmer...", len);
 	ret = fwupdate_program_external(fw_buf, len, &crc);
 	if (ret < 0) {
-		shell_error(sh, "programming: %d", ret);
+		FW_ERR(sh, "programming: %d", ret);
 		return ret;
 	}
 	if (crc != crc32_ieee(fw_buf, len)) {
-		shell_error(sh, "programmer read back crc32 %08x", crc);
+		FW_ERR(sh, "programmer read back crc32 %08x", crc);
 		return -EIO;
 	}
 	return 0;
@@ -223,7 +242,7 @@ static int fw_program(const struct shell *sh, size_t len)
 
 	ret = flash_area_open(FW_ID, &fa);
 	if (ret < 0) {
-		shell_error(sh, "flash_area_open: %d", ret);
+		FW_ERR(sh, "flash_area_open: %d", ret);
 		return ret;
 	}
 
@@ -234,18 +253,18 @@ static int fw_program(const struct shell *sh, size_t len)
 	unit = info.size;
 	erase_len = ROUND_UP(len, unit);
 
-	shell_print(sh, "erasing %zu bytes...", erase_len);
+	FW_PRINT(sh, "erasing %zu bytes...", erase_len);
 	/* Header first: from here on the old image no longer boots */
 	ret = flash_area_erase(fa, 0, unit);
 	if (ret == 0 && erase_len > unit) {
 		ret = flash_area_erase(fa, unit, erase_len - unit);
 	}
 	if (ret < 0) {
-		shell_error(sh, "erase: %d", ret);
+		FW_ERR(sh, "erase: %d", ret);
 		goto out;
 	}
 
-	shell_print(sh, "writing...");
+	FW_PRINT(sh, "writing...");
 	if (len > unit) {
 		ret = flash_area_write(fa, unit, &fw_buf[unit], len - unit);
 	}
@@ -254,17 +273,17 @@ static int fw_program(const struct shell *sh, size_t len)
 		ret = flash_area_write(fa, 0, fw_buf, MIN(len, unit));
 	}
 	if (ret < 0) {
-		shell_error(sh, "write: %d", ret);
+		FW_ERR(sh, "write: %d", ret);
 		goto out;
 	}
 
-	shell_print(sh, "verifying...");
+	FW_PRINT(sh, "verifying...");
 	for (size_t off = 0; off < len; off += sizeof(vbuf)) {
 		size_t n = MIN(sizeof(vbuf), len - off);
 
 		ret = flash_area_read(fa, off, vbuf, n);
 		if (ret < 0 || memcmp(vbuf, &fw_buf[off], n) != 0) {
-			shell_error(sh, "verify failed at 0x%zx", off);
+			FW_ERR(sh, "verify failed at 0x%zx", off);
 			ret = ret < 0 ? ret : -EIO;
 			goto out;
 		}
@@ -275,6 +294,115 @@ out:
 	return ret;
 }
 #endif /* CONFIG_FWUPDATE_PROGRAM_EXTERNAL */
+
+
+#if defined(CONFIG_FWUPDATE_SCP)
+/*
+ * scp -O flash-image.bin <board>:/fw      (or :/fw-dry for a dry run)
+ *
+ * The file is collected in the same RAM buffer, then checked and
+ * programmed as above; the result comes back on the scp's stderr.
+ */
+#include <zephyr/shell/shell_ssh.h>
+
+static int fw_scp_open(const char *path, const char *name, size_t size, void **h)
+{
+	const char *p = path[0] == '/' ? &path[1] : path;
+	bool dry;
+
+	if (strcmp(p, "fw") == 0) {
+		dry = false;
+	} else if (strcmp(p, "fw-dry") == 0) {
+		dry = true;
+	} else {
+		return -ENOENT;
+	}
+	if (size == 0) {
+		return -ENODATA;
+	}
+	if (size > FW_SIZE) {
+		return -EFBIG;
+	}
+	if (!atomic_cas(&fw.busy, 0, 1)) {
+		return -EBUSY;
+	}
+
+	fw.sh = NULL;
+	fw.dry = dry;
+	fw.xmodem = false;
+	fw.size = size;
+	fw.received = 0;
+	strncpy(fw.name, name, sizeof(fw.name) - 1);
+	fw.name[sizeof(fw.name) - 1] = '\0';
+	*h = &fw;
+	printk("fwupdate: scp \"%s\", %zu bytes%s\n", fw.name, size, dry ? " (dry run)" : "");
+	return 0;
+}
+
+static int fw_scp_write(void *h, const uint8_t *data, size_t len)
+{
+	ARG_UNUSED(h);
+
+	if (fw.received + len > fw.size) {
+		return -EFBIG;
+	}
+	memcpy(&fw_buf[fw.received], data, len);
+	fw.received += len;
+	return 0;
+}
+
+static int fw_scp_close(void *h, bool ok, char *msg, size_t msg_len)
+{
+	uint32_t crc;
+	int ret;
+
+	ARG_UNUSED(h);
+
+	if (!ok) {
+		printk("fwupdate: scp transfer incomplete, flash not touched\n");
+		ret = -EIO;
+		goto done;
+	}
+
+	crc = crc32_ieee(fw_buf, fw.received);
+	ret = fw_check(NULL, fw.received);
+	if (ret < 0) {
+		snprintk(msg, msg_len, "image rejected (empty, size or no TIMH header)");
+		goto done;
+	}
+	if (fw.dry) {
+		snprintk(msg, msg_len, "fwupdate: %zu bytes, crc32 %08x, dry run, flash not touched",
+			 fw.received, crc);
+		goto done;
+	}
+
+	ret = fw_program(NULL, fw.received);
+	if (ret < 0) {
+		snprintk(msg, msg_len, "programming failed, see the console");
+		goto done;
+	}
+	snprintk(msg, msg_len, "fwupdate: %zu bytes, crc32 %08x written and verified, start it with: %s",
+		 fw.received, crc, IS_ENABLED(CONFIG_REBOOT) ? "kernel reboot cold" : "a power cycle");
+	printk("%s\n", msg);
+
+done:
+	atomic_clear(&fw.busy);
+	return ret;
+}
+
+static const struct shell_ssh_scp_sink fw_scp_sink = {
+	.open = fw_scp_open,
+	.write = fw_scp_write,
+	.close = fw_scp_close,
+};
+
+static int fw_scp_init(void)
+{
+	shell_ssh_scp_sink_set(&fw_scp_sink);
+	return 0;
+}
+SYS_INIT(fw_scp_init, APPLICATION, 99);
+#endif /* CONFIG_FWUPDATE_SCP */
 
 /* ---------------------------------------------------------------------- */
 /* Shell                                                                   */

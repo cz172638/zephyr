@@ -57,6 +57,16 @@ config FWUPDATE_TCP_ACCEPT_TIMEOUT
 	default 120
 	depends on FWUPDATE_TCP
 
+config FWUPDATE_SCP
+	bool "scp upload (scp -O image <board>:/fw)"
+	default y
+	depends on SHELL_SSH_SCP
+	select CRC
+	help
+	  Registers the SSH shell's legacy scp sink: "scp -O image
+	  <board>:/fw" writes the image, ":/fw-dry" only receives and checks
+	  it. Authenticated by the SSH server (public key or password).
+
 config FWUPDATE_TIM_HEADER
 	bool "Require a Marvell TIM header"
 	default y if SOC_SERIES_ARMADA37XX
