@@ -719,16 +719,44 @@ int update_channels(struct ssh_transport *transport)
 			}
 		}
 
-		/* Adjust RX window */
-		if (channel->rx_window_rem == 0) {
+		if (channel->exit_pending && ring_buf_is_empty(&channel->tx_ring_buf) &&
+		    ring_buf_is_empty(&channel->tx_stderr_ring_buf)) {
+			channel->exit_pending = false;
+			if (channel->open && channel->remote_channel != UINT32_MAX) {
+				ret = ssh_connection_send_exit_status(
+					transport, channel->remote_channel,
+					channel->exit_status);
+				if (ret == 0) {
+					ret = ssh_connection_send_channel_eof(
+						transport, channel->remote_channel);
+				}
+				if (ret == 0) {
+					ret = ssh_connection_send_channel_close(
+						transport, channel->remote_channel);
+				}
+			}
+			ssh_connection_free_channel(channel);
+			if (ret != 0) {
+				break;
+			}
+			continue;
+		}
+
+		/*
+		 * Adjust RX window: top it up to the free buffer space once
+		 * half of it is used, so the peer keeps sending meanwhile
+		 */
+		if (channel->rx_window_rem < SSH_CHANNEL_RX_WINDOW_LOW(channel)) {
 			uint32_t available_space;
 
 			available_space = min(ring_buf_space_get(&channel->rx_ring_buf),
 					      ring_buf_space_get(&channel->rx_stderr_ring_buf));
-			if (available_space > 0) {
+			if (available_space > channel->rx_window_rem) {
+				uint32_t add = available_space - channel->rx_window_rem;
+
 				channel->rx_window_rem = available_space;
 				ret = ssh_connection_send_window_adjust(
-					transport, channel->remote_channel, available_space);
+					transport, channel->remote_channel, add);
 				if (ret != 0) {
 					/* Close channel? */
 					break;
@@ -885,6 +913,17 @@ static int process_user_request(struct ssh_transport *transport,
 
 		return ret;
 	}
+	case SSH_TRANSPORT_USER_REQUEST_CHANNEL_EXIT: {
+		struct ssh_channel *channel = request->channel_exit.channel;
+
+		/* Sent from update_channels() once the output is out */
+		if (channel->in_use) {
+			channel->exit_status = request->channel_exit.status;
+			channel->exit_pending = true;
+		}
+
+		return 0;
+	}
 	case SSH_TRANSPORT_USER_REQUEST_CHANNEL_CLOSE: {
 		struct ssh_channel *channel = request->channel_close.channel;
 		int ret = 0;
@@ -942,8 +981,8 @@ static int process_user_request(struct ssh_transport *transport,
 
 		sender_channel = channel->local_channel;
 		channel->rx_window_rem = sizeof(channel->rx_ring_buf_data);
-		/* TODO: MTU = sizeof(transport->rx_buf) - HEADER_LEN - MAX_PADDING - MAC_LEN? */
-		channel->rx_mtu = sizeof(channel->rx_ring_buf_data);
+		/* Packets must fit rx_buf with header, padding and MAC */
+		channel->rx_mtu = MIN(sizeof(channel->rx_ring_buf_data), SSH_CHANNEL_RX_MTU_MAX);
 
 		initial_window_size = channel->rx_window_rem;
 		maximum_packet_size = channel->rx_mtu;

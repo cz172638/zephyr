@@ -36,6 +36,7 @@ struct ssh_transport_user_request {
 		SSH_TRANSPORT_USER_REQUEST_CHANNEL_REQUEST,
 		SSH_TRANSPORT_USER_REQUEST_CHANNEL_REQUEST_RESULT,
 		SSH_TRANSPORT_USER_REQUEST_CHANNEL_CLOSE,
+		SSH_TRANSPORT_USER_REQUEST_CHANNEL_EXIT,
 	} type;
 	union {
 		struct ssh_transport_user_request_authenticate {
@@ -67,6 +68,10 @@ struct ssh_transport_user_request {
 		struct ssh_transport_user_request_channel_close {
 			struct ssh_channel *channel;
 		} channel_close;
+		struct ssh_transport_user_request_channel_exit {
+			struct ssh_channel *channel;
+			uint32_t status;
+		} channel_exit;
 	};
 };
 
@@ -86,12 +91,20 @@ struct ssh_channel {
 	struct ring_buf rx_stderr_ring_buf;
 	bool open : 1;
 	bool in_use : 1;
+	/* exit-status, EOF and CLOSE once the TX buffers are empty */
+	bool exit_pending : 1;
+	uint32_t exit_status;
 
 	uint8_t tx_ring_buf_data[CONFIG_SSH_CHANNEL_BUF_SIZE];
 	uint8_t tx_stderr_ring_buf_data[CONFIG_SSH_CHANNEL_BUF_SIZE];
 	uint8_t rx_ring_buf_data[CONFIG_SSH_CHANNEL_BUF_SIZE];
 	uint8_t rx_stderr_ring_buf_data[CONFIG_SSH_CHANNEL_BUF_SIZE];
 };
+
+/* Largest channel data packet that fits rx_buf (header, padding, MAC) */
+#define SSH_CHANNEL_RX_MTU_MAX 1024
+/* RX window below which it is topped up again */
+#define SSH_CHANNEL_RX_WINDOW_LOW(ch) (sizeof((ch)->rx_ring_buf_data) / 2)
 
 struct ssh_transport {
 	union {

@@ -99,7 +99,13 @@ struct ssh_channel_event_channel_request {
 	enum ssh_channel_request_type type;
 	/** True if the peer expects a reply. */
 	bool want_reply;
-	/* TODO: Union of request type data */
+	/**
+	 * Command (exec) or subsystem name (subsystem), not NUL terminated;
+	 * valid during the callback only. NULL for other request types.
+	 */
+	const uint8_t *data;
+	/** Length of data. */
+	uint32_t data_len;
 };
 
 /** Data for SSH_CHANNEL_EVENT_REQUEST_RESULT event. */
@@ -266,6 +272,20 @@ int ssh_channel_open_result(struct ssh_channel *channel, bool success,
  * @return 0 on success, or a negative error code on failure.
  */
 int ssh_channel_request_result(struct ssh_channel *channel, bool success);
+
+/**
+ * @brief Finish a channel with an exit status.
+ *
+ * Once the pending output has been sent, an "exit-status" request, EOF and
+ * CLOSE are sent and the channel is freed (SSH_CHANNEL_EVENT_CLOSED). Meant
+ * for the server side of an "exec" request.
+ *
+ * @param channel Pointer to the SSH channel.
+ * @param exit_status Exit status reported to the peer.
+ *
+ * @return 0 on success, or a negative error code on failure.
+ */
+int ssh_channel_exit(struct ssh_channel *channel, uint32_t exit_status);
 
 #if defined(CONFIG_SSH_CLIENT) || defined(__DOXYGEN__)
 /**
