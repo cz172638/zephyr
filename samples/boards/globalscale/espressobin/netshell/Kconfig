@@ -18,6 +18,19 @@ config NETSHELL_HOST_KEY_BITS
 	int "RSA host key size"
 	default 2048
 
+config NETSHELL_MAC_SPI_NOR_UID
+	bool "MAC addresses from the SPI NOR unique ID"
+	default y
+	depends on SPI_NOR
+	select FLASH_EX_OP_ENABLED
+	help
+	  Interfaces without a saved MAC address get one derived from the
+	  64-bit factory unique ID of the SPI NOR (command 0x4B) and the
+	  interface index: locally administered, the same on every boot and
+	  after a settings erase, nothing written. A saved address (older
+	  images) still wins; "config mac-uid" drops those. Without the ID
+	  the random address is saved as before.
+
 config NETSHELL_ROUTER
 	bool "Router: wan uplink, bridged lan ports with a DHCP server"
 	depends on NET_DSA && NET_ETHERNET_BRIDGE && NET_DHCPV4_SERVER && NET_IPV4_FORWARDING

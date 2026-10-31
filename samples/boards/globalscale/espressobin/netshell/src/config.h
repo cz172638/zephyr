@@ -35,4 +35,7 @@ int netshell_lan_apply(struct net_if *br);
 /* The LAN bridge, NULL without one */
 struct net_if *netshell_bridge(void);
 
+/* Forget the saved MAC addresses (next boot: from the SPI NOR UID) */
+int netshell_mac_forget(void);
+
 #endif /* NETSHELL_CONFIG_H_ */

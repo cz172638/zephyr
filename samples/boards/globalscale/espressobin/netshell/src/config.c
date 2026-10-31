@@ -294,6 +294,17 @@ static int cmd_erase(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_mac_uid(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	(void)netshell_mac_forget();
+	shell_print(sh, "saved MAC addresses dropped, the next boot derives them from the "
+			"SPI NOR unique ID (new addresses: new DHCP leases and .local name)");
+	return 0;
+}
+
 static int cmd_show(const struct shell *sh, size_t argc, char **argv)
 {
 #if defined(CONFIG_NETSHELL_ROUTER)
@@ -432,6 +443,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
 	SHELL_CMD_ARG(save, NULL, "keep LAN, TCAM rules and Qav over reboots", cmd_save, 1, 0),
 	SHELL_CMD_ARG(show, NULL, "what is saved", cmd_show, 1, 0),
 	SHELL_CMD_ARG(erase, NULL, "back to the defaults on the next boot", cmd_erase, 1, 0),
+	SHELL_CMD_ARG(mac-uid, NULL, "MAC addresses from the SPI NOR unique ID from the next boot",
+		      cmd_mac_uid, 1, 0),
 	SHELL_SUBCMD_SET_END);
 /* clang-format on */
 

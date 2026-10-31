@@ -24,6 +24,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/flash.h>
+#include <zephyr/drivers/flash/spi_nor_ex.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/dhcpv4.h>
 #include <zephyr/net/dhcpv4_server.h>
@@ -77,7 +79,58 @@ static int setting_read_cb(const char *key, size_t len, settings_read_cb read_cb
 	return 0;
 }
 
-/* Keep a random MAC address over reboots; a real (universal) one wins.
+/*
+ * MAC address from the SPI NOR factory unique ID (command 0x4B): the same
+ * on every boot and after a settings erase, different per interface (n).
+ * FNV-1a 64 over the ID and n; locally administered, unicast.
+ */
+static bool uid_mac(int n, uint8_t mac[NET_ETH_ADDR_LEN])
+{
+#if defined(CONFIG_NETSHELL_MAC_SPI_NOR_UID)
+	static uint8_t uid[SPI_NOR_UID_LEN];
+	static int uid_state; /* 0 not read, 1 valid, -1 none */
+	uint64_t h = 0xcbf29ce484222325ULL;
+
+	if (uid_state == 0) {
+		const struct device *nor = DEVICE_DT_GET_ANY(jedec_spi_nor);
+		bool blank = true;
+
+		uid_state = -1;
+		if (nor != NULL && device_is_ready(nor) &&
+		    flash_ex_op(nor, FLASH_EX_OP_SPI_NOR_READ_UID, 0, uid) == 0) {
+			for (int i = 0; i < SPI_NOR_UID_LEN; i++) {
+				blank &= uid[i] == 0x00 || uid[i] == 0xff;
+			}
+			uid_state = blank ? -1 : 1;
+		}
+		if (uid_state < 0) {
+			LOG_WRN("no SPI NOR unique ID, random MAC addresses");
+		}
+	}
+	if (uid_state < 0) {
+		return false;
+	}
+
+	for (int i = 0; i < SPI_NOR_UID_LEN + 1; i++) {
+		h ^= i < SPI_NOR_UID_LEN ? uid[i] : (uint8_t)n;
+		h *= 0x100000001b3ULL;
+	}
+	for (int i = 0; i < NET_ETH_ADDR_LEN; i++) {
+		mac[i] = h >> (8 * i);
+	}
+	mac[0] = (mac[0] & ~0x01) | 0x02;
+	return true;
+#else
+	ARG_UNUSED(n);
+	ARG_UNUSED(mac);
+	return false;
+#endif
+}
+
+/*
+ * Stable MAC address: one saved in settings (older images, or set by
+ * hand) wins, else the one from the SPI NOR unique ID, else the random
+ * one is saved and kept. A real (universal) address is left alone.
  * Interface 1 keeps the key of the single interface setup.
  */
 static void stable_mac(struct net_if *iface)
@@ -87,6 +140,7 @@ static void stable_mac(struct net_if *iface)
 	uint8_t mac[NET_ETH_ADDR_LEN];
 	struct setting_read r = {.buf = mac, .len = sizeof(mac)};
 	int idx = net_if_get_by_iface(iface);
+	const char *how = "saved";
 	char key[24];
 
 	if (ll->len != NET_ETH_ADDR_LEN || (ll->addr[0] & 0x02) == 0) {
@@ -101,10 +155,14 @@ static void stable_mac(struct net_if *iface)
 
 	(void)settings_load_subtree_direct(key, setting_read_cb, &r);
 	if (!r.found) {
-		(void)settings_save_one(key, ll->addr, NET_ETH_ADDR_LEN);
-		LOG_INF("iface %d: saved MAC %02x:%02x:%02x:%02x:%02x:%02x", idx, ll->addr[0],
-			ll->addr[1], ll->addr[2], ll->addr[3], ll->addr[4], ll->addr[5]);
-		return;
+		if (!uid_mac(idx, mac)) {
+			(void)settings_save_one(key, ll->addr, NET_ETH_ADDR_LEN);
+			LOG_INF("iface %d: saved MAC %02x:%02x:%02x:%02x:%02x:%02x", idx,
+				ll->addr[0], ll->addr[1], ll->addr[2], ll->addr[3], ll->addr[4],
+				ll->addr[5]);
+			return;
+		}
+		how = "SPI NOR UID";
 	}
 	if (memcmp(mac, ll->addr, sizeof(mac)) == 0) {
 		return;
@@ -113,11 +171,25 @@ static void stable_mac(struct net_if *iface)
 	memcpy(params.mac_address.addr, mac, sizeof(mac));
 	(void)net_if_down(iface);
 	if (net_mgmt(NET_REQUEST_ETHERNET_SET_MAC_ADDRESS, iface, &params, sizeof(params)) != 0) {
-		LOG_WRN("could not restore the saved MAC address");
+		LOG_WRN("could not set the MAC address");
 	}
 	(void)net_if_up(iface);
-	LOG_INF("iface %d: MAC %02x:%02x:%02x:%02x:%02x:%02x (saved)", idx, mac[0], mac[1], mac[2],
-		mac[3], mac[4], mac[5]);
+	LOG_INF("iface %d: MAC %02x:%02x:%02x:%02x:%02x:%02x (%s)", idx, mac[0], mac[1], mac[2],
+		mac[3], mac[4], mac[5], how);
+}
+
+/* Drop the saved MAC addresses: the next boot takes them from the UID */
+int netshell_mac_forget(void)
+{
+	char key[24];
+
+	(void)settings_delete("netshell/mac");
+	(void)settings_delete("netshell/brmac");
+	for (int i = 2; i <= 16; i++) {
+		snprintf(key, sizeof(key), "netshell/mac%d", i);
+		(void)settings_delete(key);
+	}
+	return 0;
 }
 
 #if defined(CONFIG_NETSHELL_ROUTER)
@@ -147,7 +219,7 @@ static void bridge_mac(struct net_if *br)
 	struct setting_read r = {.buf = mac, .len = sizeof(mac)};
 
 	(void)settings_load_subtree_direct("netshell/brmac", setting_read_cb, &r);
-	if (!r.found) {
+	if (!r.found && !uid_mac(0, mac)) {
 		(void)settings_save_one("netshell/brmac", ll->addr, NET_ETH_ADDR_LEN);
 		return;
 	}

@@ -9,8 +9,10 @@ Overview
 
 For a board without a working serial console. On boot the sample:
 
-* keeps a random MAC address stable across reboots (settings in the last
-  64 KiB of the SPI NOR, the old U-Boot environment),
+* derives a stable, locally administered MAC address per interface from
+  the SPI NOR factory unique ID (a saved one from an older image still
+  wins, ``config mac-uid`` drops it; without the ID a random address is
+  kept in settings, the last 64 KiB of the SPI NOR),
 * gets an address with DHCP and announces ``espressobin<mac>.local`` over
   mDNS (and the same name in the DHCP request),
 * generates an RSA host key on the first boot and keeps it in settings,
