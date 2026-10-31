@@ -555,8 +555,15 @@ static int epf_test_setup_bars(const struct device *dev)
 	if (cfg->msi_irqs != 0 && pcie_epc_set_msi(cfg->epc, cfg->func, cfg->msi_irqs) == 0) {
 		caps |= CAP_MSI;
 	}
-	if (cfg->msix_irqs != 0 && pcie_epc_set_msix(cfg->epc, cfg->func, cfg->msix_irqs,
-						     cfg->reg_bar, REG_BLOCK_SIZE) == 0) {
+	if (cfg->msix_irqs != 0 &&
+	    REG_BLOCK_SIZE + cfg->msix_irqs * 16U + DIV_ROUND_UP(cfg->msix_irqs, 64) * 8U >
+		    REG_DSN_CTRL) {
+		/* table + PBA from 0x40 would run into the DSN mailbox */
+		LOG_ERR("%u MSI-X vectors do not fit below the DSN mailbox (max %u)",
+			cfg->msix_irqs, (REG_DSN_CTRL - REG_BLOCK_SIZE - 8U) / 16U);
+	} else if (cfg->msix_irqs != 0 &&
+		   pcie_epc_set_msix(cfg->epc, cfg->func, cfg->msix_irqs, cfg->reg_bar,
+				     REG_BLOCK_SIZE) == 0) {
 		caps |= CAP_MSIX;
 	}
 	reg_wr(d, REG_CAPS, caps);

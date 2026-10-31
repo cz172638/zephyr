@@ -1550,6 +1550,44 @@ static int cmd_barcfg(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* msix [n]: MSI-X capability, table entries (all or the first n), PBA, counters */
+static int cmd_msix(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long n = UINT16_MAX;
+	uint32_t ctrl;
+
+	if (argc > 1 && parse_u(sh, argv[1], &n) != 0) {
+		return -EINVAL;
+	}
+	if (ep->msix_cap == 0) {
+		shell_print(sh, "no MSI-X capability");
+		return 0;
+	}
+	ctrl = advk_rd(ep, ep->msix_cap);
+	shell_print(sh, "MSI-X @%02x ctrl %08x: %s%s, %u vectors, table %08x pba %08x", ep->msix_cap,
+		    ctrl, (ctrl & ADVK_MSIX_CTRL_EN) ? "enabled" : "disabled",
+		    (ctrl & ADVK_MSIX_CTRL_FMASK) ? ", function masked" : "",
+		    (unsigned int)FIELD_GET(ADVK_MSIX_CTRL_TSIZE, ctrl) + 1,
+		    advk_rd(ep, ep->msix_cap + 4), advk_rd(ep, ep->msix_cap + 8));
+	shell_print(sh, "sent %u, pended %u, delivered after unmask %u, doorbell remaps %u%s",
+		    ep->msix_sent, ep->msix_pended, ep->msix_delivered, ep->irq_remaps,
+		    ep->irq_map_valid ? "" : " (not mapped)");
+	if (ep->msix_tbl == NULL) {
+		return 0;
+	}
+	for (uint16_t v = 0; v < ep->msix_nr && v < n; v++) {
+		volatile uint32_t *e = &ep->msix_tbl[v * 4];
+
+		shell_print(sh, "  %2u: addr %08x%08x data %08x ctrl %08x%s", v + 1, e[1], e[0], e[2],
+			    e[3], (e[3] & 1) ? " masked" : "");
+	}
+	for (uint16_t w = 0; w < DIV_ROUND_UP(ep->msix_nr, 32); w++) {
+		shell_print(sh, "  pba[%u] %08x", w, ep->msix_tbl[ep->msix_nr * 4 + w]);
+	}
+	return 0;
+}
+
 /* nz <start> <end>: the non-zero words of a range (probe reads, holes skipped) */
 static int cmd_nz(const struct shell *sh, size_t argc, char **argv)
 {
@@ -2020,6 +2058,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_aer, 1, 2),
 	SHELL_CMD_ARG(coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
 		      cmd_coh, 3, 0),
+	SHELL_CMD_ARG(msix, NULL, "[n] MSI-X capability, table, PBA, counters", cmd_msix, 1, 1),
 	SHELL_CMD_ARG(barcfg, NULL, "LMI BAR configuration decoded, BAR masks", cmd_barcfg, 1, 0),
 	SHELL_CMD_ARG(rom, NULL, "[<axi> [<slot>]] Expansion ROM BAR: show, or write an image and "
 		      "point an inbound slot at it", cmd_rom, 1, 2),

@@ -217,6 +217,16 @@ struct advk_ep {
 	uint8_t *msix_va;
 	size_t msix_map_size;
 	uint32_t msix_sent;
+	uint32_t msix_pended;     /* raised while masked */
+	uint32_t msix_delivered;  /* pending ones sent after unmask */
+	bool msix_was_enabled;
+	/* interrupt doorbell kept mapped (one 4 KiB page of host memory) */
+	struct k_mutex irq_lock;
+	struct pcie_epc_host_map irq_map;
+	uint64_t irq_map_page;
+	bool irq_map_valid;
+	bool irq_map_stale;       /* OB windows were reprogrammed */
+	uint32_t irq_remaps;
 
 	/* link state seen by the last poll */
 	uint8_t ltssm;
@@ -309,6 +319,8 @@ int advk_ep_get_msi(const struct device *dev, uint8_t func);
 int advk_ep_set_msix(const struct device *dev, uint8_t func, uint16_t nr_irqs, uint8_t bir,
 		     uint32_t offset);
 int advk_ep_get_msix(const struct device *dev, uint8_t func);
+/* MSI-X table reset (all vectors masked, nothing pending) */
+void advk_ep_msix_reset(const struct device *dev);
 int advk_ep_raise_irq(const struct device *dev, uint8_t func, enum pcie_epc_irq_type type,
 		      uint16_t irq_num);
 int advk_ep_cfg_read(const struct device *dev, uint8_t func, uint32_t offset, uint32_t *val);

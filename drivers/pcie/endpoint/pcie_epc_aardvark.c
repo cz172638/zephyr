@@ -210,6 +210,7 @@ int advk_ep_init(const struct device *dev, bool autostart)
 		return ret;
 	}
 
+	k_mutex_init(&ep->irq_lock);
 	advk_ep_hw_setup(dev);
 
 	ep->features = (struct pcie_epc_features){
@@ -527,6 +528,121 @@ int advk_ep_get_msix(const struct device *dev, uint8_t func)
 }
 
 /*
+ * One 32-bit interrupt message write to host memory. The doorbell page
+ * stays mapped (all vectors usually share the ITS doorbell): remapped only
+ * when the address leaves the page or the OB windows were reprogrammed.
+ * No read back: an interrupt controller doorbell need not answer reads.
+ */
+static int irq_write(const struct device *dev, uint64_t addr, uint32_t data)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	uint64_t page = addr & ~0xfffULL;
+	int ret;
+
+	if (ep->irq_map_valid && (ep->irq_map_stale || page != ep->irq_map_page)) {
+		pcie_epc_unmap_host(dev, &ep->irq_map);
+		ep->irq_map_valid = false;
+	}
+	if (!ep->irq_map_valid) {
+		ret = pcie_epc_map_host(dev, 0, page, 0x1000, &ep->irq_map);
+		if (ret != 0) {
+			return ret;
+		}
+		ep->irq_map_page = page;
+		ep->irq_map_valid = true;
+		ep->irq_map_stale = false;
+		ep->irq_remaps++;
+	}
+	sys_write32(data, (mem_addr_t)ep->irq_map.ptr + (mem_addr_t)(addr - page));
+	barrier_dsync_fence_full();
+	return 0;
+}
+
+static int msix_send(const struct device *dev, uint16_t v)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	volatile uint32_t *e = &ep->msix_tbl[v * 4];
+	uint64_t addr = ((uint64_t)e[1] << 32) | e[0];
+	uint32_t data = e[2];
+	int ret;
+
+	if (addr == 0 || (addr & 3) != 0) {
+		return -EINVAL;
+	}
+	ret = irq_write(dev, addr, data);
+	if (ret == 0 && ep->msix_sent++ == 0) {
+		LOG_INF("MSI-X %u: 0x%08x -> 0x%llx (first one)", v + 1, data,
+			(unsigned long long)addr);
+	}
+	return ret;
+}
+
+void advk_ep_msix_reset(const struct device *dev)
+{
+	struct advk_ep *ep = advk_ep(dev);
+
+	if (ep->msix_tbl == NULL) {
+		return;
+	}
+	for (uint16_t v = 0; v < ep->msix_nr; v++) {
+		ep->msix_tbl[v * 4 + 0] = 0;
+		ep->msix_tbl[v * 4 + 1] = 0;
+		ep->msix_tbl[v * 4 + 2] = 0;
+		ep->msix_tbl[v * 4 + 3] = 1;
+	}
+	for (uint16_t w = 0; w < DIV_ROUND_UP(ep->msix_nr, 64) * 2; w++) {
+		ep->msix_tbl[ep->msix_nr * 4 + w] = 0;
+	}
+}
+
+/*
+ * Called from the link poll: pending vectors whose mask the host has
+ * cleared are sent now (PCIe: a pending message goes out on unmask), and
+ * the table goes back to its reset state when the host turns MSI-X off
+ * (driver unbind, function reset).
+ */
+static void msix_poll(const struct device *dev)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	uint32_t ctrl;
+	bool en;
+
+	if (ep->msix_cap == 0 || ep->msix_tbl == NULL) {
+		return;
+	}
+	ctrl = advk_rd(ep, ep->msix_cap);
+	en = (ctrl & ADVK_MSIX_CTRL_EN) != 0;
+	if (ep->msix_was_enabled && !en) {
+		advk_ep_msix_reset(dev);
+	}
+	ep->msix_was_enabled = en;
+	if (!en || (ctrl & ADVK_MSIX_CTRL_FMASK) != 0 || !advk_bme(ep)) {
+		return;
+	}
+	if (k_mutex_lock(&ep->irq_lock, K_NO_WAIT) != 0) {
+		return;
+	}
+	for (uint16_t w = 0; w < DIV_ROUND_UP(ep->msix_nr, 32); w++) {
+		volatile uint32_t *pba = &ep->msix_tbl[ep->msix_nr * 4 + w];
+		uint32_t pend = *pba;
+
+		while (pend != 0) {
+			uint16_t v = w * 32 + (uint16_t)__builtin_ctz(pend);
+
+			pend &= pend - 1;
+			if (v >= ep->msix_nr || (ep->msix_tbl[v * 4 + 3] & 1) != 0) {
+				continue;
+			}
+			*pba &= ~BIT(v % 32);
+			if (msix_send(dev, v) == 0) {
+				ep->msix_delivered++;
+			}
+		}
+	}
+	k_mutex_unlock(&ep->irq_lock);
+}
+
+/*
  * MSI-X in software: the entry the host wrote into the table (BAR memory)
  * gives address and data, the write goes out through an outbound window.
  * Masked (function or vector): only the pending bit is set.
@@ -534,11 +650,9 @@ int advk_ep_get_msix(const struct device *dev, uint8_t func)
 static int raise_msix(const struct device *dev, uint16_t irq_num)
 {
 	struct advk_ep *ep = advk_ep(dev);
-	struct pcie_epc_host_map map;
-	volatile uint32_t *e, *pba;
 	uint32_t ctrl = advk_rd(ep, ep->msix_cap);
-	uint64_t addr;
-	uint32_t data;
+	volatile uint32_t *pba;
+	uint16_t v = irq_num - 1;
 	int ret;
 
 	if ((ctrl & ADVK_MSIX_CTRL_EN) == 0 || ep->msix_tbl == NULL) {
@@ -550,38 +664,24 @@ static int raise_msix(const struct device *dev, uint16_t irq_num)
 	if (irq_num == 0 || irq_num > ep->msix_nr) {
 		return -EINVAL;
 	}
-	e = &ep->msix_tbl[(irq_num - 1) * 4];
-	pba = &ep->msix_tbl[ep->msix_nr * 4];
-	if ((ctrl & ADVK_MSIX_CTRL_FMASK) != 0 || (e[3] & 1) != 0) {
-		pba[(irq_num - 1) / 32] |= BIT((irq_num - 1) % 32);
-		return -EBUSY;
+	pba = &ep->msix_tbl[ep->msix_nr * 4 + v / 32];
+	k_mutex_lock(&ep->irq_lock, K_FOREVER);
+	if ((ctrl & ADVK_MSIX_CTRL_FMASK) != 0 || (ep->msix_tbl[v * 4 + 3] & 1) != 0) {
+		/* masked: pending, sent by msix_poll() on unmask */
+		*pba |= BIT(v % 32);
+		ep->msix_pended++;
+		ret = 0;
+	} else {
+		*pba &= ~BIT(v % 32);
+		ret = msix_send(dev, v);
 	}
-	pba[(irq_num - 1) / 32] &= ~BIT((irq_num - 1) % 32);
-
-	addr = ((uint64_t)e[1] << 32) | e[0];
-	data = e[2];
-	if (addr == 0 || (addr & 3) != 0) {
-		return -EINVAL;
-	}
-	ret = pcie_epc_map_host(dev, 0, addr, 4, &map);
-	if (ret != 0) {
-		return ret;
-	}
-	/* no read back, as for MSI */
-	sys_write32(data, (mem_addr_t)map.ptr);
-	barrier_dsync_fence_full();
-	pcie_epc_unmap_host(dev, &map);
-	if (ep->msix_sent++ == 0) {
-		LOG_INF("MSI-X %u: 0x%08x -> 0x%llx (first one)", irq_num, data,
-			(unsigned long long)addr);
-	}
-	return 0;
+	k_mutex_unlock(&ep->irq_lock);
+	return ret;
 }
 
 static int raise_msi(const struct device *dev, uint16_t irq_num)
 {
 	struct advk_ep *ep = advk_ep(dev);
-	struct pcie_epc_host_map map;
 	uint32_t ctrl = advk_rd(ep, ep->msi_cap);
 	uint64_t addr = advk_rd(ep, ep->msi_cap + 4);
 	uint16_t data;
@@ -606,18 +706,12 @@ static int raise_msi(const struct device *dev, uint16_t irq_num)
 	}
 	data = (data & ~(vectors - 1)) | (irq_num - 1);
 
-	ret = pcie_epc_map_host(dev, 0, addr & ~3ULL, 4, &map);
+	k_mutex_lock(&ep->irq_lock, K_FOREVER);
+	ret = irq_write(dev, addr & ~3ULL, data);
+	k_mutex_unlock(&ep->irq_lock);
 	if (ret != 0) {
 		return ret;
 	}
-	/*
-	 * No read back: the MSI target (an interrupt controller doorbell such
-	 * as a GIC ITS translater) need not answer reads, and a failed
-	 * completion upsets the link.
-	 */
-	sys_write32(data, (mem_addr_t)map.ptr);
-	barrier_dsync_fence_full();
-	pcie_epc_unmap_host(dev, &map);
 	if (ep->msi_sent++ == 0) {
 		LOG_INF("MSI %u: 0x%04x -> 0x%llx (first one)", irq_num, data,
 			(unsigned long long)addr);
@@ -730,6 +824,7 @@ void advk_ep_restore(const struct device *dev)
 	struct advk_ep *ep = advk_ep(dev);
 
 	advk_ep_hw_setup(dev);
+	ep->irq_map_stale = true;
 	if (ep->hdr_valid) {
 		write_header(ep, &ep->hdr);
 	}
@@ -794,5 +889,12 @@ void advk_ep_poll(const struct device *dev, uint32_t now_ms)
 	if (bme != ep->bme) {
 		ep->bme = bme;
 		pcie_epc_notify(dev, bme ? PCIE_EPC_EVT_BME : PCIE_EPC_EVT_BME_CLEARED, 0);
+	}
+
+	if (s == ADVK_LTSSM_HOT_RESET && prev != ADVK_LTSSM_HOT_RESET) {
+		advk_ep_msix_reset(dev);	/* function reset: table back to reset state */
+	}
+	if (up) {
+		msix_poll(dev);
 	}
 }
