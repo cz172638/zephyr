@@ -40,6 +40,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/kernel/internal/mm.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/byteorder.h>
@@ -186,8 +187,17 @@ struct root_port {
 	uint32_t bridge;   /* 0x3c: interrupt line/pin, bridge control */
 };
 
+/* Root port identity: Vendor/Device ID, Subsystem (cap 0x0d at 0x40) */
+struct rp_id {
+	uint16_t vid, did, svid, ssid;
+};
+
+#define CFG_SSVID_CAP 0x40
+#define RCID_KEY      "advk/rcid"
+
 struct advk_rc_data {
 	mm_reg_t reg;
+	struct rp_id id;
 	mm_reg_t comphy;
 	bool active;
 	long comphy_ret;
@@ -365,7 +375,7 @@ static uint32_t rp_read(const struct device *dev, unsigned int reg)
 
 	switch (off) {
 	case PCIE_CONF_ID * 4:
-		return rd(dev, 0x00);
+		return ((uint32_t)data->id.did << 16) | data->id.vid;
 	case PCIE_CONF_CMDSTAT * 4:
 		/* status: capabilities list */
 		return rp->cmd | ((uint32_t)BIT(4) << 16);
@@ -388,7 +398,12 @@ static uint32_t rp_read(const struct device *dev, unsigned int reg)
 	case 0x30:
 		return rp->io_hi;
 	case 0x34:
-		return CFG_PCIE_CAP;
+		return CFG_SSVID_CAP;
+	case CFG_SSVID_CAP:
+		/* Subsystem ID capability of a bridge, then the PCIe capability */
+		return 0x0d | (CFG_PCIE_CAP << 8);
+	case CFG_SSVID_CAP + 4:
+		return ((uint32_t)data->id.ssid << 16) | data->id.svid;
 	case 0x3c:
 		return rp->bridge;
 	default:
@@ -926,6 +941,41 @@ static void perst(const struct device *dev, bool assert)
 	}
 }
 
+
+/* Root port IDs into the hardware too (vendor through the LMI, device in cfg) */
+static void id_apply(const struct device *dev)
+{
+	struct advk_rc_data *data = dev->data;
+
+	wr(dev, LMI_VENDOR_ID, ((uint32_t)data->id.svid << 16) | data->id.vid);
+	rmw(dev, 0x00, 0xffff0000, (uint32_t)data->id.did << 16);
+}
+
+static int id_load_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+		      void *param)
+{
+	struct rp_id *id = param;
+	struct rp_id v;
+
+	ARG_UNUSED(key);
+	if (len == sizeof(v) && read_cb(cb_arg, &v, len) == (ssize_t)len) {
+		*id = v;
+	}
+	return 0;
+}
+
+static void id_load(const struct device *dev)
+{
+	struct advk_rc_data *data = dev->data;
+
+	data->id = (struct rp_id){.vid = VENDOR_MARVELL, .did = rd(dev, 0x00) >> 16,
+				  .svid = VENDOR_MARVELL, .ssid = 0};
+	if (IS_ENABLED(CONFIG_SETTINGS) && settings_subsys_init() == 0) {
+		(void)settings_load_subtree_direct(RCID_KEY, id_load_cb, &data->id);
+	}
+	id_apply(dev);
+}
+
 /* PERST# pulse, training, wait for L0; true when the link is up */
 static bool advk_rc_link_start(const struct device *dev)
 {
@@ -1058,6 +1108,7 @@ static int advk_rc_init(const struct device *dev)
 		LOG_ERR("%s: controller registers abort, root complex not started", dev->name);
 		return ret;
 	}
+	id_load(dev);
 	ret = ob_setup(dev);
 	if (ret != 0) {
 		return ret;
@@ -1177,6 +1228,63 @@ static int cmd_rc_irq(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "error messages: cor %u nonfatal %u fatal %u; INTx a %u b %u c %u d %u",
 		    data->err_cor, data->err_nfat, data->err_fat, data->intx[0], data->intx[1],
 		    data->intx[2], data->intx[3]);
+	return 0;
+}
+
+
+static int parse_id(const char *s, uint16_t *a, uint16_t *b)
+{
+	char *e;
+	unsigned long x = strtoul(s, &e, 16), y;
+
+	if (*e != ':') {
+		return -EINVAL;
+	}
+	y = strtoul(e + 1, &e, 16);
+	if (*e != '\0' || x > 0xffff || y > 0xffff) {
+		return -EINVAL;
+	}
+	*a = x;
+	*b = y;
+	return 0;
+}
+
+/* id [<vid:did> [<svid:ssid>]] | id reset */
+static int cmd_rc_id(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = RC_DEV;
+	struct advk_rc_data *data = dev->data;
+	struct rp_id id = data->id;
+	int ret = 0;
+
+	if (!rc_active(sh)) {
+		return -ENODEV;
+	}
+	if (argc > 1 && strcmp(argv[1], "reset") == 0) {
+		if (IS_ENABLED(CONFIG_SETTINGS)) {
+			(void)settings_delete(RCID_KEY);
+		}
+		shell_print(sh, "saved IDs dropped, defaults from the next boot");
+		return 0;
+	}
+	if (argc > 1 && parse_id(argv[1], &id.vid, &id.did) != 0) {
+		shell_error(sh, "<vid:did> in hex");
+		return -EINVAL;
+	}
+	if (argc > 2 && parse_id(argv[2], &id.svid, &id.ssid) != 0) {
+		shell_error(sh, "<svid:ssid> in hex");
+		return -EINVAL;
+	}
+	if (argc > 1) {
+		data->id = id;
+		id_apply(dev);
+		if (IS_ENABLED(CONFIG_SETTINGS)) {
+			ret = settings_save_one(RCID_KEY, &id, sizeof(id));
+		}
+	}
+	shell_print(sh, "root port 0:0.0: %04x:%04x subsystem %04x:%04x%s", data->id.vid,
+		    data->id.did, data->id.svid, data->id.ssid,
+		    argc > 1 ? (ret == 0 ? " (saved)" : " (not saved)") : "");
 	return 0;
 }
 
@@ -1762,6 +1870,7 @@ static int cmd_rc_start(const struct shell *sh, size_t argc, char **argv)
 		return -EIO;
 	}
 	irq_setup(RC_DEV);
+	id_load(RC_DEV);
 	data->active = true;
 	shell_print(sh, "%s", advk_rc_link_start(RC_DEV) ? "link up" : "no link");
 	advk_rc_scan(RC_DEV);
@@ -1773,6 +1882,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(rc_cmds,
 		      cmd_rc_status, 1, 0),
 	SHELL_CMD_ARG(retrain, NULL, "PERST# pulse, train, rescan", cmd_rc_retrain, 1, 0),
 	SHELL_CMD_ARG(irq, NULL, "Interrupt counters, MSI receiver state", cmd_rc_irq, 1, 0),
+	SHELL_CMD_ARG(id, NULL, "[<vid:did> [<svid:ssid>]] | reset  Root port IDs (saved)",
+		      cmd_rc_id, 1, 2),
 	SHELL_CMD_ARG(scan, NULL, "Enumerate again (bus numbers, BARs, windows)", cmd_rc_scan,
 		      1, 0),
 	SHELL_CMD_ARG(cfg, NULL, "<b:d.f> [<off> [<len>]] Dump config space", cmd_rc_cfg, 2, 2),
