@@ -328,7 +328,11 @@ static int nvme_controller_pcie_configure(const struct device *dev)
 	uint8_t n_vectors;
 
 	if (nvme_ctrlr_cfg->pcie->bdf == PCIE_BDF_NONE) {
-		LOG_ERR("Controller not found");
+		/*
+		 * Not an error by itself: nothing in the slot, or the PCIe
+		 * controller is not a root complex this boot (endpoint role).
+		 */
+		LOG_INF("No NVMe controller found");
 		return -ENODEV;
 	}
 
