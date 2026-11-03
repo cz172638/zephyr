@@ -845,6 +845,300 @@ static int cmd_xmodem(const struct shell *sh, size_t argc, char **argv)
 }
 #endif /* CONFIG_FWUPDATE_YMODEM */
 
+#if defined(CONFIG_FWUPDATE_DISK)
+/* ---------------------------------------------------------------------- */
+/* GPT for SATA boot: show the partition table, create the boot layout     */
+
+#include <zephyr/random/random.h>
+
+/* EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 (Microsoft basic data, FAT/exFAT) */
+static const uint8_t ms_basic_guid[16] = {0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44,
+					  0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7};
+/* 0FC63DAF-8483-4772-8E79-3D69D8477DE4 (Linux filesystem) */
+static const uint8_t linux_fs_guid[16] = {0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47,
+					  0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4};
+
+#define GPT_ENTRIES   128
+#define GPT_ENTRY_SZ  128
+#define GPT_ARRAY_SZ  (GPT_ENTRIES * GPT_ENTRY_SZ) /* 16 KiB */
+#define GPT_BOOT_SIZE (4 * 1024 * 1024)
+#define GPT_ALIGN     (1024 * 1024)
+
+static uint8_t gpt_array[GPT_ARRAY_SZ] __aligned(64);
+
+static const char *guid_name(const uint8_t *g)
+{
+	static const uint8_t zero[16];
+
+	if (memcmp(g, mrvl_boot_guid, 16) == 0) {
+		return "Marvell boot";
+	} else if (memcmp(g, ms_basic_guid, 16) == 0) {
+		return "basic data (FAT/exFAT)";
+	} else if (memcmp(g, linux_fs_guid, 16) == 0) {
+		return "Linux filesystem";
+	} else if (memcmp(g, zero, 16) == 0) {
+		return NULL;
+	}
+	return "other";
+}
+
+static void guid_print(const uint8_t *g, char *s, size_t n)
+{
+	snprintk(s, n, "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X", sys_get_le32(&g[0]),
+		 sys_get_le16(&g[4]), sys_get_le16(&g[6]), g[8], g[9], g[10], g[11], g[12], g[13],
+		 g[14], g[15]);
+}
+
+static int gpt_disk(const struct shell *sh, uint32_t *ss, uint32_t *count)
+{
+	int ret = disk_access_init(FW_DISK);
+
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_DISK, DISK_IOCTL_GET_SECTOR_SIZE, ss);
+	}
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_DISK, DISK_IOCTL_GET_SECTOR_COUNT, count);
+	}
+	if (ret != 0 || *ss < 512 || *ss > sizeof(fw_sec) || (GPT_ARRAY_SZ % *ss) != 0) {
+		shell_error(sh, "%s: disk not ready (%d)", FW_DISK, ret);
+		return ret != 0 ? ret : -EIO;
+	}
+	return 0;
+}
+
+static int cmd_gpt_show(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t ss, count, n, esz, mbr_used = 0;
+	uint64_t ent_lba;
+	char g[40];
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	ret = gpt_disk(sh, &ss, &count);
+	if (ret != 0) {
+		return ret;
+	}
+	shell_print(sh, "%s: %u sectors of %u B (%llu MB)", FW_DISK, count, ss,
+		    (unsigned long long)count * ss / 1000000);
+	ret = disk_access_read(FW_DISK, fw_sec, 0, 1);
+	if (ret != 0) {
+		return ret;
+	}
+	if (fw_sec[510] == 0x55 && fw_sec[511] == 0xaa) {
+		for (int i = 0; i < 4; i++) {
+			const uint8_t *p = &fw_sec[446 + 16 * i];
+
+			if (p[4] != 0) {
+				shell_print(sh, "MBR %d: type %02x, LBA %u, %u sectors", i + 1, p[4],
+					    sys_get_le32(&p[8]), sys_get_le32(&p[12]));
+				mbr_used++;
+			}
+		}
+	}
+	if (mbr_used == 0) {
+		shell_print(sh, "MBR: none");
+	}
+	ret = disk_access_read(FW_DISK, fw_sec, 1, 1);
+	if (ret != 0) {
+		return ret;
+	}
+	if (memcmp(fw_sec, "EFI PART", 8) != 0) {
+		shell_print(sh, "GPT: none");
+		return 0;
+	}
+	ent_lba = sys_get_le64(&fw_sec[72]);
+	n = MIN(sys_get_le32(&fw_sec[80]), (uint32_t)GPT_ENTRIES);
+	esz = sys_get_le32(&fw_sec[84]);
+	guid_print(&fw_sec[56], g, sizeof(g));
+	shell_print(sh, "GPT: disk %s, usable LBA %llu-%llu, %u entries", g,
+		    (unsigned long long)sys_get_le64(&fw_sec[40]),
+		    (unsigned long long)sys_get_le64(&fw_sec[48]), sys_get_le32(&fw_sec[80]));
+	if (esz != GPT_ENTRY_SZ) {
+		shell_error(sh, "entry size %u not supported", esz);
+		return -EINVAL;
+	}
+	ret = disk_access_read(FW_DISK, gpt_array, (uint32_t)ent_lba,
+			       DIV_ROUND_UP(n * esz, ss));
+	if (ret != 0) {
+		return ret;
+	}
+	for (uint32_t i = 0; i < n; i++) {
+		const uint8_t *e = &gpt_array[i * esz];
+		const char *t = guid_name(e);
+		uint64_t first = sys_get_le64(&e[32]), last = sys_get_le64(&e[40]);
+		char name[37];
+
+		if (t == NULL) {
+			continue;
+		}
+		for (int c = 0; c < 36; c++) {
+			uint16_t u = sys_get_le16(&e[56 + 2 * c]);
+
+			name[c] = (u >= 0x20 && u < 0x7f) ? (char)u : (u == 0 ? '\0' : '?');
+			if (u == 0) {
+				break;
+			}
+		}
+		name[36] = '\0';
+		guid_print(e, g, sizeof(g));
+		shell_print(sh, "%2u: LBA %llu-%llu (%llu MB) %s \"%s\"%s%s", i + 1,
+			    (unsigned long long)first, (unsigned long long)last,
+			    (unsigned long long)((last - first + 1) * ss / 1000000), t, name,
+			    strcmp(t, "other") == 0 ? " " : "", strcmp(t, "other") == 0 ? g : "");
+	}
+	return 0;
+}
+
+static void guid_random(uint8_t *g)
+{
+	sys_rand_get(g, 16);
+	g[7] = (g[7] & 0x0f) | 0x40; /* version 4 (stored little endian) */
+	g[8] = (g[8] & 0x3f) | 0x80; /* variant */
+}
+
+static void gpt_entry(uint8_t *e, const uint8_t *type, uint64_t first, uint64_t last,
+		      const char *name)
+{
+	memset(e, 0, GPT_ENTRY_SZ);
+	memcpy(e, type, 16);
+	guid_random(&e[16]);
+	sys_put_le64(first, &e[32]);
+	sys_put_le64(last, &e[40]);
+	for (int c = 0; name[c] != '\0' && c < 36; c++) {
+		sys_put_le16((uint8_t)name[c], &e[56 + 2 * c]);
+	}
+}
+
+static void gpt_header(uint8_t *h, uint32_t ss, uint64_t cur, uint64_t alt, uint64_t first_use,
+		       uint64_t last_use, const uint8_t *disk_guid, uint64_t ent_lba,
+		       uint32_t ent_crc)
+{
+	memset(h, 0, ss);
+	memcpy(h, "EFI PART", 8);
+	sys_put_le32(0x00010000, &h[8]);
+	sys_put_le32(92, &h[12]);
+	sys_put_le64(cur, &h[24]);
+	sys_put_le64(alt, &h[32]);
+	sys_put_le64(first_use, &h[40]);
+	sys_put_le64(last_use, &h[48]);
+	memcpy(&h[56], disk_guid, 16);
+	sys_put_le64(ent_lba, &h[72]);
+	sys_put_le32(GPT_ENTRIES, &h[80]);
+	sys_put_le32(GPT_ENTRY_SZ, &h[84]);
+	sys_put_le32(ent_crc, &h[88]);
+	sys_put_le32(crc32_ieee(h, 92), &h[16]);
+}
+
+/*
+ * The layout sata-install.sh makes: 1: Marvell boot, 4 MiB at 1 MiB;
+ * 2: the rest, basic data (FAT/exFAT for Zephyr; Linux takes any type).
+ */
+static int cmd_gpt_create(const struct shell *sh, size_t argc, char **argv)
+{
+	bool force = argc > 1 && strcmp(argv[1], "force") == 0;
+	uint32_t ss, count, esecs;
+	uint64_t last, first_use, last_use, p1, p1_end, p2;
+	uint8_t disk_guid[16];
+	uint32_t ent_crc;
+	bool used = false;
+	int ret;
+
+	if (argc > 1 && !force) {
+		shell_error(sh, "gpt create [force]");
+		return -EINVAL;
+	}
+	ret = gpt_disk(sh, &ss, &count);
+	if (ret != 0) {
+		return ret;
+	}
+	ret = disk_access_read(FW_DISK, fw_sec, 0, 1);
+	if (ret == 0 && fw_sec[510] == 0x55 && fw_sec[511] == 0xaa) {
+		for (int i = 0; i < 4; i++) {
+			used |= fw_sec[446 + 16 * i + 4] != 0;
+		}
+	}
+	if (ret == 0) {
+		ret = disk_access_read(FW_DISK, fw_sec, 1, 1);
+		used |= ret == 0 && memcmp(fw_sec, "EFI PART", 8) == 0;
+	}
+	if (ret != 0) {
+		shell_error(sh, "%s: read: %d", FW_DISK, ret);
+		return ret;
+	}
+	if (used && !force) {
+		shell_error(sh, "%s has a partition table (fwupdate gpt show); "
+				"\"fwupdate gpt create force\" replaces it, everything on the "
+				"disk is lost", FW_DISK);
+		return -EEXIST;
+	}
+
+	esecs = GPT_ARRAY_SZ / ss;
+	last = (uint64_t)count - 1;
+	first_use = 2 + esecs;
+	last_use = last - esecs - 1;
+	p1 = GPT_ALIGN / ss;
+	p1_end = p1 + GPT_BOOT_SIZE / ss - 1;
+	p2 = p1_end + 1;
+	if (count < 2 * p2 || last_use <= p2) {
+		shell_error(sh, "%s: disk too small", FW_DISK);
+		return -ENOSPC;
+	}
+
+	memset(gpt_array, 0, sizeof(gpt_array));
+	gpt_entry(&gpt_array[0], mrvl_boot_guid, p1, p1_end, "a3700-boot");
+	gpt_entry(&gpt_array[GPT_ENTRY_SZ], ms_basic_guid, p2, last_use, "data");
+	ent_crc = crc32_ieee(gpt_array, sizeof(gpt_array));
+	guid_random(disk_guid);
+
+	/* Backup first, primary next, protective MBR last */
+	ret = disk_access_write(FW_DISK, gpt_array, (uint32_t)(last - esecs), esecs);
+	if (ret == 0) {
+		gpt_header(fw_sec, ss, last, 1, first_use, last_use, disk_guid, last - esecs,
+			   ent_crc);
+		ret = disk_access_write(FW_DISK, fw_sec, (uint32_t)last, 1);
+	}
+	if (ret == 0) {
+		ret = disk_access_write(FW_DISK, gpt_array, 2, esecs);
+	}
+	if (ret == 0) {
+		gpt_header(fw_sec, ss, 1, last, first_use, last_use, disk_guid, 2, ent_crc);
+		ret = disk_access_write(FW_DISK, fw_sec, 1, 1);
+	}
+	if (ret == 0) {
+		memset(fw_sec, 0, ss);
+		fw_sec[446 + 1] = 0x00; /* CHS 0/0/2 */
+		fw_sec[446 + 2] = 0x02;
+		fw_sec[446 + 4] = 0xee;
+		fw_sec[446 + 5] = 0xff;
+		fw_sec[446 + 6] = 0xff;
+		fw_sec[446 + 7] = 0xff;
+		sys_put_le32(1, &fw_sec[446 + 8]);
+		sys_put_le32((uint32_t)MIN(last, (uint64_t)UINT32_MAX), &fw_sec[446 + 12]);
+		fw_sec[510] = 0x55;
+		fw_sec[511] = 0xaa;
+		ret = disk_access_write(FW_DISK, fw_sec, 0, 1);
+	}
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_DISK, DISK_IOCTL_CTRL_SYNC, NULL);
+	}
+	if (ret != 0) {
+		shell_error(sh, "%s: write: %d", FW_DISK, ret);
+		return ret;
+	}
+	shell_print(sh, "%s: GPT written", FW_DISK);
+	return cmd_gpt_show(sh, 1, NULL);
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(fw_gpt_cmds,
+	SHELL_CMD_ARG(show, NULL, "Partition table of the disk", cmd_gpt_show, 1, 0),
+	SHELL_CMD_ARG(create, NULL,
+		      "[force] New GPT: 1 Marvell boot 4 MiB at 1 MiB, 2 basic data (rest); "
+		      "force replaces an existing table (the disk's data is lost)",
+		      cmd_gpt_create, 1, 1),
+	SHELL_SUBCMD_SET_END);
+#endif /* CONFIG_FWUPDATE_DISK */
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	fwupdate_cmds,
 	IF_ENABLED(CONFIG_FWUPDATE_YMODEM,
@@ -858,6 +1152,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	IF_ENABLED(CONFIG_FWUPDATE_TCP,
 		   (SHELL_CMD_ARG(tcp, NULL, "[port] [dry]: receive an image over one TCP connection",
 				  cmd_tcp, 1, 2),))
+	IF_ENABLED(CONFIG_FWUPDATE_DISK,
+		   (SHELL_CMD(gpt, &fw_gpt_cmds, "GPT of the SATA boot disk", NULL),))
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(fwupdate, &fwupdate_cmds, "Firmware update", NULL);
