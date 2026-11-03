@@ -836,6 +836,24 @@ static int advk_rc_init(const struct device *dev)
 		printk("advk_rc: comphy SiP returned %ld, misc_ctrl0 %04x\n", data->comphy_ret,
 		       sys_read16(data->comphy + COMPHY_MISC_CTRL0));
 	}
+	/*
+	 * The core registers abort for a while after the clock and the PHY
+	 * come up (the endpoint driver's printk checkpoints used to cover
+	 * it): wait until the core answers.
+	 */
+	{
+		int64_t t0 = k_uptime_get();
+		uint32_t v;
+
+		while (a3700_probe_read32(REG(dev) + CTRL0, &v) != 0) {
+			if (k_uptime_get() - t0 > CONFIG_PCIE_AARDVARK_CORE_TIMEOUT_MS) {
+				break;
+			}
+			k_msleep(1);
+		}
+		LOG_INF("%s: core answers %lld ms after the PHY", dev->name,
+			k_uptime_get() - t0);
+	}
 	if (!step(dev, "comphy")) {
 		return -EIO;
 	}

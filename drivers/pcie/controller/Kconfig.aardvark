@@ -21,6 +21,13 @@ config PCIE_AARDVARK_INIT_PRIORITY
 	  After the GPIO, clock and (with PCIE_AARDVARK_MODE) the settings
 	  that choose the role.
 
+config PCIE_AARDVARK_CORE_TIMEOUT_MS
+	int "Wait for the core registers after the PHY [ms]"
+	default 500
+	help
+	  The core control registers abort for some time after the clock
+	  and the COMPHY are switched on.
+
 config PCIE_AARDVARK_PERST_MS
 	int "PERST# pulse [ms]"
 	default 10
