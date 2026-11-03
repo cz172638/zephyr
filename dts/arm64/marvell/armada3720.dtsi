@@ -200,6 +200,23 @@
 		/* PCIe in endpoint mode; mem: AXI range decoded to PCIe for
 		 * outbound windows (0xe8000000..0xefffffff, power of two used)
 		 */
+		/* The same controller as root complex, see pcie_ep */
+		pcie_rc: pcie@d0070000 {
+			compatible = "marvell,armada-3700-pcie";
+			reg = <0xd0070000 0x20000>, <0xd001f000 0x400>;
+			reg-names = "ctrl", "comphy";
+			interrupts = <GIC_SPI 29 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&sb_periph_clk 13>;
+			device_type = "pci";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			/* 0xe8000000-0xefffffff is decoded to PCIe; I/O not used yet */
+			ranges = <0x82000000 0 0xe8000000 0xe8000000 0 0x07f00000>;
+			num-lanes = <1>;
+			max-link-speed = <2>;
+			status = "disabled";
+		};
+
 		pcie_ep: pcie-ep@d0070000 {
 			compatible = "marvell,armada-3700-pcie-ep";
 			reg = <0xd0070000 0x20000>, <0xe8000000 0x1000000>,

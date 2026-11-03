@@ -19,6 +19,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pcie/aardvark.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/kernel.h>
 #include <zephyr/kernel/internal/mm.h>
@@ -192,6 +193,17 @@ static int a3700_ep_init(const struct device *dev)
 
 	data->dev = dev;
 	TRACE("init");
+
+	if (advk_mode_get() != ADVK_MODE_EP) {
+		/*
+		 * Root complex this boot: leave the controller alone. The
+		 * registers are mapped for the (read only) advk_ep shell views.
+		 */
+		device_map(&ep->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
+		device_map(&data->comphy, cfg->comphy_phys, 0x400, K_MEM_CACHE_NONE);
+		LOG_INF("%s: root complex mode selected, endpoint off", dev->name);
+		return -EBUSY;
+	}
 
 	/* PCIE1_RESETn is an output of the controller: GPIO in EP mode */
 	if (cfg->pcfg != NULL) {

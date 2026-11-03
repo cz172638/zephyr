@@ -1,5 +1,40 @@
 # PCIe RC/EP drivers configuration options
 
+config PCIE_AARDVARK_MODE
+	bool "Armada 3700 PCIe: root complex or endpoint from settings"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_PCIE_ENABLED
+	depends on DT_HAS_MARVELL_ARMADA_3700_PCIE_EP_ENABLED
+	depends on SETTINGS
+	help
+	  With both the root complex and the endpoint driver built in, the
+	  setting "advk/mode" ("rc" or "ep") picks the role at boot;
+	  "advk mode rc|ep" in the shell stores it for the next boot. The
+	  driver not picked leaves the controller alone.
+
+if PCIE_AARDVARK_MODE
+
+config PCIE_AARDVARK_MODE_DEFAULT_RC
+	bool "Root complex when nothing is saved"
+	help
+	  Without it the controller stays an endpoint, its reset role.
+
+config PCIE_AARDVARK_MODE_INIT_PRIORITY
+	int "POST_KERNEL priority of the mode lookup"
+	default 81
+	help
+	  After the settings flash (SPI_NOR_INIT_PRIORITY), before both
+	  controller drivers.
+
+# Both controller drivers after the mode lookup
+configdefault PCIE_EPC_INIT_PRIORITY
+	default 82
+
+configdefault PCIE_EPF_INIT_PRIORITY
+	default 83
+
+endif # PCIE_AARDVARK_MODE
+
 source "drivers/pcie/host/Kconfig"
 source "drivers/pcie/endpoint/Kconfig"
 source "drivers/pcie/controller/Kconfig"

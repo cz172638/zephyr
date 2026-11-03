@@ -1,3 +1,5 @@
 add_subdirectory_ifdef(CONFIG_PCIE host)
 add_subdirectory_ifdef(CONFIG_PCIE_ENDPOINT endpoint)
 add_subdirectory_ifdef(CONFIG_PCIE_CONTROLLER controller)
+
+zephyr_sources_ifdef(CONFIG_PCIE_AARDVARK_MODE aardvark_mode.c)

@@ -6,6 +6,7 @@
 if PCIE_CONTROLLER
 
 # zephyr-keep-sorted-start
+source "drivers/pcie/controller/Kconfig.aardvark"
 source "drivers/pcie/controller/Kconfig.brcmstb"
 source "drivers/pcie/controller/Kconfig.ecam"
 # zephyr-keep-sorted-stop

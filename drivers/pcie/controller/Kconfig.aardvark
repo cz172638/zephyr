@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config PCIE_AARDVARK
+	bool "Marvell Armada 3700 (Aardvark) PCIe root complex"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_PCIE_ENABLED
+	depends on ARM64
+	help
+	  The Armada 3700 PCIe controller as root complex: configuration
+	  requests through the PIO block, a software root port with the
+	  hardware's PCIe and extended capabilities (AER, L1SS, LTR) passed
+	  through, outbound windows from "ranges", generic enumeration.
+
+if PCIE_AARDVARK
+
+config PCIE_AARDVARK_INIT_PRIORITY
+	int "POST_KERNEL init priority"
+	default 84
+	help
+	  After the GPIO, clock and (with PCIE_AARDVARK_MODE) the settings
+	  that choose the role.
+
+config PCIE_AARDVARK_PERST_MS
+	int "PERST# pulse [ms]"
+	default 10
+
+config PCIE_AARDVARK_LINK_TIMEOUT_MS
+	int "Wait for the link [ms]"
+	default 1000
+
+config PCIE_AARDVARK_SHELL
+	bool "Shell (advk_rc)"
+	default y
+	depends on SHELL
+
+endif # PCIE_AARDVARK

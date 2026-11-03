@@ -1,0 +1,54 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 3700 (Aardvark) PCIe controller as root complex.
+
+  The same controller as marvell,armada-3700-pcie-ep; with both nodes
+  enabled the role is picked at boot (CONFIG_PCIE_AARDVARK_MODE).
+
+compatible: "marvell,armada-3700-pcie"
+
+include: [pcie-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: |
+      "ctrl": controller registers, "comphy": COMPHY lane 1 registers.
+
+  ranges:
+    required: true
+    description: |
+      PCI memory (and I/O) ranges in the AXI window 0xe8000000-0xefffffff,
+      mapped by outbound windows in power-of-two pieces (at most 8).
+
+  clocks:
+    required: true
+
+  interrupts:
+    description: Controller interrupt (not used yet).
+
+  perst-gpios:
+    type: phandle-array
+    description: PERST# to the slot.
+
+  num-lanes:
+    type: int
+    default: 1
+
+  max-link-speed:
+    type: int
+    default: 2
+
+  marvell,comphy-lane:
+    type: int
+    default: 1
+
+  marvell,comphy-polarity-invert:
+    type: int
+    default: 0
+    enum: [0, 1, 2, 3]

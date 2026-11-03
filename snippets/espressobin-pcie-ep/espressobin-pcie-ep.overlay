@@ -13,6 +13,11 @@
 #include <mem.h>
 
 / {
+	chosen {
+		/* root complex when "advk mode rc" is saved */
+		zephyr,pcie-controller = &pcie_rc;
+	};
+
 	/*
 	 * BAR backing store, outside Zephyr's RAM (ddr0 = 0..64 MiB) and
 	 * TF-A (0x04000000..): nothing else uses it. Each BAR's inbound
@@ -60,4 +65,9 @@
 		 */
 		bar-sizes = <8192 0 0 0 0x1000000 0>;
 	};
+};
+
+/* The same controller as root complex, picked by "advk mode rc" */
+&pcie_rc {
+	status = "okay";
 };
