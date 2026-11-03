@@ -55,9 +55,10 @@ config PCIE_EPC_DSN_SETTINGS
 	depends on SETTINGS
 	help
 	  Generate a locally administered EUI-64 on the first boot, keep it
-	  in settings (pcie/dsn<n>) and program it into every endpoint
+	  in settings (pcie/ep/dsn<n>) and program it into every endpoint
 	  controller with a DSN capability before link autostart, as the
-	  netshell does with its MAC addresses. Shell command pcie_dsn.
+	  netshell does with its MAC addresses. A root port driver keeps its
+	  own (pcie/rc/dsn<n>). Shell: pcie controller dsn.
 
 config PCIE_EPC_DSN_SPI_NOR_UID
 	bool "First DSN from the SPI NOR unique ID"

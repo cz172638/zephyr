@@ -198,8 +198,8 @@ struct rp_id {
 
 #define CFG_SSVID_CAP 0x40
 #define RCID_KEY      "advk/rcid"
-/* the same key as the endpoint DSN module: one serial number per board */
-#define RCDSN_KEY     "pcie/dsn0"
+/* the root port's own setting, the endpoint keeps pcie/ep/dsn<n> */
+#define RCDSN_KEY     "pcie/rc/dsn0"
 #define CFG_DSN_LO    0x154
 #define CFG_DSN_HI    0x158
 
@@ -988,9 +988,10 @@ static void id_load(const struct device *dev)
 
 /*
  * Device Serial Number of the root port: the hardware's DSN capability
- * (0x150, passed through). Saved one, else from the SPI NOR unique ID
- * (locally administered EUI-64), else random: the same value and the same
- * setting as the endpoint's, one serial number per board in both roles.
+ * (0x150, passed through), kept in its own setting (pcie/rc/dsn0). When
+ * nothing is saved, the SPI NOR unique ID (locally administered EUI-64,
+ * the endpoint makes the same one) or else a random value is written to
+ * the setting on the first start, so the value stays put from then on.
  */
 static void dsn_write(const struct device *dev, uint64_t v)
 {
@@ -1041,13 +1042,25 @@ static int dsn_load_cb(const char *key, size_t len, settings_read_cb read_cb, vo
 
 static void dsn_load(const struct device *dev)
 {
-	const char *src;
+	const char *src = "saved";
+	bool settings_ok = IS_ENABLED(CONFIG_SETTINGS) && settings_subsys_init() == 0;
 	uint64_t v = 0;
 
-	if (IS_ENABLED(CONFIG_SETTINGS) && settings_subsys_init() == 0) {
+	if (settings_ok) {
 		(void)settings_load_subtree_direct(RCDSN_KEY, dsn_load_cb, &v);
 	}
-	dsn_write(dev, v != 0 ? v : dsn_generate(&src));
+	if (v == 0) {
+		v = dsn_generate(&src);
+		if (settings_ok) {
+			int ret = settings_save_one(RCDSN_KEY, &v, sizeof(v));
+
+			if (ret != 0) {
+				LOG_WRN("DSN not saved (%d)", ret);
+			}
+		}
+	}
+	dsn_write(dev, v);
+	LOG_INF("root port DSN %016llx (%s)", (unsigned long long)v, src);
 }
 
 /* PERST# pulse, training, wait for L0; true when the link is up */
@@ -1403,15 +1416,11 @@ static int sh_dsn(const struct device *dev, pcie_bdf_t bdf, const char *arg, uin
 	}
 	if (arg == NULL) {
 		/* show */
-	} else if (strcmp(arg, "reset") == 0) {
-		if (IS_ENABLED(CONFIG_SETTINGS)) {
-			(void)settings_delete(RCDSN_KEY);
-		}
-		dsn_write(dev, dsn_generate(src));
 	} else {
 		uint64_t n;
 
-		if (strcmp(arg, "uid") == 0) {
+		/* reset: back to the start-up default, saved as on the first start */
+		if (strcmp(arg, "uid") == 0 || strcmp(arg, "reset") == 0) {
 			n = dsn_generate(src);
 		} else if (strcmp(arg, "new") == 0) {
 			n = dsn_local(sys_rand64_get() ^ (k_cycle_get_64() * 0x9e3779b97f4a7c15ULL));

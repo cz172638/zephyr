@@ -4,11 +4,12 @@
  *
  * Device Serial Number kept in settings, as the netshell keeps its MAC
  * addresses: made on the first boot (locally administered EUI-64 from the
- * SPI NOR unique ID, else random), saved under pcie/dsn<n>, programmed
+ * SPI NOR unique ID, else random), saved under pcie/ep/dsn<n> (the root
+ * port keeps its own, pcie/rc/dsn0; an old pcie/dsn<n> moves over), programmed
  * into every EPC with a DSN capability before link autostart. A value the
  * host writes into the capability (setpci ECAP_DSN+4.l / +8.l, where the
  * controller lets it) is picked up by a poll and saved too.
- * Shell: pcie_dsn [show | set <hex> | new].
+ * Shell: pcie controller dsn [<hex> | uid | new | reset].
  */
 
 #include <stdlib.h>
@@ -68,7 +69,19 @@ static int dsn_read_cb(const char *key, size_t len, settings_read_cb read_cb, vo
 
 static void dsn_key(char *key, size_t len, int i)
 {
-	snprintf(key, len, "pcie/dsn%d", i);
+	snprintf(key, len, "pcie/ep/dsn%d", i);
+}
+
+/* Before the role split the endpoint kept pcie/dsn<n>: move it over */
+static void dsn_migrate(int i, struct dsn_read *r)
+{
+	char old[16];
+
+	snprintf(old, sizeof(old), "pcie/dsn%d", i);
+	(void)settings_load_subtree_direct(old, dsn_read_cb, r);
+	if (r->found) {
+		(void)settings_delete(old);
+	}
 }
 
 /* The DSN capability in the extended config space, 0 if there is none */
@@ -218,6 +231,9 @@ static int dsn_init(void)
 		dsn_key(key, sizeof(key), n_epc);
 		if (settings_ok) {
 			(void)settings_load_subtree_direct(key, dsn_read_cb, &r);
+			if (!r.found) {
+				dsn_migrate(n_epc, &r);
+			}
 		}
 		save = !r.found;
 		if (!r.found) {
@@ -251,14 +267,9 @@ int pcie_epc_dsn_cmd(const struct device *dev, const char *arg, uint64_t *v, con
 		} else if (strcmp(arg, "new") == 0) {
 			/* random, so it differs from the one the UID gives */
 			(void)dsn_apply(i, dsn_random(), settings_ok);
-		} else if (strcmp(arg, "uid") == 0) {
+		} else if (strcmp(arg, "uid") == 0 || strcmp(arg, "reset") == 0) {
+			/* reset: back to the start-up default, saved as on the first start */
 			(void)dsn_apply(i, dsn_generate(src), settings_ok);
-		} else if (strcmp(arg, "reset") == 0) {
-			char key[16];
-
-			dsn_key(key, sizeof(key), i);
-			(void)settings_delete(key);
-			(void)dsn_apply(i, dsn_generate(src), false);
 		} else {
 			char *end;
 			uint64_t n = strtoull(arg, &end, 16);
