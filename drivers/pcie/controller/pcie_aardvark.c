@@ -48,6 +48,7 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/crc.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/util.h>
 
@@ -1866,6 +1867,539 @@ out:
 }
 #endif /* CONFIG_PCIE_AARDVARK_NVME_SHELL */
 
+#if defined(CONFIG_PCIE_AARDVARK_EPFTEST_SHELL)
+/*
+ * Host side of the endpoint test function (Linux pci_endpoint_test /
+ * pcitest, the same register block as Linux pci-epf-test and Zephyr
+ * pcie_epf_test): BAR patterns, MSI and MSI-X into the root complex's own
+ * MSI receiver, and the read / write / copy transfers into RC memory,
+ * memcpy or DMA on the endpoint's side, checked with the same CRC32.
+ *
+ *   pcie debug epftest <b:d.f> [info|bar|msi|msix|read|write|copy|all]
+ *                      [<size>] [dma] [<count>]
+ *
+ * Naming as pcitest: "write" = the host writes, the endpoint reads
+ * (COMMAND_READ) and checks; "read" = the endpoint writes into host
+ * memory (COMMAND_WRITE) and the host checks.
+ */
+#define EPT_MAGIC      0x00
+#define EPT_COMMAND    0x04
+#define EPT_STATUS     0x08
+#define EPT_SRC_LO     0x0c
+#define EPT_SRC_HI     0x10
+#define EPT_DST_LO     0x14
+#define EPT_DST_HI     0x18
+#define EPT_SIZE       0x1c
+#define EPT_CHECKSUM   0x20
+#define EPT_IRQ_TYPE   0x24
+#define EPT_IRQ_NUMBER 0x28
+#define EPT_FLAGS      0x2c
+#define EPT_CAPS       0x30
+
+#define EPT_CMD_RAISE_MSI  BIT(1)
+#define EPT_CMD_RAISE_MSIX BIT(2)
+#define EPT_CMD_READ       BIT(3)
+#define EPT_CMD_WRITE      BIT(4)
+#define EPT_CMD_COPY       BIT(5)
+
+#define EPT_STS_READ_OK    BIT(0)
+#define EPT_STS_READ_FAIL  BIT(1)
+#define EPT_STS_WRITE_OK   BIT(2)
+#define EPT_STS_WRITE_FAIL BIT(3)
+#define EPT_STS_COPY_OK    BIT(4)
+#define EPT_STS_COPY_FAIL  BIT(5)
+#define EPT_STS_IRQ        BIT(6)
+#define EPT_STS_SRC_INVAL  BIT(7)
+#define EPT_STS_DST_INVAL  BIT(8)
+
+#define EPT_IRQ_MSI  1
+#define EPT_IRQ_MSIX 2
+
+#define EPT_BUF (CONFIG_PCIE_AARDVARK_EPFTEST_BUF_KB * 1024)
+
+static uint8_t ept_src[EPT_BUF] __aligned(4096);
+static uint8_t ept_dst[EPT_BUF] __aligned(4096);
+static atomic_t ept_irqs;
+
+struct ept {
+	const struct shell *sh;
+	const struct device *dev;
+	pcie_bdf_t bdf;
+	uint64_t bar[6];
+	uint64_t bar_size[6];
+	uint8_t *reg;     /* test register BAR (BAR0), mapped */
+	uint32_t irq_type; /* 0: polled */
+	int vec;          /* our MSI vector, -1 none */
+	uint32_t msix_cap, msi_cap;
+};
+
+static void ept_isr(const void *arg)
+{
+	ARG_UNUSED(arg);
+	atomic_inc(&ept_irqs);
+}
+
+static uint32_t ept_rd(struct ept *t, uint32_t off)
+{
+	return sys_read32((mem_addr_t)t->reg + off);
+}
+
+static void ept_wr(struct ept *t, uint32_t off, uint32_t v)
+{
+	sys_write32(v, (mem_addr_t)t->reg + off);
+}
+
+static uint32_t ept_find_cap(struct ept *t, uint8_t id)
+{
+	uint32_t cap = advk_rc_conf_read(t->dev, t->bdf, PCIE_CONF_CAPPTR) & 0xfc;
+
+	for (int ttl = 48; cap >= 0x40 && ttl > 0; ttl--) {
+		uint32_t w = advk_rc_conf_read(t->dev, t->bdf, cap >> 2);
+
+		if ((w & 0xff) == id) {
+			return cap;
+		}
+		cap = (w >> 8) & 0xfc;
+	}
+	return 0;
+}
+
+/* BAR addresses as assigned, sizes by the usual all-ones probe */
+static void ept_bars(struct ept *t)
+{
+	uint32_t cmd = advk_rc_conf_read(t->dev, t->bdf, PCIE_CONF_CMDSTAT);
+
+	/* decoding off while sizing */
+	advk_rc_conf_write(t->dev, t->bdf, PCIE_CONF_CMDSTAT, cmd & 0xfff8);
+	for (int i = 0; i < 6; i++) {
+		unsigned int r = PCIE_CONF_BAR0 + i;
+		uint32_t lo = advk_rc_conf_read(t->dev, t->bdf, r), hi = 0, slo, shi = 0xffffffff;
+		bool b64 = (lo & 0x7) == 0x4;
+
+		t->bar[i] = 0;
+		t->bar_size[i] = 0;
+		if ((lo & 1) != 0) {
+			continue; /* I/O */
+		}
+		advk_rc_conf_write(t->dev, t->bdf, r, 0xffffffff);
+		slo = advk_rc_conf_read(t->dev, t->bdf, r);
+		advk_rc_conf_write(t->dev, t->bdf, r, lo);
+		if (b64) {
+			hi = advk_rc_conf_read(t->dev, t->bdf, r + 1);
+			advk_rc_conf_write(t->dev, t->bdf, r + 1, 0xffffffff);
+			shi = advk_rc_conf_read(t->dev, t->bdf, r + 1);
+			advk_rc_conf_write(t->dev, t->bdf, r + 1, hi);
+		}
+		if ((slo & ~0xfU) != 0) {
+			uint64_t mask = ((uint64_t)(b64 ? shi : 0xffffffff) << 32) | (slo & ~0xfULL);
+
+			t->bar_size[i] = ~mask + 1;
+			t->bar[i] = ((uint64_t)hi << 32) | (lo & ~0xfULL);
+		}
+		if (b64) {
+			i++;
+		}
+	}
+	advk_rc_conf_write(t->dev, t->bdf, PCIE_CONF_CMDSTAT,
+			   (cmd & 0xffff) | PCIE_CONF_CMDSTAT_MEM | PCIE_CONF_CMDSTAT_MASTER);
+}
+
+static int ept_open(struct ept *t)
+{
+	if (t->bar_size[0] < 0x40 || t->bar[0] == 0) {
+		shell_error(t->sh, "BAR0 (test registers) not assigned");
+		return -ENODEV;
+	}
+	k_mem_map_phys_bare(&t->reg, t->bar[0], 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	t->msix_cap = ept_find_cap(t, 0x11);
+	t->msi_cap = ept_find_cap(t, 0x05);
+	t->vec = -1;
+	return 0;
+}
+
+static void ept_close(struct ept *t)
+{
+	if (t->vec >= 0) {
+		if (t->irq_type == EPT_IRQ_MSIX) {
+			advk_rc_conf_write(t->dev, t->bdf, t->msix_cap >> 2,
+					   advk_rc_conf_read(t->dev, t->bdf, t->msix_cap >> 2) &
+						   ~BIT(31));
+		} else if (t->irq_type == EPT_IRQ_MSI) {
+			advk_rc_conf_write(t->dev, t->bdf, t->msi_cap >> 2,
+					   advk_rc_conf_read(t->dev, t->bdf, t->msi_cap >> 2) &
+						   ~BIT(16));
+		}
+		advk_rc_msi_free(t->dev, t->vec);
+	}
+	k_mem_unmap_phys_bare(t->reg, 0x1000);
+}
+
+/* MSI-X: entry <n-1> of the device's table to our vector */
+static int ept_msix_setup(struct ept *t, uint32_t n)
+{
+	uint32_t tbl, addr, ctrl;
+	uint16_t msg;
+	uint8_t *va;
+	uint64_t pa;
+
+	if (t->msix_cap == 0) {
+		return -ENODEV;
+	}
+	ctrl = advk_rc_conf_read(t->dev, t->bdf, t->msix_cap >> 2);
+	tbl = advk_rc_conf_read(t->dev, t->bdf, (t->msix_cap >> 2) + 1);
+	if (n == 0 || n > ((ctrl >> 16) & 0x7ff) + 1 || (tbl & 7) > 5 || t->bar[tbl & 7] == 0) {
+		return -EINVAL;
+	}
+	if (t->vec < 0) {
+		t->vec = advk_rc_msi_alloc(t->dev, ept_isr, NULL, &addr, &msg);
+		if (t->vec < 0) {
+			return t->vec;
+		}
+	} else {
+		addr = (uint32_t)k_mem_phys_addr(&((struct advk_rc_data *)t->dev->data)->msi_doorbell);
+		msg = t->vec;
+	}
+	pa = t->bar[tbl & 7] + (tbl & ~7U) + (n - 1) * 16;
+	k_mem_map_phys_bare(&va, pa & ~0xfffULL, 0x1000, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	volatile uint32_t *e = (volatile uint32_t *)(va + (pa & 0xfff));
+
+	e[0] = addr;
+	e[1] = 0;
+	e[2] = msg;
+	e[3] = 0;
+	k_mem_unmap_phys_bare(va, 0x1000);
+	advk_rc_conf_write(t->dev, t->bdf, t->msix_cap >> 2, (ctrl & ~BIT(30)) | BIT(31));
+	t->irq_type = EPT_IRQ_MSIX;
+	return 0;
+}
+
+/* MSI: one message, data = our vector (the endpoint adds irq - 1) */
+static int ept_msi_setup(struct ept *t)
+{
+	uint32_t ctrl, addr;
+	uint16_t msg;
+	unsigned int c;
+
+	if (t->msi_cap == 0) {
+		return -ENODEV;
+	}
+	if (t->vec < 0) {
+		t->vec = advk_rc_msi_alloc(t->dev, ept_isr, NULL, &addr, &msg);
+		if (t->vec < 0) {
+			return t->vec;
+		}
+	} else {
+		addr = (uint32_t)k_mem_phys_addr(&((struct advk_rc_data *)t->dev->data)->msi_doorbell);
+		msg = t->vec;
+	}
+	c = t->msi_cap >> 2;
+	ctrl = advk_rc_conf_read(t->dev, t->bdf, c);
+	advk_rc_conf_write(t->dev, t->bdf, c + 1, addr);
+	if ((ctrl & BIT(23)) != 0) {
+		advk_rc_conf_write(t->dev, t->bdf, c + 2, 0);
+		advk_rc_conf_write(t->dev, t->bdf, c + 3, msg);
+	} else {
+		advk_rc_conf_write(t->dev, t->bdf, c + 2, msg);
+	}
+	/* MME = 0 (one vector), enable */
+	advk_rc_conf_write(t->dev, t->bdf, c, (ctrl & ~(0x7U << 20)) | BIT(16));
+	t->irq_type = EPT_IRQ_MSI;
+	return 0;
+}
+
+/* Run one command, wait for a status bit; returns the status */
+static uint32_t ept_run(struct ept *t, uint32_t cmd, uint32_t irq_num, uint32_t done_mask,
+			uint32_t ms, int64_t *us, bool *irq_seen)
+{
+	atomic_val_t i0 = atomic_get(&ept_irqs);
+	int64_t t0, end;
+	uint32_t st;
+
+	ept_wr(t, EPT_IRQ_TYPE, t->irq_type == 0 ? EPT_IRQ_MSIX : t->irq_type);
+	ept_wr(t, EPT_IRQ_NUMBER, irq_num);
+	ept_wr(t, EPT_STATUS, 0);
+	barrier_dsync_fence_full();
+	t0 = k_uptime_ticks();
+	end = k_uptime_get() + ms;
+	ept_wr(t, EPT_COMMAND, cmd);
+	do {
+		st = ept_rd(t, EPT_STATUS);
+		if ((st & done_mask) != 0) {
+			break;
+		}
+		k_busy_wait(20);
+	} while (k_uptime_get() < end);
+	*us = k_ticks_to_us_floor64(k_uptime_ticks() - t0);
+	/* the interrupt follows the status write */
+	for (int w = 0; w < 100 && t->irq_type != 0 && atomic_get(&ept_irqs) == i0; w++) {
+		k_busy_wait(100);
+	}
+	if (irq_seen != NULL) {
+		*irq_seen = atomic_get(&ept_irqs) != i0;
+	}
+	return st;
+}
+
+static void ept_fill(uint8_t *p, size_t n)
+{
+	static uint32_t x = 2463534242U;
+
+	x ^= (uint32_t)k_cycle_get_32();
+	for (size_t i = 0; i < n; i++) {
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		p[i] = (uint8_t)x;
+	}
+}
+
+static const char *ept_irq_str(struct ept *t, bool seen)
+{
+	if (t->irq_type == 0) {
+		return "";
+	}
+	return seen ? ", irq ok" : ", NO irq";
+}
+
+static int ept_xfer(struct ept *t, const char *what, size_t size, bool dma)
+{
+	uint64_t src = k_mem_phys_addr(ept_src), dst = k_mem_phys_addr(ept_dst);
+	uint32_t cmd, ok, fail, st;
+	bool irq_seen;
+	int64_t us;
+	int ret = 0;
+
+	if (size == 0 || size > EPT_BUF) {
+		shell_error(t->sh, "size 1..%u", EPT_BUF);
+		return -EINVAL;
+	}
+	ept_wr(t, EPT_FLAGS, dma ? BIT(0) : 0);
+	ept_wr(t, EPT_SIZE, (uint32_t)size);
+	if (strcmp(what, "write") == 0) {
+		/* host -> endpoint: the endpoint reads src and checks the CRC */
+		ept_fill(ept_src, size);
+		sys_cache_data_flush_range(ept_src, size);
+		ept_wr(t, EPT_SRC_LO, (uint32_t)src);
+		ept_wr(t, EPT_SRC_HI, (uint32_t)(src >> 32));
+		ept_wr(t, EPT_CHECKSUM, ~crc32_ieee(ept_src, size));
+		cmd = EPT_CMD_READ;
+		ok = EPT_STS_READ_OK;
+		fail = EPT_STS_READ_FAIL;
+	} else if (strcmp(what, "read") == 0) {
+		/* endpoint -> host: it fills dst and publishes the CRC */
+		memset(ept_dst, 0, size);
+		sys_cache_data_flush_and_invd_range(ept_dst, size);
+		ept_wr(t, EPT_DST_LO, (uint32_t)dst);
+		ept_wr(t, EPT_DST_HI, (uint32_t)(dst >> 32));
+		cmd = EPT_CMD_WRITE;
+		ok = EPT_STS_WRITE_OK;
+		fail = EPT_STS_WRITE_FAIL;
+	} else {
+		ept_fill(ept_src, size);
+		memset(ept_dst, 0, size);
+		sys_cache_data_flush_range(ept_src, size);
+		sys_cache_data_flush_and_invd_range(ept_dst, size);
+		ept_wr(t, EPT_SRC_LO, (uint32_t)src);
+		ept_wr(t, EPT_SRC_HI, (uint32_t)(src >> 32));
+		ept_wr(t, EPT_DST_LO, (uint32_t)dst);
+		ept_wr(t, EPT_DST_HI, (uint32_t)(dst >> 32));
+		cmd = EPT_CMD_COPY;
+		ok = EPT_STS_COPY_OK;
+		fail = EPT_STS_COPY_FAIL;
+	}
+
+	st = ept_run(t, cmd, 1, ok | fail | EPT_STS_SRC_INVAL | EPT_STS_DST_INVAL, 10000, &us,
+		     &irq_seen);
+	if ((st & ok) == 0) {
+		shell_error(t->sh, "%-5s %7zu B %-6s FAIL status %08x%s", what, size,
+			    dma ? "dma" : "memcpy", st, (st & (ok | fail)) == 0 ? " (timeout)" : "");
+		return -EIO;
+	}
+	if (cmd == EPT_CMD_WRITE) {
+		sys_cache_data_invd_range(ept_dst, size);
+		if (~crc32_ieee(ept_dst, size) != ept_rd(t, EPT_CHECKSUM)) {
+			ret = -EIO;
+		}
+	} else if (cmd == EPT_CMD_COPY) {
+		sys_cache_data_invd_range(ept_dst, size);
+		if (memcmp(ept_src, ept_dst, size) != 0) {
+			ret = -EIO;
+		}
+	}
+	shell_print(t->sh, "%-5s %7zu B %-6s %s, %lld us, %llu kB/s%s", what, size,
+		    dma ? "dma" : "memcpy", ret == 0 ? "ok" : "DATA MISMATCH", us,
+		    us > 0 ? (unsigned long long)(size * 1000ULL / (uint64_t)us) : 0ULL,
+		    ept_irq_str(t, irq_seen));
+	return ret;
+}
+
+static int ept_bar_test(struct ept *t, size_t max)
+{
+	static const uint32_t pat[6] = {0xa0a0a0a0, 0xa1a1a1a1, 0xa2a2a2a2,
+					0xa3a3a3a3, 0xa4a4a4a4, 0xa5a5a5a5};
+	int fails = 0;
+
+	for (int i = 0; i < 6; i++) {
+		size_t n;
+		uint8_t *va;
+		uint32_t bad = 0, first_bad = 0;
+
+		if (t->bar_size[i] == 0) {
+			continue;
+		}
+		/* the test register BAR: only its first word (as pci_endpoint_test) */
+		n = i == 0 ? 4 : (size_t)MIN((uint64_t)max, t->bar_size[i]);
+		k_mem_map_phys_bare(&va, t->bar[i], ROUND_UP(n, 4096),
+				    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+		uint32_t keep = i == 0 ? sys_read32((mem_addr_t)va) : 0;
+
+		for (size_t o = 0; o < n; o += 4) {
+			sys_write32(pat[i], (mem_addr_t)va + o);
+		}
+		for (size_t o = 0; o < n; o += 4) {
+			uint32_t v = sys_read32((mem_addr_t)va + o);
+
+			if (v != pat[i]) {
+				if (bad++ == 0) {
+					first_bad = (uint32_t)o;
+				}
+			}
+		}
+		if (i == 0) {
+			sys_write32(keep, (mem_addr_t)va);
+		}
+		k_mem_unmap_phys_bare(va, ROUND_UP(n, 4096));
+		if (bad != 0) {
+			shell_error(t->sh, "BAR%d 0x%llx: %u of %zu words wrong (first +0x%x)", i,
+				    (unsigned long long)t->bar[i], bad, n / 4, first_bad);
+			fails++;
+		} else {
+			shell_print(t->sh, "BAR%d 0x%llx (%llu KiB): %zu B pattern ok", i,
+				    (unsigned long long)t->bar[i],
+				    (unsigned long long)(t->bar_size[i] / 1024), n);
+		}
+	}
+	return fails != 0 ? -EIO : 0;
+}
+
+static int ept_irq_test(struct ept *t, bool msix, uint32_t count)
+{
+	int ret = msix ? ept_msix_setup(t, 1) : ept_msi_setup(t);
+	uint32_t got = 0;
+
+	if (ret != 0) {
+		shell_error(t->sh, "%s setup: %d", msix ? "MSI-X" : "MSI", ret);
+		return ret;
+	}
+	for (uint32_t n = 1; n <= count; n++) {
+		bool seen;
+		int64_t us;
+		uint32_t st;
+
+		if (msix && n > 1) {
+			ret = ept_msix_setup(t, n);
+			if (ret != 0) {
+				break;
+			}
+		}
+		st = ept_run(t, msix ? EPT_CMD_RAISE_MSIX : EPT_CMD_RAISE_MSI, msix ? n : 1,
+			     EPT_STS_IRQ, 1000, &us, &seen);
+		if ((st & EPT_STS_IRQ) != 0 && seen) {
+			got++;
+		} else {
+			shell_error(t->sh, "%s %u: status %08x, %s", msix ? "MSI-X" : "MSI", n, st,
+				    seen ? "irq" : "no irq");
+		}
+	}
+	shell_print(t->sh, "%s: %u/%u interrupts received (vector %d)", msix ? "MSI-X" : "MSI",
+		    got, count, t->vec);
+	return got == count ? 0 : -EIO;
+}
+
+static int cmd_rc_epftest(const struct shell *sh, size_t argc, char **argv)
+{
+	struct ept t = {.sh = sh, .dev = RC_DEV};
+	const char *what = argc > 2 ? argv[2] : "info";
+	unsigned long size = 0, count = 0;
+	bool dma = false;
+	int ret = 0;
+
+	if (!rc_active(sh) || parse_bdf(sh, argv[1], &t.bdf) != 0) {
+		return -EINVAL;
+	}
+	for (size_t i = 3; i < argc; i++) {
+		if (strcmp(argv[i], "dma") == 0) {
+			dma = true;
+		} else if (size == 0) {
+			size = strtoul(argv[i], NULL, 0);
+		} else {
+			count = strtoul(argv[i], NULL, 0);
+		}
+	}
+	if (advk_rc_conf_read(RC_DEV, t.bdf, PCIE_CONF_ID) == 0xffffffff) {
+		shell_error(sh, "no device at %s", argv[1]);
+		return -ENODEV;
+	}
+	ept_bars(&t);
+	ret = ept_open(&t);
+	if (ret != 0) {
+		return ret;
+	}
+
+	if (strcmp(what, "info") == 0) {
+		shell_print(sh, "magic %08x caps %08x status %08x", ept_rd(&t, EPT_MAGIC),
+			    ept_rd(&t, EPT_CAPS), ept_rd(&t, EPT_STATUS));
+		for (int i = 0; i < 6; i++) {
+			if (t.bar_size[i] != 0) {
+				shell_print(sh, "BAR%d 0x%llx, %llu KiB", i,
+					    (unsigned long long)t.bar[i],
+					    (unsigned long long)(t.bar_size[i] / 1024));
+			}
+		}
+		shell_print(sh, "MSI cap 0x%02x, MSI-X cap 0x%02x, host buffers 2 x %u KiB at 0x%llx",
+			    t.msi_cap, t.msix_cap, EPT_BUF / 1024,
+			    (unsigned long long)k_mem_phys_addr(ept_src));
+	} else if (strcmp(what, "bar") == 0) {
+		ret = ept_bar_test(&t, size != 0 ? size : 65536);
+	} else if (strcmp(what, "msi") == 0 || strcmp(what, "msix") == 0) {
+		ret = ept_irq_test(&t, what[3] == 'x', size != 0 ? size : 1);
+	} else if (strcmp(what, "read") == 0 || strcmp(what, "write") == 0 ||
+		   strcmp(what, "copy") == 0) {
+		(void)ept_msix_setup(&t, 1);
+		for (unsigned long i = 0; i < MAX(count, 1UL) && ret == 0; i++) {
+			ret = ept_xfer(&t, what, size != 0 ? size : 65536, dma);
+		}
+	} else if (strcmp(what, "all") == 0) {
+		static const size_t sizes[] = {1, 1024, 65536, 1024 * 1024};
+		static const char *const ops[] = {"read", "write", "copy"};
+		int fails = 0;
+
+		fails += ept_bar_test(&t, 65536) != 0;
+		fails += ept_irq_test(&t, false, 1) != 0;
+		ept_close(&t);
+		(void)ept_open(&t);
+		fails += ept_irq_test(&t, true, 16) != 0;
+		for (int d = 0; d < 2; d++) {
+			for (size_t o = 0; o < ARRAY_SIZE(ops); o++) {
+				for (size_t s = 0; s < ARRAY_SIZE(sizes); s++) {
+					if (sizes[s] <= EPT_BUF) {
+						fails += ept_xfer(&t, ops[o], sizes[s], d) != 0;
+					}
+				}
+			}
+		}
+		shell_print(sh, "all: %d failed", fails);
+		ret = fails != 0 ? -EIO : 0;
+	} else {
+		shell_error(sh, "info|bar|msi|msix|read|write|copy|all");
+		ret = -EINVAL;
+	}
+	ept_close(&t);
+	return ret;
+}
+#endif /* CONFIG_PCIE_AARDVARK_EPFTEST_SHELL */
+
+
 /*
  * Bring-up experiments, also when the init stopped: the steps one by
  * one, each followed by a probe of the core registers.
@@ -1998,6 +2532,12 @@ SHELL_SUBCMD_ADD((pcie_debug), nvme, NULL,
 		 "<b:d.f> [<lba>] [msi] [nocache] Polled NVMe test: identify, read one block; "
 		 "msi: count MSI-X of the admin queue; nocache: no cache maintenance",
 		 cmd_rc_nvme, 2, 3);
+#endif
+#if defined(CONFIG_PCIE_AARDVARK_EPFTEST_SHELL)
+SHELL_SUBCMD_ADD((pcie_debug), epftest, NULL,
+		 "<b:d.f> [info|bar|msi|msix|read|write|copy|all] [<size>|<count>] [dma] [<count>] "
+		 "Host side of the endpoint test function (as Linux pcitest)",
+		 cmd_rc_epftest, 2, 4);
 #endif
 #endif /* CONFIG_PCIE_AARDVARK_SHELL */
 

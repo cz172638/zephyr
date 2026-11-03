@@ -49,6 +49,21 @@ config PCIE_AARDVARK_SHELL
 	default y
 	depends on PCIE_CTRL_SHELL
 
+config PCIE_AARDVARK_EPFTEST_SHELL
+	bool "pcie debug epftest: host side of the endpoint test function"
+	default y
+	depends on PCIE_AARDVARK_SHELL
+	select CRC
+	help
+	  BAR patterns, MSI/MSI-X into the root complex's MSI receiver and
+	  read/write/copy into RC memory against a pci-epf-test compatible
+	  endpoint (Zephyr pcie_epf_test, Linux pci-epf-test), as pcitest.
+
+config PCIE_AARDVARK_EPFTEST_BUF_KB
+	int "Host buffers (two) for epftest, KiB"
+	default 1024
+	depends on PCIE_AARDVARK_EPFTEST_SHELL
+
 config PCIE_AARDVARK_NVME_SHELL
 	bool "pcie debug nvme: polled NVMe identify and read"
 	default y
