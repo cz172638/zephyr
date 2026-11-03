@@ -198,7 +198,8 @@ struct rp_id {
 
 #define CFG_SSVID_CAP 0x40
 #define RCID_KEY      "advk/rcid"
-#define RCDSN_KEY     "advk/rcdsn"
+/* the same key as the endpoint DSN module: one serial number per board */
+#define RCDSN_KEY     "pcie/dsn0"
 #define CFG_DSN_LO    0x154
 #define CFG_DSN_HI    0x158
 
@@ -988,8 +989,8 @@ static void id_load(const struct device *dev)
 /*
  * Device Serial Number of the root port: the hardware's DSN capability
  * (0x150, passed through). Saved one, else from the SPI NOR unique ID
- * (locally administered EUI-64, bit 0 flipped so it differs from the
- * endpoint's), else random.
+ * (locally administered EUI-64), else random: the same value and the same
+ * setting as the endpoint's, one serial number per board in both roles.
  */
 static void dsn_write(const struct device *dev, uint64_t v)
 {
@@ -1018,7 +1019,7 @@ static uint64_t dsn_generate(const char **src)
 		}
 		if (u != 0 && u != UINT64_MAX) {
 			*src = "SPI NOR unique ID";
-			return dsn_local(u) ^ 1;
+			return dsn_local(u);
 		}
 	}
 #endif
