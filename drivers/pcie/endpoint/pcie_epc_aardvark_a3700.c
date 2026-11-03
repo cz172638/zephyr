@@ -243,6 +243,25 @@ static int a3700_ep_init(const struct device *dev)
 	      sys_read16(data->comphy + ADVK_COMPHY_MISC_CTRL0));
 	device_map(&ep->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
 	device_map(&ob, cfg->mem_phys, cfg->mem_size, K_MEM_CACHE_NONE);
+
+	/*
+	 * The core registers abort for a while after the clock and the PHY
+	 * come up (found with the root complex driver; the printk
+	 * checkpoints above used to hide it): wait until they answer.
+	 */
+	{
+		int64_t t0 = k_uptime_get();
+		uint32_t v;
+
+		while (a3700_probe_read32(ep->reg + ADVK_CTRL0, &v) != 0) {
+			if (k_uptime_get() - t0 > 500) {
+				LOG_ERR("%s: core registers do not answer", dev->name);
+				return -EIO;
+			}
+			k_msleep(1);
+		}
+		TRACE("core answers after %lld ms", k_uptime_get() - t0);
+	}
 	TRACE("ctrl at 0x%lx, OB at 0x%lx; ctrl0 %08x", (unsigned long)ep->reg,
 	      (unsigned long)ob, sys_read32(ep->reg + ADVK_CTRL0));
 	ep->ob_virt = ob;
