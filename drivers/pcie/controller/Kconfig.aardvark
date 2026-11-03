@@ -48,4 +48,12 @@ config PCIE_AARDVARK_SHELL
 	default y
 	depends on SHELL
 
+config PCIE_AARDVARK_NVME_SHELL
+	bool "advk_rc nvme: polled NVMe identify and read"
+	default y
+	depends on PCIE_AARDVARK_SHELL
+	help
+	  Bring-up check of both directions through the controller without
+	  interrupts or a disk driver.
+
 endif # PCIE_AARDVARK

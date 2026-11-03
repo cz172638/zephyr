@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include <zephyr/arch/arm64/arm-smccc.h>
+#include <zephyr/cache.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/gpio.h>
@@ -37,8 +38,11 @@
 #include <zephyr/drivers/pcie/pcie.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/kernel.h>
+#include <zephyr/kernel/internal/mm.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/barrier.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/util.h>
 
@@ -1045,6 +1049,287 @@ static int cmd_rc_cfgw(const struct shell *sh, size_t argc, char **argv)
 }
 
 
+
+#if defined(CONFIG_PCIE_AARDVARK_NVME_SHELL)
+/*
+ * nvme <b:d.f> [<lba>]: minimal polled NVMe bring-up, no interrupts.
+ * Admin queues in DDR, Identify Controller and Namespace 1, one I/O queue
+ * pair, read one block. Checks the outbound path (registers, doorbells)
+ * and the inbound one (the device DMAs queues, completions and data into
+ * DDR). Cache maintenance around every DMA, whatever the coherency.
+ */
+#define NV_QSIZE   16
+#define NV_CAP     0x00
+#define NV_VS      0x08
+#define NV_CC      0x14
+#define NV_CSTS    0x1c
+#define NV_AQA     0x24
+#define NV_ASQ     0x28
+#define NV_ACQ     0x30
+#define NV_DB      0x1000
+
+struct nv_sqe {
+	uint32_t dw0, nsid, rsvd[2];
+	uint64_t mptr, prp1, prp2;
+	uint32_t cdw10, cdw11, cdw12, cdw13, cdw14, cdw15;
+};
+
+struct nv_cqe {
+	uint32_t result, rsvd;
+	uint16_t sqhd, sqid;
+	uint16_t cid, status; /* status bit 0: phase */
+};
+
+BUILD_ASSERT(sizeof(struct nv_sqe) == 64 && sizeof(struct nv_cqe) == 16);
+
+static struct nv_sqe nv_asq[NV_QSIZE] __aligned(4096);
+static struct nv_cqe nv_acq[NV_QSIZE] __aligned(4096);
+static struct nv_sqe nv_iosq[NV_QSIZE] __aligned(4096);
+static struct nv_cqe nv_iocq[NV_QSIZE] __aligned(4096);
+static uint8_t nv_buf[4096] __aligned(4096);
+
+struct nv_q {
+	struct nv_sqe *sq;
+	struct nv_cqe *cq;
+	uint16_t tail, head, cid;
+	uint8_t phase;
+	uint32_t sq_db, cq_db;
+};
+
+struct nv_ctx {
+	const struct shell *sh;
+	mm_reg_t bar;
+	uint32_t stride;
+	uint32_t to_ms;
+	struct nv_q admin, io;
+};
+
+static uint64_t nv_pa(const void *p)
+{
+	return (uint64_t)k_mem_phys_addr((void *)p);
+}
+
+static void nv_wr64(struct nv_ctx *c, uint32_t off, uint64_t v)
+{
+	sys_write32((uint32_t)v, c->bar + off);
+	sys_write32((uint32_t)(v >> 32), c->bar + off + 4);
+}
+
+static int nv_wait_rdy(struct nv_ctx *c, bool rdy)
+{
+	int64_t t0 = k_uptime_get();
+
+	while (((sys_read32(c->bar + NV_CSTS) & BIT(0)) != 0) != rdy) {
+		if ((sys_read32(c->bar + NV_CSTS) & BIT(1)) != 0) {
+			shell_error(c->sh, "CSTS.CFS: controller fatal status");
+			return -EIO;
+		}
+		if (k_uptime_get() - t0 > c->to_ms) {
+			shell_error(c->sh, "timeout waiting for CSTS.RDY=%d (CSTS %08x)", rdy,
+				    sys_read32(c->bar + NV_CSTS));
+			return -ETIMEDOUT;
+		}
+		k_msleep(1);
+	}
+	return 0;
+}
+
+/* Submit one command, poll its completion; returns the NVMe status or -errno */
+static int nv_cmd(struct nv_ctx *c, struct nv_q *q, struct nv_sqe *cmd, uint32_t *result)
+{
+	struct nv_cqe *e;
+	int64_t t0;
+	uint16_t cid = q->cid++;
+
+	cmd->dw0 = (cmd->dw0 & 0xffff) | ((uint32_t)cid << 16);
+	q->sq[q->tail] = *cmd;
+	sys_cache_data_flush_range(&q->sq[q->tail], sizeof(*cmd));
+	q->tail = (q->tail + 1) % NV_QSIZE;
+	barrier_dsync_fence_full();
+	sys_write32(q->tail, c->bar + q->sq_db);
+
+	t0 = k_uptime_get();
+	e = &q->cq[q->head];
+	while (true) {
+		sys_cache_data_invd_range(e, sizeof(*e));
+		if ((e->status & 1) == q->phase) {
+			break;
+		}
+		if (k_uptime_get() - t0 > 2000) {
+			shell_error(c->sh, "command %02x: no completion (CSTS %08x)",
+				    cmd->dw0 & 0xff, sys_read32(c->bar + NV_CSTS));
+			return -ETIMEDOUT;
+		}
+		k_busy_wait(10);
+	}
+	if (result != NULL) {
+		*result = e->result;
+	}
+	q->head = (q->head + 1) % NV_QSIZE;
+	if (q->head == 0) {
+		q->phase ^= 1;
+	}
+	sys_write32(q->head, c->bar + q->cq_db);
+	if (e->cid != cid) {
+		shell_warn(c->sh, "completion for cid %u, expected %u", e->cid, cid);
+	}
+	return e->status >> 1;
+}
+
+static void nv_str(const struct shell *sh, const char *what, const uint8_t *p, size_t n)
+{
+	char s[48];
+
+	n = MIN(n, sizeof(s) - 1);
+	memcpy(s, p, n);
+	s[n] = '\0';
+	for (int i = n - 1; i >= 0 && s[i] == ' '; i--) {
+		s[i] = '\0';
+	}
+	shell_print(sh, "  %-9s %s", what, s);
+}
+
+static int nv_identify(struct nv_ctx *c, uint32_t cns, uint32_t nsid)
+{
+	struct nv_sqe cmd = {.dw0 = 0x06, .nsid = nsid, .prp1 = nv_pa(nv_buf), .cdw10 = cns};
+
+	memset(nv_buf, 0, sizeof(nv_buf));
+	sys_cache_data_flush_and_invd_range(nv_buf, sizeof(nv_buf));
+	int st = nv_cmd(c, &c->admin, &cmd, NULL);
+
+	sys_cache_data_invd_range(nv_buf, sizeof(nv_buf));
+	return st;
+}
+
+static int cmd_rc_nvme(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = RC_DEV;
+	struct nv_ctx c = {.sh = sh};
+	unsigned long long lba = argc > 2 ? strtoull(argv[2], NULL, 0) : 0;
+	uint64_t cap, nsze, bar_phys;
+	uint32_t lo, hi, bs, flbas;
+	pcie_bdf_t bdf;
+	int st;
+
+	if (!rc_active(sh) || parse_bdf(sh, argv[1], &bdf) != 0) {
+		return -EINVAL;
+	}
+	lo = advk_rc_conf_read(dev, bdf, PCIE_CONF_BAR0);
+	hi = advk_rc_conf_read(dev, bdf, PCIE_CONF_BAR1);
+	if (lo == 0xffffffff || (lo & 0x1) != 0) {
+		shell_error(sh, "no memory BAR0");
+		return -ENODEV;
+	}
+	bar_phys = (lo & ~0xfULL) | (((lo & 0x6) == 0x4) ? ((uint64_t)hi << 32) : 0);
+	/* memory space and bus master on */
+	advk_rc_conf_write(dev, bdf, PCIE_CONF_CMDSTAT,
+			   (advk_rc_conf_read(dev, bdf, PCIE_CONF_CMDSTAT) & 0xffff) |
+				   PCIE_CONF_CMDSTAT_MEM | PCIE_CONF_CMDSTAT_MASTER);
+
+	device_map(&c.bar, bar_phys, 0x2000, K_MEM_CACHE_NONE);
+	cap = sys_read32(c.bar + NV_CAP) | ((uint64_t)sys_read32(c.bar + NV_CAP + 4) << 32);
+	c.stride = 4U << ((cap >> 32) & 0xf);
+	c.to_ms = MAX(((cap >> 24) & 0xff) * 500U, 500U);
+	shell_print(sh, "BAR0 0x%llx, CAP %016llx, VS %08x, MQES %u, doorbell stride %u",
+		    (unsigned long long)bar_phys, (unsigned long long)cap,
+		    sys_read32(c.bar + NV_VS), (uint32_t)(cap & 0xffff) + 1, c.stride);
+	if (((cap >> 48) & 0xf) != 0) {
+		shell_error(sh, "MPSMIN above 4 KiB not handled");
+		goto out;
+	}
+
+	/* disable, set up the admin queues, enable */
+	sys_write32(sys_read32(c.bar + NV_CC) & ~BIT(0), c.bar + NV_CC);
+	if (nv_wait_rdy(&c, false) != 0) {
+		goto out;
+	}
+	memset(nv_asq, 0, sizeof(nv_asq));
+	memset(nv_acq, 0, sizeof(nv_acq));
+	memset(nv_iosq, 0, sizeof(nv_iosq));
+	memset(nv_iocq, 0, sizeof(nv_iocq));
+	sys_cache_data_flush_and_invd_range(nv_asq, sizeof(nv_asq));
+	sys_cache_data_flush_and_invd_range(nv_acq, sizeof(nv_acq));
+	sys_cache_data_flush_and_invd_range(nv_iosq, sizeof(nv_iosq));
+	sys_cache_data_flush_and_invd_range(nv_iocq, sizeof(nv_iocq));
+	c.admin = (struct nv_q){.sq = nv_asq, .cq = nv_acq, .phase = 1,
+				.sq_db = NV_DB, .cq_db = NV_DB + c.stride};
+	c.io = (struct nv_q){.sq = nv_iosq, .cq = nv_iocq, .phase = 1,
+			     .sq_db = NV_DB + 2 * c.stride, .cq_db = NV_DB + 3 * c.stride};
+	sys_write32(((NV_QSIZE - 1) << 16) | (NV_QSIZE - 1), c.bar + NV_AQA);
+	nv_wr64(&c, NV_ASQ, nv_pa(nv_asq));
+	nv_wr64(&c, NV_ACQ, nv_pa(nv_acq));
+	/* NVM command set, 4 KiB pages, round robin, SQE 64 B, CQE 16 B */
+	sys_write32((6U << 16) | (4U << 20) | BIT(0), c.bar + NV_CC);
+	if (nv_wait_rdy(&c, true) != 0) {
+		goto out;
+	}
+	shell_print(sh, "enabled, admin queues at 0x%llx / 0x%llx",
+		    (unsigned long long)nv_pa(nv_asq), (unsigned long long)nv_pa(nv_acq));
+
+	st = nv_identify(&c, 1, 0);
+	if (st != 0) {
+		shell_error(sh, "Identify Controller: status 0x%x", st);
+		goto out;
+	}
+	shell_print(sh, "controller: PCI VID %02x%02x", nv_buf[1], nv_buf[0]);
+	nv_str(sh, "model", &nv_buf[24], 40);
+	nv_str(sh, "serial", &nv_buf[4], 20);
+	nv_str(sh, "firmware", &nv_buf[64], 8);
+	shell_print(sh, "  MDTS %u, namespaces %u", nv_buf[77], sys_get_le32(&nv_buf[516]));
+
+	st = nv_identify(&c, 0, 1);
+	if (st != 0) {
+		shell_error(sh, "Identify Namespace 1: status 0x%x", st);
+		goto out;
+	}
+	nsze = sys_get_le64(&nv_buf[0]);
+	flbas = nv_buf[26] & 0xf;
+	bs = 1U << nv_buf[128 + 4 * flbas + 2];
+	shell_print(sh, "namespace 1: %llu blocks of %u B = %llu MiB",
+		    (unsigned long long)nsze, bs, (unsigned long long)(nsze * bs >> 20));
+	if (bs > sizeof(nv_buf)) {
+		shell_error(sh, "block size above 4 KiB not handled");
+		goto out;
+	}
+
+	/* I/O queue pair 1, no interrupts */
+	struct nv_sqe ccq = {.dw0 = 0x05, .prp1 = nv_pa(nv_iocq),
+			     .cdw10 = ((NV_QSIZE - 1) << 16) | 1, .cdw11 = BIT(0)};
+	struct nv_sqe csq = {.dw0 = 0x01, .prp1 = nv_pa(nv_iosq),
+			     .cdw10 = ((NV_QSIZE - 1) << 16) | 1, .cdw11 = (1U << 16) | BIT(0)};
+
+	st = nv_cmd(&c, &c.admin, &ccq, NULL);
+	if (st == 0) {
+		st = nv_cmd(&c, &c.admin, &csq, NULL);
+	}
+	if (st != 0) {
+		shell_error(sh, "creating the I/O queues: status 0x%x", st);
+		goto out;
+	}
+
+	memset(nv_buf, 0xa5, sizeof(nv_buf));
+	sys_cache_data_flush_and_invd_range(nv_buf, sizeof(nv_buf));
+	struct nv_sqe rd = {.dw0 = 0x02, .nsid = 1, .prp1 = nv_pa(nv_buf),
+			    .cdw10 = (uint32_t)lba, .cdw11 = (uint32_t)(lba >> 32), .cdw12 = 0};
+	int64_t t0 = k_uptime_get();
+
+	st = nv_cmd(&c, &c.io, &rd, NULL);
+	sys_cache_data_invd_range(nv_buf, sizeof(nv_buf));
+	if (st != 0) {
+		shell_error(sh, "read LBA %llu: status 0x%x", lba, st);
+		goto out;
+	}
+	shell_print(sh, "LBA %llu (%lld ms):", lba, k_uptime_get() - t0);
+	shell_hexdump(sh, nv_buf, MIN(bs, 128U));
+	if (bs >= 512 && nv_buf[510] == 0x55 && nv_buf[511] == 0xaa) {
+		shell_print(sh, "  55aa at 510: MBR / protective MBR");
+	}
+out:
+	k_mem_unmap_phys_bare((uint8_t *)c.bar, 0x2000);
+	return 0;
+}
+#endif /* CONFIG_PCIE_AARDVARK_NVME_SHELL */
+
 /*
  * Bring-up experiments, also when the init stopped: the steps one by
  * one, each followed by a probe of the core registers.
@@ -1166,6 +1451,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(rc_cmds,
 	SHELL_CMD_ARG(cfg, NULL, "<b:d.f> [<off> [<len>]] Dump config space", cmd_rc_cfg, 2, 2),
 	SHELL_CMD_ARG(cfgw, NULL, "<b:d.f> <off> <val> Write a config dword", cmd_rc_cfgw, 4,
 		      0),
+	IF_ENABLED(CONFIG_PCIE_AARDVARK_NVME_SHELL,
+		   (SHELL_CMD_ARG(nvme, NULL, "<b:d.f> [<lba>] Polled NVMe test: identify, read "
+				  "one block", cmd_rc_nvme, 2, 1),))
 	SHELL_CMD_ARG(probe, NULL, "Do the core registers answer?", cmd_rc_probe, 1, 0),
 	SHELL_CMD_ARG(pinctrl, NULL, "Apply the default pin state", cmd_rc_pinctrl, 1, 0),
 	SHELL_CMD_ARG(clkout, NULL, "on|off COMPHY 100 MHz output", cmd_rc_clkout, 2, 0),
