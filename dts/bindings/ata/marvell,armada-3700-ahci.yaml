@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Marvell Armada 3700 SATA 3.0 AHCI host controller (one port).
+
+  The SATA PHY is COMPHY lane 2, powered on through the TF-A SiP service
+  (MV_SIP_COMPHY_POWER_ON). Its registers are reached indirectly through
+  the controller window at +0x178/+0x17c, so reg covers 0x180 bytes.
+
+compatible: "marvell,armada-3700-ahci"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    required: true
+
+  disk-name:
+    type: string
+    default: "sata0"
+    description: Name under which the disk is registered (fs mount "/<name>:").
+
+  marvell,comphy-lane:
+    type: int
+    default: 2
+
+  marvell,comphy-polarity-invert:
+    type: int
+    default: 0
+    enum: [0, 1, 2, 3]
+    description: Bit 0 TX, bit 1 RX polarity inversion.

@@ -6,6 +6,7 @@ zephyr_library()
 zephyr_library_sources_ifdef(CONFIG_SDMMC_SUBSYS sdmmc_subsys.c)
 zephyr_library_sources_ifdef(CONFIG_MMC_SUBSYS mmc_subsys.c)
 add_subdirectory_ifdef(CONFIG_NVME nvme)
+add_subdirectory_ifdef(CONFIG_AHCI ahci)
 
 # zephyr-keep-sorted-start
 zephyr_library_sources_ifdef(CONFIG_DISK_DRIVER_FLASH flashdisk.c)

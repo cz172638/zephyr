@@ -200,6 +200,15 @@
 		/* PCIe in endpoint mode; mem: AXI range decoded to PCIe for
 		 * outbound windows (0xe8000000..0xefffffff, power of two used)
 		 */
+		/* SATA 3.0 AHCI host, PHY on COMPHY lane 2 (indirect window +0x178) */
+		sata: sata@d00e0000 {
+			compatible = "marvell,armada-3700-ahci";
+			reg = <0xd00e0000 0x180>;
+			interrupts = <GIC_SPI 27 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&nb_periph_clk 1>;
+			status = "disabled";
+		};
+
 		/* The same controller as root complex, see pcie_ep */
 		pcie_rc: pcie@d0070000 {
 			compatible = "marvell,armada-3700-pcie";

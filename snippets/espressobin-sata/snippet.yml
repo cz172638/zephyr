@@ -1,0 +1,9 @@
+name: espressobin-sata
+description: |
+  ESPRESSObin SATA port (AHCI, COMPHY lane 2): the disk as /sata0:,
+  FAT and the fs shell, ata shell.
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: espressobin-sata.overlay
+      EXTRA_CONF_FILE: espressobin-sata.conf

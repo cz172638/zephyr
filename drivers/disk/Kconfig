@@ -20,5 +20,6 @@ source "drivers/disk/Kconfig.virtio_blk"
 # zephyr-keep-sorted-stop
 
 rsource "nvme/Kconfig"
+rsource "ahci/Kconfig"
 
 endif # DISK_DRIVERS

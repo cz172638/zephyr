@@ -1,0 +1,53 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig AHCI
+	bool "AHCI SATA disk"
+	default y
+	depends on DT_HAS_MARVELL_ARMADA_3700_AHCI_ENABLED
+	select CACHE_MANAGEMENT if ARCH_HAS_CACHE_MANAGEMENT
+	help
+	  SATA disk on an AHCI host controller (port 0), registered with
+	  the disk access subsystem. Armada 3700 glue: SATA PHY on COMPHY
+	  lane 2 through the TF-A SiP service.
+
+if AHCI
+
+config AHCI_INIT_PRIORITY
+	int "Controller init priority (POST_KERNEL)"
+	default 85
+
+config AHCI_BOUNCE_SECTORS
+	int "DMA bounce buffer, 512-byte sectors"
+	default 128
+	range 8 8192
+	help
+	  Every transfer goes through one cache line aligned bounce buffer;
+	  a larger one means fewer commands per request.
+
+config AHCI_LINK_TIMEOUT_MS
+	int "PHY communication timeout after COMRESET (ms)"
+	default 1000
+
+config AHCI_READY_TIMEOUT_MS
+	int "Device ready timeout (ms), covers a rotating disk spinning up"
+	default 30000
+
+config AHCI_CMD_TIMEOUT_MS
+	int "Command timeout (ms)"
+	default 10000
+
+config AHCI_BOOT_PROBE
+	bool "Bring the link up and identify the disk at boot (background thread)"
+	default y
+
+config AHCI_SHELL
+	bool "ata shell"
+	default y
+	depends on SHELL
+
+module = AHCI
+module-str = ahci
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # AHCI
