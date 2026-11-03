@@ -1026,6 +1026,119 @@ static int cmd_rc_cfgw(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+
+/*
+ * Bring-up experiments, also when the init stopped: the steps one by
+ * one, each followed by a probe of the core registers.
+ *   advk_rc probe | pinctrl | clkout on|off | perst assert|release|input
+ *   | comphy | start
+ */
+static bool rc_mapped(const struct shell *sh)
+{
+	if (REG(RC_DEV) == 0) {
+		shell_error(sh, "not mapped (endpoint mode?)");
+		return false;
+	}
+	return true;
+}
+
+static int cmd_rc_probe(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (!rc_mapped(sh)) {
+		return -ENODEV;
+	}
+	shell_print(sh, "core %s", step(RC_DEV, "probe") ? "answers" : "ABORTS");
+	return 0;
+}
+
+static int cmd_rc_pinctrl(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct advk_rc_config *cfg = RC_DEV->config;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (!rc_mapped(sh) || cfg->pcfg == NULL) {
+		return -ENODEV;
+	}
+	shell_print(sh, "pinctrl %d", pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT));
+	(void)step(RC_DEV, "pinctrl");
+	return 0;
+}
+
+static int cmd_rc_clkout(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_rc_data *data = RC_DEV->data;
+	mem_addr_t r;
+	uint16_t v;
+
+	ARG_UNUSED(argc);
+	if (!rc_mapped(sh) || data->comphy == 0) {
+		return -ENODEV;
+	}
+	r = data->comphy + COMPHY_MISC_CTRL0;
+	v = sys_read16(r);
+	v = strcmp(argv[1], "on") == 0 ? (v | COMPHY_CLK100M_EN) : (v & ~COMPHY_CLK100M_EN);
+	sys_write16(v, r);
+	shell_print(sh, "misc_ctrl0 %04x", sys_read16(r));
+	(void)step(RC_DEV, "clkout");
+	return 0;
+}
+
+static int cmd_rc_perst(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct advk_rc_config *cfg = RC_DEV->config;
+	int ret;
+
+	ARG_UNUSED(argc);
+	if (!rc_mapped(sh) || cfg->perst.port == NULL) {
+		return -ENODEV;
+	}
+	if (strcmp(argv[1], "input") == 0) {
+		ret = gpio_pin_configure_dt(&cfg->perst, GPIO_INPUT);
+	} else {
+		ret = gpio_pin_configure_dt(&cfg->perst, strcmp(argv[1], "assert") == 0
+								 ? GPIO_OUTPUT_ACTIVE
+								 : GPIO_OUTPUT_INACTIVE);
+	}
+	shell_print(sh, "perst %s: %d", argv[1], ret);
+	(void)step(RC_DEV, "perst");
+	return 0;
+}
+
+static int cmd_rc_comphy(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (!rc_mapped(sh)) {
+		return -ENODEV;
+	}
+	shell_print(sh, "SiP %ld", comphy_power_on(RC_DEV));
+	(void)step(RC_DEV, "comphy");
+	return 0;
+}
+
+/* controller setup, windows, training and scan from the current state */
+static int cmd_rc_start(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_rc_data *data = RC_DEV->data;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (!rc_mapped(sh)) {
+		return -ENODEV;
+	}
+	if (hw_setup(RC_DEV) != 0 || ob_setup(RC_DEV) != 0) {
+		shell_error(sh, "setup failed, see above");
+		return -EIO;
+	}
+	data->active = true;
+	shell_print(sh, "%s", advk_rc_link_start(RC_DEV) ? "link up" : "no link");
+	advk_rc_scan(RC_DEV);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(rc_cmds,
 	SHELL_CMD_ARG(status, NULL, "Link, root port windows, PIO errors, outbound windows",
 		      cmd_rc_status, 1, 0),
@@ -1035,6 +1148,13 @@ SHELL_STATIC_SUBCMD_SET_CREATE(rc_cmds,
 	SHELL_CMD_ARG(cfg, NULL, "<b:d.f> [<off> [<len>]] Dump config space", cmd_rc_cfg, 2, 2),
 	SHELL_CMD_ARG(cfgw, NULL, "<b:d.f> <off> <val> Write a config dword", cmd_rc_cfgw, 4,
 		      0),
+	SHELL_CMD_ARG(probe, NULL, "Do the core registers answer?", cmd_rc_probe, 1, 0),
+	SHELL_CMD_ARG(pinctrl, NULL, "Apply the default pin state", cmd_rc_pinctrl, 1, 0),
+	SHELL_CMD_ARG(clkout, NULL, "on|off COMPHY 100 MHz output", cmd_rc_clkout, 2, 0),
+	SHELL_CMD_ARG(perst, NULL, "assert|release|input PERST# GPIO", cmd_rc_perst, 2, 0),
+	SHELL_CMD_ARG(comphy, NULL, "COMPHY power on again (SiP)", cmd_rc_comphy, 1, 0),
+	SHELL_CMD_ARG(start, NULL, "Setup, windows, training, scan from the current state",
+		      cmd_rc_start, 1, 0),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(advk_rc, &rc_cmds, "Armada 3700 PCIe root complex", NULL);
 #endif /* CONFIG_PCIE_AARDVARK_SHELL */
