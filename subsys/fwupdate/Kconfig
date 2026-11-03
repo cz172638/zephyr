@@ -74,6 +74,22 @@ config FWUPDATE_TIM_HEADER
 	  Refuse images that do not carry a TIM header ("TIMH" at offset 4),
 	  as produced by the Armada 3700 TF-A mrvl_flash target.
 
+config FWUPDATE_DISK
+	bool "SATA boot images onto a disk"
+	default y if AHCI && FWUPDATE_TIM_HEADER
+	depends on DISK_ACCESS
+	help
+	  An image whose TIM names SATA as the boot device (BOOTDEV=SATA)
+	  goes into the GPT partition of the Marvell boot type on the disk
+	  FWUPDATE_DISK_NAME (made e.g. by sata-install.sh), header sector
+	  invalidated first and written last, then verified. SPI NOR images
+	  still go to the flash partition.
+
+config FWUPDATE_DISK_NAME
+	string "Disk with the SATA boot partition"
+	default "sata0"
+	depends on FWUPDATE_DISK
+
 config FWUPDATE_PROGRAM_EXTERNAL
 	bool
 	select CRC

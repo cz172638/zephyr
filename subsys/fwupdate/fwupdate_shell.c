@@ -214,7 +214,7 @@ static int fw_check(const struct shell *sh, size_t len)
 }
 
 #if defined(CONFIG_FWUPDATE_PROGRAM_EXTERNAL)
-static int fw_program(const struct shell *sh, size_t len)
+static int fw_program_flash(const struct shell *sh, size_t len)
 {
 	uint32_t crc = 0;
 	int ret;
@@ -232,7 +232,7 @@ static int fw_program(const struct shell *sh, size_t len)
 	return 0;
 }
 #else
-static int fw_program(const struct shell *sh, size_t len)
+static int fw_program_flash(const struct shell *sh, size_t len)
 {
 	static uint8_t vbuf[256];
 	const struct flash_area *fa;
@@ -294,6 +294,167 @@ out:
 	return ret;
 }
 #endif /* CONFIG_FWUPDATE_PROGRAM_EXTERNAL */
+
+/*
+ * The TIM names the boot device at 0x28: "SPI" + id for SPI NOR, "SAT"
+ * + id for SATA. A SATA image goes to the disk, into the GPT partition
+ * of the Marvell boot type the A3720 BootROM loads from (the TIM flash
+ * offsets are relative to its start), e.g. as sata-install.sh makes it.
+ */
+#define TIM_BOOT_DEV_OFFSET 0x28
+#define TIM_BOOT_DEV_SATA   0x534154 /* "SAT", upper three bytes */
+
+static bool fw_is_sata(size_t len)
+{
+	return IS_ENABLED(CONFIG_FWUPDATE_TIM_HEADER) && len >= TIM_BOOT_DEV_OFFSET + 4 &&
+	       (sys_get_le32(&fw_buf[TIM_BOOT_DEV_OFFSET]) >> 8) == TIM_BOOT_DEV_SATA;
+}
+
+#if defined(CONFIG_FWUPDATE_DISK)
+#include <zephyr/storage/disk_access.h>
+
+#define FW_DISK CONFIG_FWUPDATE_DISK_NAME
+
+/* 6828311A-BA55-42A4-BCDE-A89BB5EDECAE as stored in a GPT entry */
+static const uint8_t mrvl_boot_guid[16] = {0x1a, 0x31, 0x28, 0x68, 0x55, 0xba, 0xa4, 0x42,
+					   0xbc, 0xde, 0xa8, 0x9b, 0xb5, 0xed, 0xec, 0xae};
+
+static uint8_t fw_sec[4096] __aligned(64);
+
+/* The first Marvell boot partition: first and last LBA */
+static int fw_disk_find(const struct shell *sh, uint32_t ss, uint64_t *first, uint64_t *last,
+			uint32_t *index)
+{
+	uint64_t ent_lba;
+	uint32_t n, esz, cur = UINT32_MAX;
+	int ret;
+
+	ret = disk_access_read(FW_DISK, fw_sec, 1, 1);
+	if (ret != 0) {
+		FW_ERR(sh, "%s: read of the GPT header: %d", FW_DISK, ret);
+		return ret;
+	}
+	if (memcmp(fw_sec, "EFI PART", 8) != 0) {
+		FW_ERR(sh, "%s: no GPT (make the boot partition with sata-install.sh)", FW_DISK);
+		return -ENOENT;
+	}
+	ent_lba = sys_get_le64(&fw_sec[72]);
+	n = sys_get_le32(&fw_sec[80]);
+	esz = sys_get_le32(&fw_sec[84]);
+	if (esz < 128 || esz > ss || (ss % esz) != 0 || n > 1024) {
+		FW_ERR(sh, "%s: odd GPT (%u entries of %u B)", FW_DISK, n, esz);
+		return -EINVAL;
+	}
+	for (uint32_t i = 0; i < n; i++) {
+		uint32_t sec = (uint32_t)(ent_lba + (uint64_t)i * esz / ss);
+		const uint8_t *e;
+
+		if (sec != cur) {
+			ret = disk_access_read(FW_DISK, fw_sec, sec, 1);
+			if (ret != 0) {
+				FW_ERR(sh, "%s: read of GPT entries: %d", FW_DISK, ret);
+				return ret;
+			}
+			cur = sec;
+		}
+		e = &fw_sec[(i * esz) % ss];
+		if (memcmp(e, mrvl_boot_guid, 16) == 0) {
+			*first = sys_get_le64(&e[32]);
+			*last = sys_get_le64(&e[40]);
+			*index = i + 1;
+			return 0;
+		}
+	}
+	FW_ERR(sh, "%s: no Marvell boot partition (type 6828311A-BA55-42A4-BCDE-A89BB5EDECAE)",
+	       FW_DISK);
+	return -ENOENT;
+}
+
+static int fw_program_disk(const struct shell *sh, size_t len)
+{
+	uint64_t first, last;
+	uint32_t ss = 0, nsec, full, part;
+	int ret;
+
+	ret = disk_access_init(FW_DISK);
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_DISK, DISK_IOCTL_GET_SECTOR_SIZE, &ss);
+	}
+	if (ret != 0 || ss == 0 || ss > sizeof(fw_sec)) {
+		FW_ERR(sh, "%s: disk not ready (%d, sector %u B)", FW_DISK, ret, ss);
+		return ret != 0 ? ret : -EIO;
+	}
+	ret = fw_disk_find(sh, ss, &first, &last, &part);
+	if (ret != 0) {
+		return ret;
+	}
+	nsec = DIV_ROUND_UP(len, ss);
+	if (last < first || last - first + 1 < nsec) {
+		FW_ERR(sh, "%s: boot partition %u too small (%llu sectors, image %u)", FW_DISK,
+		       part, (unsigned long long)(last - first + 1), nsec);
+		return -EFBIG;
+	}
+	full = len / ss;
+	FW_PRINT(sh, "%s: partition %u at LBA %llu, writing %u sectors...", FW_DISK, part,
+		 (unsigned long long)first, nsec);
+
+	/* Header first goes away, so a half-written image does not boot */
+	memset(fw_sec, 0, ss);
+	ret = disk_access_write(FW_DISK, fw_sec, (uint32_t)first, 1);
+	if (ret == 0 && full > 1) {
+		ret = disk_access_write(FW_DISK, &fw_buf[ss], (uint32_t)first + 1, full - 1);
+	}
+	if (ret == 0 && full < nsec && full > 0) {
+		memset(fw_sec, 0, ss);
+		memcpy(fw_sec, &fw_buf[(size_t)full * ss], len - (size_t)full * ss);
+		ret = disk_access_write(FW_DISK, fw_sec, (uint32_t)(first + full), 1);
+	}
+	if (ret == 0) {
+		/* Header last */
+		memset(fw_sec, 0, ss);
+		memcpy(fw_sec, fw_buf, MIN(len, ss));
+		ret = disk_access_write(FW_DISK, fw_sec, (uint32_t)first, 1);
+	}
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_DISK, DISK_IOCTL_CTRL_SYNC, NULL);
+	}
+	if (ret != 0) {
+		FW_ERR(sh, "%s: write: %d", FW_DISK, ret);
+		return ret;
+	}
+
+	FW_PRINT(sh, "verifying...");
+	for (uint32_t s = 0; s < nsec; s++) {
+		size_t off = (size_t)s * ss, n = MIN((size_t)ss, len - off);
+
+		ret = disk_access_read(FW_DISK, fw_sec, (uint32_t)(first + s), 1);
+		if (ret != 0 || memcmp(fw_sec, &fw_buf[off], n) != 0) {
+			FW_ERR(sh, "verify failed at 0x%zx", off);
+			return ret != 0 ? ret : -EIO;
+		}
+	}
+	return 0;
+}
+#endif /* CONFIG_FWUPDATE_DISK */
+
+static int fw_program(const struct shell *sh, size_t len)
+{
+	if (fw_is_sata(len)) {
+#if defined(CONFIG_FWUPDATE_DISK)
+		return fw_program_disk(sh, len);
+#else
+		FW_ERR(sh, "SATA boot image (TIM boot device SAT): no disk support "
+			   "(CONFIG_FWUPDATE_DISK), the SPI NOR would not boot it");
+		return -ENOTSUP;
+#endif
+	}
+	return fw_program_flash(sh, len);
+}
+
+static const char *fw_where(void)
+{
+	return fw_is_sata(fw.received) ? "SATA boot partition (boot jumpers on SATA)" : "flash";
+}
 
 
 #if defined(CONFIG_FWUPDATE_SCP)
@@ -381,8 +542,8 @@ static int fw_scp_close(void *h, bool ok, char *msg, size_t msg_len)
 		snprintk(msg, msg_len, "programming failed, see the console");
 		goto done;
 	}
-	snprintk(msg, msg_len, "fwupdate: %zu bytes, crc32 %08x written and verified, start it with: %s",
-		 fw.received, crc, IS_ENABLED(CONFIG_REBOOT) ? "kernel reboot cold" : "a power cycle");
+	snprintk(msg, msg_len, "fwupdate: %zu bytes, crc32 %08x written to the %s and verified, start it with: %s",
+		 fw.received, crc, fw_where(), IS_ENABLED(CONFIG_REBOOT) ? "kernel reboot cold" : "a power cycle");
 	printk("%s\n", msg);
 
 done:
@@ -474,7 +635,7 @@ static void fw_worker(void *p1, void *p2, void *p3)
 
 	ret = fw_program(sh, fw.received);
 	if (ret == 0) {
-		shell_print(sh, "firmware updated, start it with: %s",
+		shell_print(sh, "firmware updated (%s), start it with: %s", fw_where(),
 			    IS_ENABLED(CONFIG_REBOOT) ? "kernel reboot cold" : "a power cycle");
 	}
 
@@ -595,7 +756,7 @@ static void fw_tcp_worker(void *p1, void *p2, void *p3)
 	ret = fw_program(sh, fw.received);
 	fw_reply(conn, ret == 0 ? "fwupdate: firmware updated\n" : "fwupdate: FAILED\n");
 	if (ret == 0) {
-		shell_print(sh, "firmware updated, start it with: %s",
+		shell_print(sh, "firmware updated (%s), start it with: %s", fw_where(),
 			    IS_ENABLED(CONFIG_REBOOT) ? "kernel reboot cold" : "a power cycle");
 	}
 
