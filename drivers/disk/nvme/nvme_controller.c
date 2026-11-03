@@ -348,6 +348,13 @@ static int nvme_controller_pcie_configure(const struct device *dev)
 	device_map(DEVICE_MMIO_RAM_PTR(dev), mbar_regs.phys_addr,
 		   mbar_regs.size, K_MEM_CACHE_NONE);
 
+	/*
+	 * Memory space for the registers and the MSI-X table, bus master for
+	 * the queues: set by firmware on PCs, not by every root complex.
+	 */
+	pcie_set_cmd(nvme_ctrlr_cfg->pcie->bdf,
+		     PCIE_CONF_CMDSTAT_MEM | PCIE_CONF_CMDSTAT_MASTER, true);
+
 	/* Allocating vectors */
 	n_vectors = pcie_msi_vectors_allocate(nvme_ctrlr_cfg->pcie->bdf,
 					      CONFIG_NVME_INT_PRIORITY,
