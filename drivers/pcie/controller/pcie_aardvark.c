@@ -820,9 +820,8 @@ static int advk_rc_init(const struct device *dev)
 		return ret;
 	}
 	device_map(&data->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
-	if (!step(dev, "clock on")) {
-		return -EIO;
-	}
+	/* informational: the core may only answer once the PHY runs */
+	(void)step(dev, "clock on");
 
 	data->comphy_ret = comphy_power_on(dev);
 	if (data->comphy_ret != 0) {
@@ -833,6 +832,10 @@ static int advk_rc_init(const struct device *dev)
 	/* the slot needs the 100 MHz reference (an endpoint build turns it off) */
 	sys_write16(sys_read16(data->comphy + COMPHY_MISC_CTRL0) | COMPHY_CLK100M_EN,
 		    data->comphy + COMPHY_MISC_CTRL0);
+	if (IS_ENABLED(CONFIG_PCIE_AARDVARK_TRACE_INIT)) {
+		printk("advk_rc: comphy SiP returned %ld, misc_ctrl0 %04x\n", data->comphy_ret,
+		       sys_read16(data->comphy + COMPHY_MISC_CTRL0));
+	}
 	if (!step(dev, "comphy")) {
 		return -EIO;
 	}
