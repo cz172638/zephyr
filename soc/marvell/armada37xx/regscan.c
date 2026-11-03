@@ -189,7 +189,101 @@ static int cmd_clk(const struct shell *sh, size_t argc, char **argv)
 	return ret;
 }
 
+/*
+ * Snapshot and diff: what a mode switch (USB host/device, PCIe role,
+ * a clock) changes in a unit. Aborting words are kept as a separate
+ * state, so a word that starts or stops decoding shows up as well.
+ */
+#define SNAP_WORDS (64 * 1024 / 4)
+#define SNAP_ABORT 0xdeadabedU
+
+static uint32_t snap_val[SNAP_WORDS];
+static uint8_t snap_ab[SNAP_WORDS / 8];
+static uintptr_t snap_pa;
+static size_t snap_len;
+
+static int cmd_snap(const struct shell *sh, size_t argc, char **argv)
+{
+	uintptr_t pa, off;
+	size_t len, msize;
+	uint8_t *base;
+	uint32_t ab = 0;
+
+	ARG_UNUSED(argc);
+	if (map_range(sh, argv, &pa, &len, &base, &msize, &off) != 0) {
+		return -EINVAL;
+	}
+	if (len > SNAP_WORDS * 4) {
+		shell_error(sh, "snapshot at most 0x%x bytes", SNAP_WORDS * 4);
+		k_mem_unmap_phys_bare(base, msize);
+		return -EINVAL;
+	}
+	memset(snap_ab, 0, sizeof(snap_ab));
+	for (size_t i = 0; i < len / 4; i++) {
+		if (a3700_probe_read32((uintptr_t)(base + off + i * 4), &snap_val[i]) != 0) {
+			snap_ab[i / 8] |= BIT(i % 8);
+			snap_val[i] = SNAP_ABORT;
+			ab++;
+		}
+	}
+	snap_pa = pa;
+	snap_len = len & ~3U;
+	k_mem_unmap_phys_bare(base, msize);
+	shell_print(sh, "snapshot %08lx + 0x%zx: %zu words, %u aborted", (unsigned long)pa, snap_len,
+		    snap_len / 4, ab);
+	return 0;
+}
+
+static int cmd_diff(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t *base;
+	uintptr_t page, off;
+	size_t msize;
+	uint32_t n = 0;
+	bool update = argc > 1 && strcmp(argv[1], "update") == 0;
+
+	if (snap_len == 0) {
+		shell_error(sh, "no snapshot (regs snap <pa> <len>)");
+		return -ENOENT;
+	}
+	page = snap_pa & ~(uintptr_t)(CONFIG_MMU_PAGE_SIZE - 1);
+	off = snap_pa - page;
+	msize = ROUND_UP(off + snap_len, CONFIG_MMU_PAGE_SIZE);
+	k_mem_map_phys_bare(&base, page, msize, K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	for (size_t i = 0; i < snap_len / 4; i++) {
+		uint32_t v;
+		bool was_ab = (snap_ab[i / 8] & BIT(i % 8)) != 0;
+		bool is_ab = a3700_probe_read32((uintptr_t)(base + off + i * 4), &v) != 0;
+
+		if (was_ab == is_ab && (is_ab || v == snap_val[i])) {
+			continue;
+		}
+		n++;
+		if (was_ab || is_ab) {
+			shell_print(sh, "%08lx: %s -> %s", (unsigned long)(snap_pa + i * 4),
+				    was_ab ? "abort" : "value", is_ab ? "abort" : "value");
+			if (!is_ab) {
+				shell_print(sh, "          now %08x", v);
+			}
+		} else {
+			shell_print(sh, "%08lx: %08x -> %08x  (set %08x clr %08x)",
+				    (unsigned long)(snap_pa + i * 4), snap_val[i], v,
+				    v & ~snap_val[i], snap_val[i] & ~v);
+		}
+		if (update) {
+			snap_val[i] = is_ab ? SNAP_ABORT : v;
+			snap_ab[i / 8] = is_ab ? (snap_ab[i / 8] | BIT(i % 8))
+					       : (snap_ab[i / 8] & ~BIT(i % 8));
+		}
+	}
+	k_mem_unmap_phys_bare(base, msize);
+	shell_print(sh, "%u words differ%s", n, update ? " (snapshot updated)" : "");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(regs_cmds,
+	SHELL_CMD_ARG(snap, NULL, "<pa> <len> Snapshot a range (at most 64 KiB)", cmd_snap, 3, 0),
+	SHELL_CMD_ARG(diff, NULL, "[update] Words changed since the snapshot", cmd_diff, 1, 1),
 	SHELL_CMD_ARG(scan, NULL, "<pa> <len> Runs of decoding / aborting words", cmd_scan, 3, 0),
 	SHELL_CMD_ARG(nz, NULL, "<pa> <len> Non-zero words", cmd_nz, 3, 0),
 	SHELL_CMD_ARG(dump, NULL, "<pa> <len> Dump, ???????? where the read aborts", cmd_dump, 3,
