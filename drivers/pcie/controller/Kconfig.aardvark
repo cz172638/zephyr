@@ -6,6 +6,7 @@ config PCIE_AARDVARK
 	default y
 	depends on DT_HAS_MARVELL_ARMADA_3700_PCIE_ENABLED
 	depends on ARM64
+	select FLASH_EX_OP_ENABLED if SPI_NOR
 	help
 	  The Armada 3700 PCIe controller as root complex: configuration
 	  requests through the PIO block, a software root port with the
@@ -44,12 +45,12 @@ config PCIE_AARDVARK_TRACE_INIT
 	  in any case.
 
 config PCIE_AARDVARK_SHELL
-	bool "Shell (advk_rc)"
+	bool "pcie shell backend and debug commands"
 	default y
-	depends on SHELL
+	depends on PCIE_CTRL_SHELL
 
 config PCIE_AARDVARK_NVME_SHELL
-	bool "advk_rc nvme: polled NVMe identify and read"
+	bool "pcie debug nvme: polled NVMe identify and read"
 	default y
 	depends on PCIE_AARDVARK_SHELL
 	help

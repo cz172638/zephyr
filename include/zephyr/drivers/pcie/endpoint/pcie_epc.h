@@ -495,6 +495,20 @@ void pcie_epc_notify(const struct device *dev, enum pcie_epc_event evt, uint8_t 
 
 /** @} */
 
+#if defined(CONFIG_PCIE_EPC_DSN_SETTINGS) || defined(__DOXYGEN__)
+/**
+ * @brief Device Serial Number kept in settings: show or change it.
+ *
+ * @param dev Endpoint controller.
+ * @param arg NULL: show; "uid", "new" (random), "reset" (forget the saved
+ *            one), or a hex EUI-64.
+ * @param v The DSN now.
+ * @param src Where a generated one came from, or untouched.
+ * @return 0, -EINVAL on a bad value, -ENODEV for a controller without DSN.
+ */
+int pcie_epc_dsn_cmd(const struct device *dev, const char *arg, uint64_t *v, const char **src);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

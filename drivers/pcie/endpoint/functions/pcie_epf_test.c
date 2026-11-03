@@ -632,7 +632,8 @@ static int hdr_settings_init(void)
 SYS_INIT(hdr_settings_init, POST_KERNEL, CONFIG_PCIE_EPF_TEST_SETTINGS_PRIORITY);
 #endif
 
-#ifdef CONFIG_SHELL
+#if defined(CONFIG_SHELL) && !defined(CONFIG_PCIE_CTRL_SHELL)
+/* with the pcie shell: pcie controller id */
 #include <zephyr/shell/shell.h>
 #include <stdlib.h>
 

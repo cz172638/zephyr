@@ -36,7 +36,11 @@
 #include <zephyr/drivers/pcie/aardvark.h>
 #include <zephyr/drivers/pcie/controller.h>
 #include <zephyr/drivers/pcie/pcie.h>
+#include <zephyr/drivers/pcie/pcie_shell.h>
+#include <zephyr/drivers/flash.h>
+#include <zephyr/drivers/flash/spi_nor_ex.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/random/random.h>
 #include <zephyr/kernel.h>
 #include <zephyr/kernel/internal/mm.h>
 #include <zephyr/logging/log.h>
@@ -194,10 +198,14 @@ struct rp_id {
 
 #define CFG_SSVID_CAP 0x40
 #define RCID_KEY      "advk/rcid"
+#define RCDSN_KEY     "advk/rcdsn"
+#define CFG_DSN_LO    0x154
+#define CFG_DSN_HI    0x158
 
 struct advk_rc_data {
 	mm_reg_t reg;
 	struct rp_id id;
+	uint64_t dsn;
 	mm_reg_t comphy;
 	bool active;
 	long comphy_ret;
@@ -976,6 +984,71 @@ static void id_load(const struct device *dev)
 	id_apply(dev);
 }
 
+
+/*
+ * Device Serial Number of the root port: the hardware's DSN capability
+ * (0x150, passed through). Saved one, else from the SPI NOR unique ID
+ * (locally administered EUI-64, bit 0 flipped so it differs from the
+ * endpoint's), else random.
+ */
+static void dsn_write(const struct device *dev, uint64_t v)
+{
+	struct advk_rc_data *data = dev->data;
+
+	data->dsn = v;
+	wr(dev, CFG_DSN_LO, (uint32_t)v);
+	wr(dev, CFG_DSN_HI, (uint32_t)(v >> 32));
+}
+
+static uint64_t dsn_local(uint64_t v)
+{
+	return (v & ~(0x01ULL << 56)) | (0x02ULL << 56);
+}
+
+static uint64_t dsn_generate(const char **src)
+{
+#if DT_HAS_COMPAT_STATUS_OKAY(jedec_spi_nor) && defined(CONFIG_FLASH_EX_OP_ENABLED)
+	const struct device *nor = DEVICE_DT_GET_ANY(jedec_spi_nor);
+	uint8_t uid[SPI_NOR_UID_LEN];
+	uint64_t u = 0;
+
+	if (device_is_ready(nor) && flash_ex_op(nor, FLASH_EX_OP_SPI_NOR_READ_UID, 0, uid) == 0) {
+		for (int b = 0; b < SPI_NOR_UID_LEN; b++) {
+			u = (u << 8) | uid[b];
+		}
+		if (u != 0 && u != UINT64_MAX) {
+			*src = "SPI NOR unique ID";
+			return dsn_local(u) ^ 1;
+		}
+	}
+#endif
+	*src = "random";
+	return dsn_local(sys_rand64_get() ^ (k_cycle_get_64() * 0x9e3779b97f4a7c15ULL));
+}
+
+static int dsn_load_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+		       void *param)
+{
+	uint64_t *v = param;
+
+	ARG_UNUSED(key);
+	if (len == sizeof(*v)) {
+		(void)read_cb(cb_arg, v, len);
+	}
+	return 0;
+}
+
+static void dsn_load(const struct device *dev)
+{
+	const char *src;
+	uint64_t v = 0;
+
+	if (IS_ENABLED(CONFIG_SETTINGS) && settings_subsys_init() == 0) {
+		(void)settings_load_subtree_direct(RCDSN_KEY, dsn_load_cb, &v);
+	}
+	dsn_write(dev, v != 0 ? v : dsn_generate(&src));
+}
+
 /* PERST# pulse, training, wait for L0; true when the link is up */
 static bool advk_rc_link_start(const struct device *dev)
 {
@@ -1038,6 +1111,10 @@ static long comphy_power_on(const struct device *dev)
 	return (long)res.a0;
 }
 
+#if defined(CONFIG_PCIE_AARDVARK_SHELL)
+static const struct pcie_shell_ctrl rc_shell;
+#endif
+
 static int advk_rc_init(const struct device *dev)
 {
 	const struct advk_rc_config *cfg = dev->config;
@@ -1045,6 +1122,9 @@ static int advk_rc_init(const struct device *dev)
 	int ret;
 
 	k_mutex_init(&data->pio_lock);
+#if defined(CONFIG_PCIE_AARDVARK_SHELL)
+	pcie_shell_register(&rc_shell);
+#endif
 
 	if (advk_mode_get() != ADVK_MODE_RC) {
 		LOG_INF("%s: endpoint mode selected, root complex idle", dev->name);
@@ -1109,6 +1189,7 @@ static int advk_rc_init(const struct device *dev)
 		return ret;
 	}
 	id_load(dev);
+	dsn_load(dev);
 	ret = ob_setup(dev);
 	if (ret != 0) {
 		return ret;
@@ -1155,29 +1236,45 @@ static bool rc_active(const struct shell *sh)
 	struct advk_rc_data *data = RC_DEV->data;
 
 	if (!data->active) {
-		shell_error(sh, "root complex not active (advk mode rc, then reboot)");
+		shell_error(sh, "root complex not active (pcie controller mode rc, then reboot)");
 		return false;
 	}
 	return true;
 }
 
-static int cmd_rc_status(const struct shell *sh, size_t argc, char **argv)
+static int parse_bdf(const struct shell *sh, const char *s, pcie_bdf_t *bdf)
 {
-	const struct device *dev = RC_DEV;
+	if (pcie_shell_parse_bdf(s, bdf) != 0) {
+		shell_error(sh, "bus:dev.fn, hex");
+		return -EINVAL;
+	}
+	return 0;
+}
+
+/* --- pcie shell backend ---------------------------------------------------- */
+
+static bool sh_active(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+	return advk_mode_get() == ADVK_MODE_RC;
+}
+
+static void sh_info(const struct device *dev, const struct shell *sh)
+{
 	struct advk_rc_data *data = dev->data;
 	uint32_t lnk;
 
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-	if (!rc_active(sh)) {
-		return -ENODEV;
+	if (!data->active) {
+		shell_print(sh, "root complex not started (see pcie debug bringup)");
+		return;
 	}
 	lnk = rd(dev, CFG_LNKCTL) >> 16;
 	shell_print(sh, "ltssm 0x%02x (%s), lnksta %04x Gen%u x%u, ctrl0 %08x, comphy %ld",
 		    ltssm(dev), link_up(dev) ? "up" : "down", lnk, lnk & 0xf, (lnk >> 4) & 0x3f,
 		    rd(dev, CTRL0), data->comphy_ret);
-	shell_print(sh, "root port: bus %06x mem %08x pref %08x cmd %04x", data->rp.bus,
-		    data->rp.mem, data->rp.pref, data->rp.cmd);
+	shell_print(sh, "root port %04x:%04x: bus %06x mem %08x pref %08x cmd %04x",
+		    data->id.vid, data->id.did, data->rp.bus, data->rp.mem, data->rp.pref,
+		    data->rp.cmd);
 	shell_print(sh, "PIO: ur %u ca %u crs %u err %u timeout %u", data->pio_ur, data->pio_ca,
 		    data->pio_crs, data->pio_err, data->pio_timeout);
 	for (int t = 0; t < REGION_MAX; t++) {
@@ -1197,19 +1294,14 @@ static int cmd_rc_status(const struct shell *sh, size_t argc, char **argv)
 				    rd(dev, OB_WIN(w, 0x10)), rd(dev, OB_WIN(w, 0x18)));
 		}
 	}
-	return 0;
 }
 
-
-static int cmd_rc_irq(const struct shell *sh, size_t argc, char **argv)
+static void sh_irq(const struct device *dev, const struct shell *sh)
 {
-	const struct device *dev = RC_DEV;
 	struct advk_rc_data *data = dev->data;
 
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-	if (!rc_active(sh)) {
-		return -ENODEV;
+	if (!data->active) {
+		return;
 	}
 	shell_print(sh, "irqs %u, last isr0 %08x; now isr0 %08x mask %08x, isr1 %08x, host %08x",
 		    data->irq_count, data->last_isr0, rd(dev, ISR0), rd(dev, ISR0_MASK),
@@ -1228,156 +1320,157 @@ static int cmd_rc_irq(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "error messages: cor %u nonfatal %u fatal %u; INTx a %u b %u c %u d %u",
 		    data->err_cor, data->err_nfat, data->err_fat, data->intx[0], data->intx[1],
 		    data->intx[2], data->intx[3]);
-	return 0;
 }
 
-
-static int parse_id(const char *s, uint16_t *a, uint16_t *b)
+static int sh_link(const struct device *dev, const struct shell *sh, bool retrain)
 {
-	char *e;
-	unsigned long x = strtoul(s, &e, 16), y;
-
-	if (*e != ':') {
-		return -EINVAL;
-	}
-	y = strtoul(e + 1, &e, 16);
-	if (*e != '\0' || x > 0xffff || y > 0xffff) {
-		return -EINVAL;
-	}
-	*a = x;
-	*b = y;
-	return 0;
-}
-
-/* id [<vid:did> [<svid:ssid>]] | id reset */
-static int cmd_rc_id(const struct shell *sh, size_t argc, char **argv)
-{
-	const struct device *dev = RC_DEV;
 	struct advk_rc_data *data = dev->data;
-	struct rp_id id = data->id;
-	int ret = 0;
+	uint32_t lnk;
 
-	if (!rc_active(sh)) {
+	if (!data->active) {
 		return -ENODEV;
 	}
-	if (argc > 1 && strcmp(argv[1], "reset") == 0) {
-		if (IS_ENABLED(CONFIG_SETTINGS)) {
-			(void)settings_delete(RCID_KEY);
-		}
-		shell_print(sh, "saved IDs dropped, defaults from the next boot");
+	if (retrain) {
+		shell_print(sh, "%s", advk_rc_link_start(dev) ? "link up" : "no link");
+		advk_rc_scan(dev);
+		shell_print(sh, "rescanned, see: pcie ls");
 		return 0;
 	}
-	if (argc > 1 && parse_id(argv[1], &id.vid, &id.did) != 0) {
-		shell_error(sh, "<vid:did> in hex");
-		return -EINVAL;
+	lnk = rd(dev, CFG_LNKCTL) >> 16;
+	shell_print(sh, "%s, ltssm 0x%02x, Gen%u x%u", link_up(dev) ? "up" : "down", ltssm(dev),
+		    lnk & 0xf, (lnk >> 4) & 0x3f);
+	return 0;
+}
+
+static int sh_scan(const struct device *dev, const struct shell *sh)
+{
+	struct advk_rc_data *data = dev->data;
+
+	if (!data->active) {
+		return -ENODEV;
 	}
-	if (argc > 2 && parse_id(argv[2], &id.svid, &id.ssid) != 0) {
-		shell_error(sh, "<svid:ssid> in hex");
-		return -EINVAL;
+	advk_rc_scan(dev);
+	shell_print(sh, "rescanned, see: pcie ls");
+	return 0;
+}
+
+static int sh_id_get(const struct device *dev, pcie_bdf_t bdf, struct pcie_shell_id *id)
+{
+	struct advk_rc_data *data = dev->data;
+
+	if (!data->active || bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP; /* only the root port is ours */
 	}
-	if (argc > 1) {
-		data->id = id;
-		id_apply(dev);
+	*id = (struct pcie_shell_id){.vid = data->id.vid, .did = data->id.did,
+				     .svid = data->id.svid, .ssid = data->id.ssid,
+				     .class_code = 0x060400};
+	return 0;
+}
+
+static int sh_id_set(const struct device *dev, pcie_bdf_t bdf, const struct pcie_shell_id *id)
+{
+	struct advk_rc_data *data = dev->data;
+
+	if (!data->active || bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP;
+	}
+	data->id = (struct rp_id){.vid = id->vid, .did = id->did, .svid = id->svid,
+				  .ssid = id->ssid};
+	id_apply(dev);
+	return IS_ENABLED(CONFIG_SETTINGS) ? settings_save_one(RCID_KEY, &data->id,
+							       sizeof(data->id))
+					   : 0;
+}
+
+static int sh_id_reset(const struct device *dev, pcie_bdf_t bdf)
+{
+	ARG_UNUSED(dev);
+	if (bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP;
+	}
+	return IS_ENABLED(CONFIG_SETTINGS) ? settings_delete(RCID_KEY) : -ENOTSUP;
+}
+
+static int sh_dsn(const struct device *dev, pcie_bdf_t bdf, const char *arg, uint64_t *v,
+		  const char **src)
+{
+	struct advk_rc_data *data = dev->data;
+	int ret = 0;
+
+	if (!data->active || bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP;
+	}
+	if (arg == NULL) {
+		/* show */
+	} else if (strcmp(arg, "reset") == 0) {
 		if (IS_ENABLED(CONFIG_SETTINGS)) {
-			ret = settings_save_one(RCID_KEY, &id, sizeof(id));
+			(void)settings_delete(RCDSN_KEY);
+		}
+		dsn_write(dev, dsn_generate(src));
+	} else {
+		uint64_t n;
+
+		if (strcmp(arg, "uid") == 0) {
+			n = dsn_generate(src);
+		} else if (strcmp(arg, "new") == 0) {
+			n = dsn_local(sys_rand64_get() ^ (k_cycle_get_64() * 0x9e3779b97f4a7c15ULL));
+		} else {
+			char *end;
+
+			n = strtoull(arg, &end, 16);
+			if (*end != '\0') {
+				return -EINVAL;
+			}
+		}
+		dsn_write(dev, n);
+		if (IS_ENABLED(CONFIG_SETTINGS)) {
+			ret = settings_save_one(RCDSN_KEY, &n, sizeof(n));
 		}
 	}
-	shell_print(sh, "root port 0:0.0: %04x:%04x subsystem %04x:%04x%s", data->id.vid,
-		    data->id.did, data->id.svid, data->id.ssid,
-		    argc > 1 ? (ret == 0 ? " (saved)" : " (not saved)") : "");
-	return 0;
+	*v = data->dsn;
+	return ret;
 }
 
-static int cmd_rc_retrain(const struct shell *sh, size_t argc, char **argv)
+#if defined(CONFIG_PCIE_AARDVARK_MODE)
+static int sh_mode_set(const struct device *dev, enum pcie_shell_role role)
 {
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-	if (!rc_active(sh)) {
-		return -ENODEV;
-	}
-	shell_print(sh, "%s", advk_rc_link_start(RC_DEV) ? "link up" : "no link");
-	advk_rc_scan(RC_DEV);
-	shell_print(sh, "rescanned, see: pcie ls");
-	return 0;
+	ARG_UNUSED(dev);
+	return advk_mode_save(role == PCIE_SHELL_ROLE_RC ? ADVK_MODE_RC : ADVK_MODE_EP);
 }
 
-static int cmd_rc_scan(const struct shell *sh, size_t argc, char **argv)
+static bool sh_mode_saved(const struct device *dev, enum pcie_shell_role *role)
 {
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-	if (!rc_active(sh)) {
-		return -ENODEV;
+	enum advk_mode m;
+
+	ARG_UNUSED(dev);
+	if (!advk_mode_saved(&m)) {
+		return false;
 	}
-	advk_rc_scan(RC_DEV);
-	shell_print(sh, "rescanned, see: pcie ls");
-	return 0;
+	*role = m == ADVK_MODE_RC ? PCIE_SHELL_ROLE_RC : PCIE_SHELL_ROLE_EP;
+	return true;
 }
+#endif
 
-static int parse_bdf(const struct shell *sh, const char *s, pcie_bdf_t *bdf)
-{
-	unsigned long b, d, f;
-	char *e;
-
-	b = strtoul(s, &e, 16);
-	if (*e != ':') {
-		goto bad;
-	}
-	d = strtoul(e + 1, &e, 16);
-	if (*e != '.') {
-		goto bad;
-	}
-	f = strtoul(e + 1, &e, 16);
-	if (*e != '\0' || b > 255 || d > 31 || f > 7) {
-		goto bad;
-	}
-	*bdf = PCIE_BDF(b, d, f);
-	return 0;
-bad:
-	shell_error(sh, "bus:dev.fn, hex");
-	return -EINVAL;
-}
-
-/* cfg <b:d.f> [<off> [<len>]]: dump config space, like lspci -xxx */
-static int cmd_rc_cfg(const struct shell *sh, size_t argc, char **argv)
-{
-	unsigned long off = 0, len = 0x100;
-	pcie_bdf_t bdf;
-
-	if (!rc_active(sh) || parse_bdf(sh, argv[1], &bdf) != 0) {
-		return -EINVAL;
-	}
-	if (argc > 2) {
-		off = strtoul(argv[2], NULL, 0) & ~3UL;
-	}
-	if (argc > 3) {
-		len = strtoul(argv[3], NULL, 0);
-	}
-	for (unsigned long o = off; o < MIN(off + len, (unsigned long)CFG_SIZE); o += 16) {
-		uint32_t v[4];
-
-		for (int i = 0; i < 4; i++) {
-			v[i] = advk_rc_conf_read(RC_DEV, bdf, (o >> 2) + i);
-		}
-		shell_print(sh, "%03lx: %08x %08x %08x %08x", o, v[0], v[1], v[2], v[3]);
-	}
-	return 0;
-}
-
-/* cfgw <b:d.f> <off> <val>: write one config dword */
-static int cmd_rc_cfgw(const struct shell *sh, size_t argc, char **argv)
-{
-	pcie_bdf_t bdf;
-	unsigned long off;
-
-	ARG_UNUSED(argc);
-	if (!rc_active(sh) || parse_bdf(sh, argv[1], &bdf) != 0) {
-		return -EINVAL;
-	}
-	off = strtoul(argv[2], NULL, 0);
-	advk_rc_conf_write(RC_DEV, bdf, off >> 2, strtoul(argv[3], NULL, 0));
-	shell_print(sh, "%03lx: %08x", off & ~3UL, advk_rc_conf_read(RC_DEV, bdf, off >> 2));
-	return 0;
-}
+static const struct pcie_shell_ctrl rc_shell = {
+	.name = "aardvark",
+	.dev = RC_DEV,
+	.role = PCIE_SHELL_ROLE_RC,
+	.active = sh_active,
+	.info = sh_info,
+#if defined(CONFIG_PCIE_AARDVARK_MODE)
+	.mode_set = sh_mode_set,
+	.mode_saved = sh_mode_saved,
+#endif
+	.link = sh_link,
+	.scan = sh_scan,
+	.irq = sh_irq,
+	.id_get = sh_id_get,
+	.id_set = sh_id_set,
+	.id_reset = sh_id_reset,
+	.dsn = sh_dsn,
+	.cfg_read = advk_rc_conf_read,
+	.cfg_write = advk_rc_conf_write,
+};
 
 
 
@@ -1871,28 +1964,15 @@ static int cmd_rc_start(const struct shell *sh, size_t argc, char **argv)
 	}
 	irq_setup(RC_DEV);
 	id_load(RC_DEV);
+	dsn_load(RC_DEV);
 	data->active = true;
 	shell_print(sh, "%s", advk_rc_link_start(RC_DEV) ? "link up" : "no link");
 	advk_rc_scan(RC_DEV);
 	return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(rc_cmds,
-	SHELL_CMD_ARG(status, NULL, "Link, root port windows, PIO errors, outbound windows",
-		      cmd_rc_status, 1, 0),
-	SHELL_CMD_ARG(retrain, NULL, "PERST# pulse, train, rescan", cmd_rc_retrain, 1, 0),
-	SHELL_CMD_ARG(irq, NULL, "Interrupt counters, MSI receiver state", cmd_rc_irq, 1, 0),
-	SHELL_CMD_ARG(id, NULL, "[<vid:did> [<svid:ssid>]] | reset  Root port IDs (saved)",
-		      cmd_rc_id, 1, 2),
-	SHELL_CMD_ARG(scan, NULL, "Enumerate again (bus numbers, BARs, windows)", cmd_rc_scan,
-		      1, 0),
-	SHELL_CMD_ARG(cfg, NULL, "<b:d.f> [<off> [<len>]] Dump config space", cmd_rc_cfg, 2, 2),
-	SHELL_CMD_ARG(cfgw, NULL, "<b:d.f> <off> <val> Write a config dword", cmd_rc_cfgw, 4,
-		      0),
-	IF_ENABLED(CONFIG_PCIE_AARDVARK_NVME_SHELL,
-		   (SHELL_CMD_ARG(nvme, NULL, "<b:d.f> [<lba>] [msi] [nocache] Polled NVMe test: "
-				  "identify, read one block; msi: count MSI-X of the admin queue; "
-				  "nocache: no cache maintenance", cmd_rc_nvme, 2, 3),))
+/* pcie debug bringup ...: the init steps one by one */
+SHELL_STATIC_SUBCMD_SET_CREATE(rc_bringup_cmds,
 	SHELL_CMD_ARG(probe, NULL, "Do the core registers answer?", cmd_rc_probe, 1, 0),
 	SHELL_CMD_ARG(pinctrl, NULL, "Apply the default pin state", cmd_rc_pinctrl, 1, 0),
 	SHELL_CMD_ARG(clkout, NULL, "on|off COMPHY 100 MHz output", cmd_rc_clkout, 2, 0),
@@ -1901,7 +1981,14 @@ SHELL_STATIC_SUBCMD_SET_CREATE(rc_cmds,
 	SHELL_CMD_ARG(start, NULL, "Setup, windows, training, scan from the current state",
 		      cmd_rc_start, 1, 0),
 	SHELL_SUBCMD_SET_END);
-SHELL_CMD_REGISTER(advk_rc, &rc_cmds, "Armada 3700 PCIe root complex", NULL);
+SHELL_SUBCMD_ADD((pcie_debug), bringup, &rc_bringup_cmds,
+		 "Root complex bring-up step by step", NULL, 1, 0);
+#if defined(CONFIG_PCIE_AARDVARK_NVME_SHELL)
+SHELL_SUBCMD_ADD((pcie_debug), nvme, NULL,
+		 "<b:d.f> [<lba>] [msi] [nocache] Polled NVMe test: identify, read one block; "
+		 "msi: count MSI-X of the admin queue; nocache: no cache maintenance",
+		 cmd_rc_nvme, 2, 3);
+#endif
 #endif /* CONFIG_PCIE_AARDVARK_SHELL */
 
 /* ------------------------------------------------------------------------ */

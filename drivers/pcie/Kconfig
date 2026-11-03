@@ -9,7 +9,8 @@ config PCIE_AARDVARK_MODE
 	help
 	  With both the root complex and the endpoint driver built in, the
 	  setting "advk/mode" ("rc" or "ep") picks the role at boot;
-	  "advk mode rc|ep" in the shell stores it for the next boot. The
+	  "pcie controller mode rc|ep" in the shell stores it for the next
+	  boot. The
 	  driver not picked leaves the controller alone.
 
 if PCIE_AARDVARK_MODE
@@ -38,3 +39,15 @@ endif # PCIE_AARDVARK_MODE
 source "drivers/pcie/host/Kconfig"
 source "drivers/pcie/endpoint/Kconfig"
 source "drivers/pcie/controller/Kconfig"
+
+config PCIE_CTRL_SHELL
+	bool "Controller-neutral pcie shell"
+	default y
+	depends on SHELL
+	depends on PCIE_CONTROLLER || PCIE_EPC
+	depends on !PCIE_SHELL
+	help
+	  "pcie controller | ls | cfg | cap | debug": the same commands for
+	  root complex and endpoint controllers of any vendor; the drivers
+	  register a backend (pcie_shell_register()). Replaces the generic
+	  PCIE_SHELL, which uses the same command name.

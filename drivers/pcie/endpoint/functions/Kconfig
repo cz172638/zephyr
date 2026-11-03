@@ -24,7 +24,7 @@ config PCIE_EPF_TEST_POLL_US
 
 config PCIE_EPF_TEST_SETTINGS
 	bool "Keep a header set by the epf_hdr shell command in settings"
-	default y
+	default y if !PCIE_CTRL_SHELL
 	depends on PCIE_EPF_TEST && SETTINGS
 
 config PCIE_EPF_TEST_SETTINGS_PRIORITY

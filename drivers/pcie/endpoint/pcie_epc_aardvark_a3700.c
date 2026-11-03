@@ -20,6 +20,8 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pcie/aardvark.h>
+#include <zephyr/drivers/pcie/pcie_shell.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/kernel.h>
 #include <zephyr/kernel/internal/mm.h>
@@ -183,6 +185,10 @@ static int a3700_ep_start(const struct device *dev)
 	return advk_ep_start(dev);
 }
 
+#if defined(CONFIG_PCIE_EPC_AARDVARK_SHELL)
+void a3700_ep_shell_register(void);
+#endif
+
 static int a3700_ep_init(const struct device *dev)
 {
 	const struct a3700_ep_config *cfg = dev->config;
@@ -193,6 +199,9 @@ static int a3700_ep_init(const struct device *dev)
 
 	data->dev = dev;
 	TRACE("init");
+#if defined(CONFIG_PCIE_EPC_AARDVARK_SHELL)
+	a3700_ep_shell_register();
+#endif
 
 	if (advk_mode_get() != ADVK_MODE_EP) {
 		/*
@@ -428,10 +437,56 @@ out:
 }
 #endif
 
+
+/*
+ * Identity override ("pcie controller id"), saved; replaces what the
+ * function asks for in every header write.
+ */
+#define EPID_KEY "pcie/epid"
+
+static struct pcie_shell_id ep_id_override;
+static bool ep_id_valid;
+
+static int epid_load_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+			void *param)
+{
+	ARG_UNUSED(key);
+	ARG_UNUSED(param);
+	if (len == sizeof(ep_id_override) &&
+	    read_cb(cb_arg, &ep_id_override, len) == (ssize_t)len) {
+		ep_id_valid = true;
+	}
+	return 0;
+}
+
+static int a3700_ep_write_header(const struct device *dev, uint8_t func,
+				 const struct pcie_epc_header *hdr)
+{
+	struct pcie_epc_header h = *hdr;
+	static bool loaded;
+
+	if (!loaded && IS_ENABLED(CONFIG_SETTINGS) && settings_subsys_init() == 0) {
+		(void)settings_load_subtree_direct(EPID_KEY, epid_load_cb, NULL);
+		loaded = true;
+	}
+	if (ep_id_valid && func == 0) {
+		h.vendor_id = ep_id_override.vid;
+		h.device_id = ep_id_override.did;
+		h.subsys_vendor_id = ep_id_override.svid;
+		h.subsys_id = ep_id_override.ssid;
+		if (ep_id_override.class_code != UINT32_MAX) {
+			h.baseclass = ep_id_override.class_code >> 16;
+			h.subclass = ep_id_override.class_code >> 8;
+			h.prog_if = ep_id_override.class_code;
+		}
+	}
+	return advk_ep_write_header(dev, func, &h);
+}
+
 static DEVICE_API(pcie_epc, a3700_ep_api) = {
 	.start = a3700_ep_start,
 	.stop = advk_ep_stop,
-	.write_header = advk_ep_write_header,
+	.write_header = a3700_ep_write_header,
 	.set_bar = advk_ep_set_bar,
 	.clear_bar = advk_ep_clear_bar,
 	.map_addr = advk_ep_map_addr,
@@ -2225,71 +2280,220 @@ static int cmd_iodec(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_advk_ep, SHELL_CMD(status, NULL, "Link, header, BARs, windows, events", cmd_status),
-	SHELL_CMD(hist, NULL, "LTSSM history of the link poll", cmd_hist),
-	SHELL_CMD_ARG(trace, NULL, "[ms] Busy-poll LTSSM transitions (default 100)", cmd_trace,
-		      1, 1),
-	SHELL_CMD_ARG(dump, NULL, "[cfg|ctrl|ob|lmi|core|irq|<off> [len]] Register dump",
-		      cmd_dump, 1, 2),
-	SHELL_CMD_ARG(rd, NULL, "<off> Read a controller register", cmd_rd, 2, 0),
-	SHELL_CMD_ARG(wr, NULL, "<off> <val> Write a controller register", cmd_wr, 3, 0),
-	SHELL_CMD_ARG(probe, NULL, "<off> [len] Writable bits (writes, then restores!)",
-		      cmd_probe, 2, 1),
-	SHELL_CMD_ARG(cpuwin, NULL, "CPU address decode windows (0xd000cf00)", cmd_cpuwin, 1, 0),
-	SHELL_CMD_ARG(bar, NULL, "<n> [axi] Inbound AXI base of BAR n", cmd_bar, 2, 1),
-	SHELL_CMD_ARG(copy, NULL, "<dst> <src> <len> Word copy, aborts read as deadbeef",
-		      cmd_copy, 4, 0),
-	SHELL_CMD_ARG(aer, NULL, "[clear | count [ms] | stop] AER status, masks, header log, counters",
-		      cmd_aer, 1, 2),
-	SHELL_CMD_ARG(coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
-		      cmd_coh, 3, 0),
-	SHELL_CMD_ARG(msix, NULL, "[n] MSI-X capability, table, PBA, counters", cmd_msix, 1, 1),
-	SHELL_CMD_ARG(barcfg, NULL, "LMI BAR configuration decoded, BAR masks", cmd_barcfg, 1, 0),
-	SHELL_CMD_ARG(rom, NULL, "[<axi> [<slot>]] Expansion ROM BAR: show, or write an image and "
-		      "point an inbound slot at it", cmd_rom, 1, 2),
-	SHELL_CMD_ARG(barhunt, NULL, "<start> <end> Registers that change the BAR sizes "
-		      "(writes, restores; host must not use the BARs)", cmd_barhunt, 3, 0),
-	SHELL_CMD_ARG(cfghunt, NULL, "[<start> <end> [<cfg_end>]] [all] Which config space "
-		      "words a range controls (default LMI 0x6000..0x7000 vs cfg 0..0x400; "
-		      "writes, restores; host must not use the device)", cmd_cfghunt, 1, 4),
-	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
-		      cmd_wmap, 3, 0),
-#ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
-	SHELL_CMD_ARG(dmastat, NULL, "[clear] XOR DMA times, flush of the writes toward the host",
-		      cmd_dmastat, 1, 1),
+
+/* --- pcie shell backend ---------------------------------------------------- */
+
+static bool sh_active(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+	return advk_mode_get() == ADVK_MODE_EP;
+}
+
+static void sh_info(const struct device *dev, const struct shell *sh)
+{
+	ARG_UNUSED(dev);
+	(void)cmd_status(sh, 1, NULL);
+}
+
+static int sh_link(const struct device *dev, const struct shell *sh, bool retrain)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	uint32_t lnk;
+	uint8_t s;
+
+	if (retrain) {
+		advk_ep_stop(dev);
+		k_msleep(10);
+		(void)advk_ep_start(dev);
+	}
+	s = advk_ltssm(ep);
+	lnk = advk_rd(ep, ADVK_CFG_LNKCTL_STA) >> 16;
+	shell_print(sh, "%s, ltssm 0x%02x %s, Gen%u x%u%s", advk_ltssm_is_up(s) ? "up" : "down", s,
+		    advk_ltssm_name(s), lnk & 0xf, (lnk >> 4) & 0x3f,
+		    retrain ? " (training restarted)" : "");
+	return 0;
+}
+
+/* Local function 0 only */
+static uint32_t sh_cfg_read(const struct device *dev, pcie_bdf_t bdf, unsigned int reg)
+{
+	uint32_t v;
+
+	if (bdf != PCIE_BDF(0, 0, 0) || reg >= 0x1000 / 4 ||
+	    a3700_probe_read32(advk_ep(dev)->reg + reg * 4, &v) != 0) {
+		return 0xffffffff;
+	}
+	return v;
+}
+
+static void sh_cfg_write(const struct device *dev, pcie_bdf_t bdf, unsigned int reg, uint32_t v)
+{
+	if (bdf == PCIE_BDF(0, 0, 0) && reg < 0x1000 / 4) {
+		(void)a3700_probe_write32(advk_ep(dev)->reg + reg * 4, v);
+	}
+}
+
+static int sh_id_get(const struct device *dev, pcie_bdf_t bdf, struct pcie_shell_id *id)
+{
+	struct advk_ep *ep = advk_ep(dev);
+	uint32_t i, c, ss;
+
+	if (bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP;
+	}
+	i = advk_rd(ep, ADVK_CFG_ID);
+	c = advk_rd(ep, ADVK_CFG_REV_CLASS);
+	ss = advk_rd(ep, ADVK_CFG_SSID);
+	*id = (struct pcie_shell_id){.vid = i & 0xffff, .did = i >> 16,
+				     .svid = ss & 0xffff, .ssid = ss >> 16,
+				     .class_code = c >> 8};
+	return 0;
+}
+
+static int sh_id_set(const struct device *dev, pcie_bdf_t bdf, const struct pcie_shell_id *id)
+{
+	if (bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP;
+	}
+	ep_id_override = *id;
+	ep_id_valid = true;
+	if (advk_ep(dev)->hdr_valid) {
+		(void)a3700_ep_write_header(dev, 0, &advk_ep(dev)->hdr);
+	}
+	return IS_ENABLED(CONFIG_SETTINGS) ? settings_save_one(EPID_KEY, &ep_id_override,
+							       sizeof(ep_id_override))
+					   : 0;
+}
+
+static int sh_id_reset(const struct device *dev, pcie_bdf_t bdf)
+{
+	ARG_UNUSED(dev);
+	if (bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP;
+	}
+	ep_id_valid = false;
+	return IS_ENABLED(CONFIG_SETTINGS) ? settings_delete(EPID_KEY) : -ENOTSUP;
+}
+
+#if defined(CONFIG_PCIE_EPC_DSN_SETTINGS)
+static int sh_dsn(const struct device *dev, pcie_bdf_t bdf, const char *arg, uint64_t *v,
+		  const char **src)
+{
+	if (bdf != PCIE_BDF(0, 0, 0)) {
+		return -ENOTSUP;
+	}
+	return pcie_epc_dsn_cmd(dev, arg, v, src);
+}
 #endif
-	SHELL_CMD_ARG(nz, NULL, "<start> <end> Non-zero words of a range", cmd_nz, 3, 0),
-	SHELL_CMD_ARG(map, NULL, "[start end] Readable ranges of the register space", cmd_map, 1,
-		      2),
-	SHELL_CMD_ARG(xor, NULL, "<dst> <src> <len> XOR engine memcpy, h:<pci addr> = host memory",
-		      cmd_xor, 4, 0),
-	SHELL_CMD(up, NULL, "Set up the controller again and train the link", cmd_up),
-	SHELL_CMD(down, NULL, "Link training off (remove the device on the host first)",
-		  cmd_down),
-	SHELL_CMD(start, NULL, "Enable link training", cmd_start),
-	SHELL_CMD(stop, NULL, "Disable link training", cmd_stop),
-	SHELL_CMD(setup, NULL, "Reprogram the controller (EP mode, refclk in)", cmd_setup),
-	SHELL_CMD_ARG(comphy, NULL, "[on|clkout|noclkout|show] COMPHY lane / clock output",
-		      cmd_comphy, 1, 1),
-	SHELL_CMD_ARG(refclk, NULL, "<in|out|off> REF_CLK pad direction (0x4814)", cmd_refclk,
-		      2, 0),
-	SHELL_CMD(intx, NULL, "Pulse INTx", cmd_intx),
-	SHELL_CMD_ARG(msi, NULL, "[n] Send MSI n (1-based)", cmd_msi, 1, 1),
-	SHELL_CMD_ARG(host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
-		      1),
-	SHELL_CMD_ARG(iodec, NULL,
+
+#if defined(CONFIG_PCIE_AARDVARK_MODE)
+static int sh_mode_set(const struct device *dev, enum pcie_shell_role role)
+{
+	ARG_UNUSED(dev);
+	return advk_mode_save(role == PCIE_SHELL_ROLE_RC ? ADVK_MODE_RC : ADVK_MODE_EP);
+}
+
+static bool sh_mode_saved(const struct device *dev, enum pcie_shell_role *role)
+{
+	enum advk_mode m;
+
+	ARG_UNUSED(dev);
+	if (!advk_mode_saved(&m)) {
+		return false;
+	}
+	*role = m == ADVK_MODE_RC ? PCIE_SHELL_ROLE_RC : PCIE_SHELL_ROLE_EP;
+	return true;
+}
+#endif
+
+static const struct pcie_shell_ctrl ep_shell = {
+	.name = "aardvark",
+	.dev = EP_DEV,
+	.role = PCIE_SHELL_ROLE_EP,
+	.active = sh_active,
+	.info = sh_info,
+#if defined(CONFIG_PCIE_AARDVARK_MODE)
+	.mode_set = sh_mode_set,
+	.mode_saved = sh_mode_saved,
+#endif
+	.link = sh_link,
+	.id_get = sh_id_get,
+	.id_set = sh_id_set,
+	.id_reset = sh_id_reset,
+#if defined(CONFIG_PCIE_EPC_DSN_SETTINGS)
+	.dsn = sh_dsn,
+#endif
+	.cfg_read = sh_cfg_read,
+	.cfg_write = sh_cfg_write,
+};
+
+void a3700_ep_shell_register(void)
+{
+	pcie_shell_register(&ep_shell);
+}
+
+/* pcie debug ...: endpoint bring-up and experiments */
+SHELL_SUBCMD_ADD((pcie_debug), hist, NULL, "LTSSM history of the link poll", cmd_hist, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), trace, NULL, "[ms] Busy-poll LTSSM transitions (default 100)", cmd_trace,
+		      1, 1);
+SHELL_SUBCMD_ADD((pcie_debug), dump, NULL, "[cfg|ctrl|ob|lmi|core|irq|<off> [len]] Register dump",
+		      cmd_dump, 1, 2);
+SHELL_SUBCMD_ADD((pcie_debug), rd, NULL, "<off> Read a controller register", cmd_rd, 2, 0);
+SHELL_SUBCMD_ADD((pcie_debug), wr, NULL, "<off> <val> Write a controller register", cmd_wr, 3, 0);
+SHELL_SUBCMD_ADD((pcie_debug), probe, NULL, "<off> [len] Writable bits (writes, then restores!)",
+		      cmd_probe, 2, 1);
+SHELL_SUBCMD_ADD((pcie_debug), cpuwin, NULL, "CPU address decode windows (0xd000cf00)", cmd_cpuwin, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), bar, NULL, "<n> [axi] Inbound AXI base of BAR n", cmd_bar, 2, 1);
+SHELL_SUBCMD_ADD((pcie_debug), copy, NULL, "<dst> <src> <len> Word copy, aborts read as deadbeef",
+		      cmd_copy, 4, 0);
+SHELL_SUBCMD_ADD((pcie_debug), aer, NULL, "[clear | count [ms] | stop] AER status, masks, header log, counters",
+		      cmd_aer, 1, 2);
+SHELL_SUBCMD_ADD((pcie_debug), coh, NULL, "xor rd|wr | bar4 rd|wr|show|flush|inval  Cache coherency test",
+		      cmd_coh, 3, 0);
+SHELL_SUBCMD_ADD((pcie_debug), msix, NULL, "[n] MSI-X capability, table, PBA, counters", cmd_msix, 1, 1);
+SHELL_SUBCMD_ADD((pcie_debug), barcfg, NULL, "LMI BAR configuration decoded, BAR masks", cmd_barcfg, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), rom, NULL, "[<axi> [<slot>]] Expansion ROM BAR: show, or write an image and "
+		      "point an inbound slot at it", cmd_rom, 1, 2);
+SHELL_SUBCMD_ADD((pcie_debug), barhunt, NULL, "<start> <end> Registers that change the BAR sizes "
+		      "(writes, restores; host must not use the BARs)", cmd_barhunt, 3, 0);
+SHELL_SUBCMD_ADD((pcie_debug), cfghunt, NULL, "[<start> <end> [<cfg_end>]] [all] Which config space "
+		      "words a range controls (default LMI 0x6000..0x7000 vs cfg 0..0x400; "
+		      "writes, restores; host must not use the device)", cmd_cfghunt, 1, 4);
+SHELL_SUBCMD_ADD((pcie_debug), wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
+		      cmd_wmap, 3, 0);
+#ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
+SHELL_SUBCMD_ADD((pcie_debug), dmastat, NULL, "[clear] XOR DMA times, flush of the writes toward the host",
+		      cmd_dmastat, 1, 1);
+#endif
+SHELL_SUBCMD_ADD((pcie_debug), nz, NULL, "<start> <end> Non-zero words of a range", cmd_nz, 3, 0);
+SHELL_SUBCMD_ADD((pcie_debug), map, NULL, "[start end] Readable ranges of the register space", cmd_map, 1,
+		      2);
+SHELL_SUBCMD_ADD((pcie_debug), xor, NULL, "<dst> <src> <len> XOR engine memcpy, h:<pci addr> = host memory",
+		      cmd_xor, 4, 0);
+SHELL_SUBCMD_ADD((pcie_debug), up, NULL, "Set up the controller again and train the link", cmd_up, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), down, NULL, "Link training off (remove the device on the host first)",
+		  cmd_down, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), start, NULL, "Enable link training", cmd_start, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), stop, NULL, "Disable link training", cmd_stop, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), setup, NULL, "Reprogram the controller (EP mode, refclk in)", cmd_setup, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), comphy, NULL, "[on|clkout|noclkout|show] COMPHY lane / clock output",
+		      cmd_comphy, 1, 1);
+SHELL_SUBCMD_ADD((pcie_debug), refclk, NULL, "<in|out|off> REF_CLK pad direction (0x4814)", cmd_refclk,
+		      2, 0);
+SHELL_SUBCMD_ADD((pcie_debug), intx, NULL, "Pulse INTx", cmd_intx, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), msi, NULL, "[n] Send MSI n (1-based)", cmd_msi, 1, 1);
+SHELL_SUBCMD_ADD((pcie_debug), host, NULL, "<pci addr> [len|=val] Read / write host memory", cmd_host, 2,
+		      1);
+SHELL_SUBCMD_ADD((pcie_debug), iodec, NULL,
 		      "[<w> <base> <size> <remap> [target [attr]] | reset] PCIe IO decode windows"
 		      " (0xd000c500)",
-		      cmd_iodec, 1, 6),
-	SHELL_CMD_ARG(ibwin, NULL,
+		      cmd_iodec, 1, 6);
+SHELL_SUBCMD_ADD((pcie_debug), ibwin, NULL,
 		      "<w> [<pci> <axi> <size> [actions]] Guessed inbound window at 0x4d00",
-		      cmd_ibwin, 2, 4),
-	SHELL_CMD_ARG(ibscan, NULL,
+		      cmd_ibwin, 2, 4);
+SHELL_SUBCMD_ADD((pcie_debug), ibscan, NULL,
 		      "<start> <end> [hold ms] Hunt the inbound translation (writes, restores!)",
-		      cmd_ibscan, 3, 1),
-	SHELL_SUBCMD_SET_END);
+		      cmd_ibscan, 3, 1);
 
-SHELL_CMD_REGISTER(advk_ep, &sub_advk_ep, "Armada 3700 PCIe endpoint", NULL);
 
 #endif /* CONFIG_PCIE_EPC_AARDVARK_SHELL */

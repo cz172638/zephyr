@@ -240,46 +240,36 @@ static int dsn_init(void)
 
 SYS_INIT(dsn_init, POST_KERNEL, CONFIG_PCIE_EPC_DSN_INIT_PRIORITY);
 
-#ifdef CONFIG_SHELL
-static int cmd_dsn(const struct shell *sh, size_t argc, char **argv)
+int pcie_epc_dsn_cmd(const struct device *dev, const char *arg, uint64_t *v, const char **src)
 {
 	for (int i = 0; i < n_epc; i++) {
-		const char *src = NULL;
-
-		if (argc >= 2 && strcmp(argv[1], "new") == 0) {
-			/* new: random, so it differs from the one the UID gives */
+		if (epc[i] != dev) {
+			continue;
+		}
+		if (arg == NULL) {
+			/* show */
+		} else if (strcmp(arg, "new") == 0) {
+			/* random, so it differs from the one the UID gives */
 			(void)dsn_apply(i, dsn_random(), settings_ok);
-		} else if (argc >= 2 && strcmp(argv[1], "uid") == 0) {
-			uint64_t v = dsn_generate(&src);
+		} else if (strcmp(arg, "uid") == 0) {
+			(void)dsn_apply(i, dsn_generate(src), settings_ok);
+		} else if (strcmp(arg, "reset") == 0) {
+			char key[16];
 
-			(void)dsn_apply(i, v, settings_ok);
-			shell_print(sh, "from %s", src);
-		} else if (argc >= 3 && strcmp(argv[1], "set") == 0) {
+			dsn_key(key, sizeof(key), i);
+			(void)settings_delete(key);
+			(void)dsn_apply(i, dsn_generate(src), false);
+		} else {
 			char *end;
-			uint64_t v = strtoull(argv[2], &end, 16);
+			uint64_t n = strtoull(arg, &end, 16);
 
 			if (*end != '\0') {
-				shell_error(sh, "hex EUI-64, e.g. 02aabbfffe010203");
 				return -EINVAL;
 			}
-			(void)dsn_apply(i, v, settings_ok);
-		} else if (argc >= 2 && strcmp(argv[1], "show") != 0) {
-			return -EINVAL;
+			(void)dsn_apply(i, n, settings_ok);
 		}
-		shell_print(sh, "%s: DSN %016llx, hw %016llx  (lspci: "
-			    "%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x)",
-			    epc[i]->name, (unsigned long long)dsn[i],
-			    (unsigned long long)dsn_read_hw(i),
-			    (uint8_t)(dsn[i] >> 56), (uint8_t)(dsn[i] >> 48), (uint8_t)(dsn[i] >> 40),
-			    (uint8_t)(dsn[i] >> 32), (uint8_t)(dsn[i] >> 24), (uint8_t)(dsn[i] >> 16),
-			    (uint8_t)(dsn[i] >> 8), (uint8_t)dsn[i]);
+		*v = dsn[i];
+		return 0;
 	}
-	if (n_epc == 0) {
-		shell_print(sh, "no EPC with a DSN capability");
-	}
-	return 0;
+	return -ENODEV;
 }
-
-SHELL_CMD_ARG_REGISTER(pcie_dsn, NULL, "[show | set <hex> | uid | new] PCIe Device Serial Number",
-		       cmd_dsn, 1, 2);
-#endif

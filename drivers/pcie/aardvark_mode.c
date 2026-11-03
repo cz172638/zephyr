@@ -13,7 +13,6 @@
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
-#include <zephyr/shell/shell.h>
 
 LOG_MODULE_REGISTER(advk_mode, LOG_LEVEL_INF);
 
@@ -87,35 +86,22 @@ static int advk_mode_init(void)
 
 SYS_INIT(advk_mode_init, POST_KERNEL, CONFIG_PCIE_AARDVARK_MODE_INIT_PRIORITY);
 
-#if defined(CONFIG_SHELL)
-static int cmd_mode(const struct shell *sh, size_t argc, char **argv)
+int advk_mode_save(enum advk_mode m)
 {
-	enum advk_mode m;
-	int ret;
+	const char *v = m == ADVK_MODE_RC ? "rc" : "ep";
+	int ret = settings_save_one(MODE_KEY, v, strlen(v));
 
-	if (argc < 2) {
-		shell_print(sh, "running as %s, saved: %s", mode == ADVK_MODE_RC ? "rc" : "ep",
-			    !saved_valid ? "none (default)" : saved == ADVK_MODE_RC ? "rc" : "ep");
-		return 0;
+	if (ret == 0) {
+		saved = m;
+		saved_valid = true;
 	}
-	if (parse(argv[1], &m) != 0) {
-		shell_error(sh, "rc or ep");
-		return -EINVAL;
-	}
-	ret = settings_save_one(MODE_KEY, argv[1], strlen(argv[1]));
-	if (ret != 0) {
-		shell_error(sh, "saving failed (%d)", ret);
-		return ret;
-	}
-	saved = m;
-	saved_valid = true;
-	shell_print(sh, "saved %s; %s", argv[1],
-		    m == mode ? "already running so" : "takes effect after: kernel reboot cold");
-	return 0;
+	return ret;
 }
 
-SHELL_SUBCMD_SET_CREATE(advk_cmds, (advk));
-SHELL_SUBCMD_ADD((advk), mode, NULL, "[rc|ep] Controller role, from the next boot", cmd_mode, 1,
-		 1);
-SHELL_CMD_REGISTER(advk, &advk_cmds, "Armada 3700 PCIe controller", NULL);
-#endif
+bool advk_mode_saved(enum advk_mode *m)
+{
+	if (saved_valid) {
+		*m = saved;
+	}
+	return saved_valid;
+}
