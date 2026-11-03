@@ -974,6 +974,8 @@ static void advk_rc_scan(const struct device *dev)
 	memset(&data->rp, 0, sizeof(data->rp));
 	data->rp.bridge = 0x00000100; /* INTA */
 	pcie_generic_ctrl_enumerate(dev, PCIE_BDF(0, 0, 0));
+	/* devicetree PCIe devices (e.g. nvme-controller) found only now */
+	(void)pcie_dev_scan();
 }
 
 static long comphy_power_on(const struct device *dev)

@@ -509,7 +509,8 @@ static bool pcie_dev_cb(pcie_bdf_t bdf, pcie_id_t id, void *cb_data)
 			continue;
 		}
 
-		if (dev->id != id) {
+		/* no vendor/device ID in devicetree: match on the class alone */
+		if (dev->id != id && !(dev->id == PCIE_ID_NONE && dev->class_rev_mask != 0)) {
 			continue;
 		}
 
@@ -533,7 +534,7 @@ static bool pcie_dev_cb(pcie_bdf_t bdf, pcie_id_t id, void *cb_data)
 		pcie_scan(&opt);                                                   \
 	}
 
-static int pcie_init(void)
+int pcie_dev_scan(void)
 {
 	struct scan_data data;
 	struct pcie_scan_opt opt = {
@@ -587,5 +588,10 @@ static int pcie_init(void)
 #else
 #define PCIE_SYS_INIT_LEVEL	PRE_KERNEL_1
 #endif
+
+static int pcie_init(void)
+{
+	return pcie_dev_scan();
+}
 
 SYS_INIT(pcie_init, PCIE_SYS_INIT_LEVEL, CONFIG_PCIE_INIT_PRIORITY);

@@ -1,0 +1,12 @@
+/*
+ * The first NVM Express controller (class 01 08 02) anywhere below the
+ * root complex, whatever its vendor and device ID.
+ */
+&pcie_rc {
+	nvme0: nvme0 {
+		compatible = "nvme-controller";
+		class-rev = <0x01080200>;
+		class-rev-mask = <0xffffff00>;
+		status = "okay";
+	};
+};

@@ -16,6 +16,13 @@ menuconfig NVME
 
 if NVME
 
+config NVME_INIT_PRIORITY
+	int "Controller init priority (POST_KERNEL)"
+	default KERNEL_INIT_PRIORITY_DEVICE
+	help
+	  After the PCIe controller has enumerated the device: later for
+	  controllers that bring their link up in POST_KERNEL.
+
 config NVME_ADMIN_ENTRIES
 	int "Number of admin queue entries"
 	range 2 4096

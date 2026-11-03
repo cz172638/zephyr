@@ -235,6 +235,17 @@ struct pcie_scan_opt {
 int pcie_scan(const struct pcie_scan_opt *opt);
 
 /**
+ * @brief Look up the devicetree PCIe devices (DEVICE_PCIE_DECLARE) again
+ *
+ * Done once at boot; a controller that brings its link up later calls it
+ * after enumeration, before the drivers of those devices initialize.
+ * Devices already found keep their BDF.
+ *
+ * @return 0
+ */
+int pcie_dev_scan(void);
+
+/**
  * @brief Get the MBAR at a specific BAR index
  * @param bdf the PCI(e) endpoint
  * @param bar_index 0-based BAR index

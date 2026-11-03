@@ -1,0 +1,10 @@
+name: espressobin-pcie-nvme
+description: |
+  ESPRESSObin as PCIe root complex (with espressobin-pcie-ep and
+  "advk mode rc"): any NVMe controller found by class, Zephyr's NVMe
+  disk driver, FAT and the fs shell on /nvme0n0:.
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: espressobin-pcie-nvme.overlay
+      EXTRA_CONF_FILE: espressobin-pcie-nvme.conf

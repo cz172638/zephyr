@@ -485,6 +485,6 @@ static int nvme_controller_init(const struct device *dev)
 	DEVICE_DT_INST_DEFINE(n, &nvme_controller_init,			\
 			      NULL, &nvme_ctrlr_data_##n,		\
 			      &nvme_ctrlr_cfg_##n, POST_KERNEL,		\
-			      CONFIG_KERNEL_INIT_PRIORITY_DEVICE, NULL);
+			      CONFIG_NVME_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(NVME_CONTROLLER_DEVICE_INIT)
