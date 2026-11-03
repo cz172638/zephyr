@@ -1438,6 +1438,161 @@ static int cmd_barhunt(const struct shell *sh, size_t argc, char **argv)
 }
 
 /*
+ * cfghunt [<start> <end> [<cfg_end>]]: which configuration space words a
+ * register range controls. Default: the LMI block 0x6000..0x7000 against
+ * config space 0x000..0x400. Volatile config bits (status, LTSSM-driven
+ * link status) are learned first from repeated reads and ignored. For
+ * every writable bit of every word in the range: flip it, read config
+ * space, restore, print the config words that changed. The BAR registers,
+ * known BAR configuration (0x6240/0x6244, "all" to include them) and the
+ * core control page are skipped. Run with the host not using the device:
+ * a flipped bit may retrain or drop the link.
+ */
+#define CFGHUNT_MAX_WORDS 0x400
+#define CFGHUNT_SHOW      8
+
+static uint32_t ch_ref[CFGHUNT_MAX_WORDS], ch_vol[CFGHUNT_MAX_WORDS], ch_cur[CFGHUNT_MAX_WORDS];
+
+static void cfg_snap(struct advk_ep *ep, uint32_t *buf, uint32_t words)
+{
+	for (uint32_t i = 0; i < words; i++) {
+		if (a3700_probe_read32(ep->reg + i * 4, &buf[i]) != 0) {
+			buf[i] = 0xdeadbeef;
+		}
+	}
+}
+
+/* Prints up to CFGHUNT_SHOW changed words; returns how many changed */
+static int cfg_diff(const struct shell *sh, const char *pfx, uint32_t words, bool print)
+{
+	int n = 0;
+
+	for (uint32_t i = 0; i < words; i++) {
+		uint32_t d = (ch_cur[i] ^ ch_ref[i]) & ~ch_vol[i];
+
+		if (d == 0) {
+			continue;
+		}
+		if (print && n < CFGHUNT_SHOW) {
+			shell_print(sh, "%s cfg %03x: %08x -> %08x (bits %08x)", pfx, i * 4,
+				    ch_ref[i], ch_cur[i], d);
+		}
+		n++;
+	}
+	if (print && n > CFGHUNT_SHOW) {
+		shell_print(sh, "%s ... %d words in all", pfx, n);
+	}
+	return n;
+}
+
+static int cmd_cfghunt(const struct shell *sh, size_t argc, char **argv)
+{
+	struct advk_ep *ep = advk_ep(EP_DEV);
+	unsigned long long start = 0x6000, end = 0x7000, cend = 0x400;
+	uint32_t words, tested = 0, hits = 0;
+	bool all = false;
+	int nvol = 0;
+
+	for (size_t i = 1, pos = 0; i < argc; i++) {
+		unsigned long long *v[] = {&start, &end, &cend};
+
+		if (strcmp(argv[i], "all") == 0) {
+			all = true;
+		} else if (pos < ARRAY_SIZE(v)) {
+			if (parse_u(sh, argv[i], v[pos++]) != 0) {
+				return -EINVAL;
+			}
+		}
+	}
+	end = MIN(end, (unsigned long long)ADVK_REG_SPACE);
+	cend = MIN(cend, (unsigned long long)CFGHUNT_MAX_WORDS * 4);
+	words = cend / 4;
+	if (start < cend) {
+		shell_error(sh, "the hunted range must not overlap config space 0..%llx", cend);
+		return -EINVAL;
+	}
+
+	/* Volatile bits: what changes between reads without any write */
+	memset(ch_vol, 0, sizeof(ch_vol));
+	cfg_snap(ep, ch_ref, words);
+	for (int r = 0; r < 16; r++) {
+		k_msleep(2);
+		cfg_snap(ep, ch_cur, words);
+		for (uint32_t i = 0; i < words; i++) {
+			ch_vol[i] |= ch_cur[i] ^ ch_ref[i];
+		}
+	}
+	for (uint32_t i = 0; i < words; i++) {
+		if (ch_vol[i] != 0) {
+			shell_print(sh, "volatile cfg %03x: %08x mask %08x", i * 4, ch_ref[i],
+				    ch_vol[i]);
+			nvol++;
+		}
+	}
+	shell_print(sh, "range %05llx..%05llx against cfg 000..%03llx, %d volatile words%s",
+		    start, end, cend, nvol, all ? "" : ", 0x6240/0x6244 skipped");
+
+	for (uint32_t o = start & ~3U; o < end; o += 4) {
+		uint32_t v, w, wr;
+		bool header = false;
+
+		if (o >= 0x18000 && o < 0x19000) {
+			o = 0x19000 - 4;
+			continue;
+		}
+		if (!all && (o == ADVK_LMI_BAR_CFG0 || o == ADVK_LMI_BAR_CFG1)) {
+			continue;
+		}
+		if (a3700_probe_read32(ep->reg + o, &v) != 0) {
+			continue;
+		}
+		if (a3700_probe_write32(ep->reg + o, ~v) != 0 ||
+		    a3700_probe_read32(ep->reg + o, &w) != 0) {
+			(void)a3700_probe_write32(ep->reg + o, v);
+			continue;
+		}
+		(void)a3700_probe_write32(ep->reg + o, v);
+		wr = v ^ w;
+		if (wr == 0) {
+			continue;
+		}
+		tested++;
+
+		for (int b = 0; b < 32; b++) {
+			char pfx[24];
+
+			if (!(wr & BIT(b))) {
+				continue;
+			}
+			(void)a3700_probe_write32(ep->reg + o, v ^ BIT(b));
+			k_busy_wait(50);
+			cfg_snap(ep, ch_cur, words);
+			(void)a3700_probe_write32(ep->reg + o, v);
+			k_busy_wait(50);
+
+			if (cfg_diff(sh, "", words, false) == 0) {
+				continue;
+			}
+			if (!header) {
+				shell_print(sh, "%05x: value %08x writable %08x", o, v, wr);
+				header = true;
+				hits++;
+			}
+			snprintf(pfx, sizeof(pfx), "  bit %2d:", b);
+			(void)cfg_diff(sh, pfx, words, true);
+
+			/* Did the restore bring config space back? */
+			cfg_snap(ep, ch_cur, words);
+			if (cfg_diff(sh, "  NOT RESTORED:", words, true) != 0) {
+				memcpy(ch_ref, ch_cur, words * sizeof(uint32_t));
+			}
+		}
+	}
+	shell_print(sh, "%u writable words tested, %u change config space", tested, hits);
+	return 0;
+}
+
+/*
  * rom [<axi> [<slot>]]: expansion ROM experiments. Without arguments: the
  * ROM BAR (0x30), its writable bits and the inbound candidates after the
  * BARs (0x5818, 0x581c). With an AXI address (in the carveout, aligned to
@@ -2064,6 +2219,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      "point an inbound slot at it", cmd_rom, 1, 2),
 	SHELL_CMD_ARG(barhunt, NULL, "<start> <end> Registers that change the BAR sizes "
 		      "(writes, restores; host must not use the BARs)", cmd_barhunt, 3, 0),
+	SHELL_CMD_ARG(cfghunt, NULL, "[<start> <end> [<cfg_end>]] [all] Which config space "
+		      "words a range controls (default LMI 0x6000..0x7000 vs cfg 0..0x400; "
+		      "writes, restores; host must not use the device)", cmd_cfghunt, 1, 4),
 	SHELL_CMD_ARG(wmap, NULL, "<start> <end> Writable bits of every word (writes, restores!)",
 		      cmd_wmap, 3, 0),
 #ifdef CONFIG_PCIE_EPC_AARDVARK_DMA
