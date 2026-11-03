@@ -132,6 +132,17 @@ typedef bool (*pcie_ctrl_region_translate_t)(const struct device *dev, pcie_bdf_
 #ifdef CONFIG_PCIE_MSI
 typedef uint8_t (*pcie_ctrl_msi_device_setup_t)(const struct device *dev, unsigned int priority,
 						msi_vector_t *vectors, uint8_t n_vector);
+
+/**
+ * @brief Callback API to connect a handler to an MSI vector
+ *
+ * For controllers that receive MSIs themselves and demultiplex them from
+ * one parent interrupt; without it the vector's arch.irq is connected
+ * with irq_connect_dynamic().
+ */
+typedef bool (*pcie_ctrl_msi_vector_connect_t)(const struct device *dev, msi_vector_t *vector,
+					       void (*routine)(const void *parameter),
+					       const void *parameter, uint32_t flags);
 #endif
 
 /**
@@ -196,6 +207,11 @@ __subsystem struct pcie_ctrl_driver_api {
 	 * @kconfig_dep{CONFIG_PCIE_MSI}
 	 */
 	pcie_ctrl_msi_device_setup_t msi_device_setup;
+	/**
+	 * @driver_ops_optional @copybrief pcie_ctrl_msi_vector_connect_t
+	 * @kconfig_dep{CONFIG_PCIE_MSI}
+	 */
+	pcie_ctrl_msi_vector_connect_t msi_vector_connect;
 #endif
 };
 

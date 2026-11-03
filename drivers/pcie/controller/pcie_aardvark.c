@@ -98,7 +98,22 @@ LOG_MODULE_REGISTER(pcie_aardvark, LOG_LEVEL_INF);
 #define REF_CLK              0x4814
 #define REF_CLK_TX           BIT(1)
 #define REF_CLK_RX           BIT(2)
+#define CTRL2_MSI_EN         BIT(10)
 #define ISR0                 0x4840
+#define ISR0_CORR_ERR        BIT(11)
+#define ISR0_NFAT_ERR        BIT(12)
+#define ISR0_FAT_ERR         BIT(13)
+#define ISR0_ERR_MASK        GENMASK(13, 11)
+#define ISR0_INTX_ASSERT(n)  BIT(16 + (n))
+#define ISR0_INTX_MASK       GENMASK(19, 16)
+#define ISR0_MSI_PENDING     BIT(24)
+#define MSI_ADDR_LO          0x4850
+#define MSI_ADDR_HI          0x4854
+#define MSI_STATUS           0x4858
+#define MSI_MASK             0x485c
+#define MSI_PAYLOAD          0x489c
+#define MSI_VECTORS          32
+#define HOST_INT_CORE        BIT(16)
 #define ISR0_MASK            0x4844
 #define ISR1                 0x4848
 #define ISR1_MASK            0x484c
@@ -155,6 +170,7 @@ struct advk_rc_config {
 	uint8_t comphy_invert;
 	uint8_t num_lanes;
 	uint8_t max_speed;
+	void (*irq_config)(const struct device *dev);
 };
 
 /* Software type 1 header of the root port, 0x00-0x3f */
@@ -184,6 +200,16 @@ struct advk_rc_data {
 		size_t allocation_offset;
 	} regions[REGION_MAX];
 	uint32_t pio_err, pio_ur, pio_ca, pio_crs, pio_timeout;
+	/* interrupts: MSI receiver, error messages, INTx */
+	uint64_t msi_doorbell __aligned(64);
+	uint32_t msi_used;
+	struct {
+		void (*routine)(const void *parameter);
+		const void *parameter;
+		uint32_t count;
+	} msi[MSI_VECTORS];
+	uint32_t irq_count, msi_spurious, err_cor, err_nfat, err_fat, intx[4];
+	uint32_t last_isr0, last_payload;
 	int64_t link_up_ms;
 };
 
@@ -441,6 +467,158 @@ static void rp_write(const struct device *dev, unsigned int reg, uint32_t v)
 	wr(dev, off, v);
 }
 
+
+/* ------------------------------------------------------------------------ */
+/* Interrupts: MSI receiver, error messages, INTx                            */
+
+/*
+ * MSIs are memory writes to the doorbell address; the controller takes
+ * them out of the inbound stream, sets bit (data & 31) in MSI_STATUS and
+ * raises ISR0.MSI_PENDING. One GIC SPI for everything.
+ */
+static void advk_rc_isr(const struct device *dev)
+{
+	struct advk_rc_data *data = dev->data;
+	uint32_t host = rd(dev, HOST_INT_STATUS);
+	uint32_t isr0 = rd(dev, ISR0) & ~rd(dev, ISR0_MASK);
+	uint32_t isr1 = rd(dev, ISR1) & ~rd(dev, ISR1_MASK);
+
+	data->irq_count++;
+	data->last_isr0 = isr0;
+
+	if ((isr0 & ISR0_MSI_PENDING) != 0) {
+		uint32_t st = rd(dev, MSI_STATUS) & ~rd(dev, MSI_MASK);
+
+		data->last_payload = rd(dev, MSI_PAYLOAD);
+		wr(dev, MSI_STATUS, st);
+		while (st != 0) {
+			int v = find_lsb_set(st) - 1;
+
+			st &= ~BIT(v);
+			data->msi[v].count++;
+			if (data->msi[v].routine != NULL) {
+				data->msi[v].routine(data->msi[v].parameter);
+			} else {
+				data->msi_spurious++;
+			}
+		}
+	}
+	if ((isr0 & ISR0_CORR_ERR) != 0) {
+		data->err_cor++;
+	}
+	if ((isr0 & ISR0_NFAT_ERR) != 0) {
+		data->err_nfat++;
+	}
+	if ((isr0 & ISR0_FAT_ERR) != 0) {
+		data->err_fat++;
+	}
+	for (int i = 0; i < 4; i++) {
+		if ((isr0 & ISR0_INTX_ASSERT(i)) != 0) {
+			data->intx[i]++;
+		}
+	}
+
+	wr(dev, ISR0, isr0);
+	wr(dev, ISR1, isr1);
+	wr(dev, HOST_INT_STATUS, host);
+}
+
+static void irq_setup(const struct device *dev)
+{
+	const struct advk_rc_config *cfg = dev->config;
+	struct advk_rc_data *data = dev->data;
+	uint64_t db = k_mem_phys_addr(&data->msi_doorbell);
+
+	wr(dev, MSI_ADDR_LO, (uint32_t)db);
+	wr(dev, MSI_ADDR_HI, (uint32_t)(db >> 32));
+	wr(dev, MSI_MASK, ~data->msi_used);
+	wr(dev, MSI_STATUS, UINT32_MAX);
+	rmw(dev, CTRL2, CTRL2_MSI_EN, CTRL2_MSI_EN);
+
+	/* MSI, error messages and INTx assertions; nothing from ISR1 */
+	wr(dev, ISR0, UINT32_MAX);
+	wr(dev, ISR1, UINT32_MAX);
+	wr(dev, ISR0_MASK, (uint32_t)~(ISR0_MSI_PENDING | ISR0_ERR_MASK | ISR0_INTX_MASK));
+	wr(dev, ISR1_MASK, UINT32_MAX);
+	wr(dev, HOST_INT_STATUS, UINT32_MAX);
+	wr(dev, HOST_INT_MASK, (uint32_t)~HOST_INT_CORE);
+
+	cfg->irq_config(dev);
+}
+
+#if defined(CONFIG_PCIE_MSI)
+static uint8_t advk_rc_msi_device_setup(const struct device *dev, unsigned int priority,
+					msi_vector_t *vectors, uint8_t n_vector)
+{
+	struct advk_rc_data *data = dev->data;
+	uint64_t db = k_mem_phys_addr(&data->msi_doorbell);
+	uint8_t n = 0;
+
+	if (!data->active) {
+		return 0;
+	}
+	for (int v = 0; v < MSI_VECTORS && n < n_vector; v++) {
+		if ((data->msi_used & BIT(v)) != 0) {
+			continue;
+		}
+		data->msi_used |= BIT(v);
+		vectors[n].arch.irq = v;
+		vectors[n].arch.address = (uint32_t)db;
+		vectors[n].arch.eventid = v;
+		vectors[n].arch.priority = priority;
+		n++;
+	}
+	wr(dev, MSI_MASK, ~data->msi_used);
+	return n;
+}
+
+static bool advk_rc_msi_vector_connect(const struct device *dev, msi_vector_t *vector,
+				       void (*routine)(const void *parameter),
+				       const void *parameter, uint32_t flags)
+{
+	struct advk_rc_data *data = dev->data;
+	unsigned int v = vector->arch.eventid;
+
+	ARG_UNUSED(flags);
+
+	if (v >= MSI_VECTORS || (data->msi_used & BIT(v)) == 0) {
+		return false;
+	}
+	data->msi[v].parameter = parameter;
+	data->msi[v].routine = routine;
+	return true;
+}
+#endif
+
+/* For in-driver users (shell tests): a free vector, its doorbell and data */
+static int advk_rc_msi_alloc(const struct device *dev, void (*routine)(const void *),
+			     const void *parameter, uint32_t *addr, uint16_t *msg)
+{
+	struct advk_rc_data *data = dev->data;
+
+	for (int v = MSI_VECTORS - 1; v >= 0; v--) {
+		if ((data->msi_used & BIT(v)) == 0) {
+			data->msi_used |= BIT(v);
+			data->msi[v].routine = routine;
+			data->msi[v].parameter = parameter;
+			*addr = (uint32_t)k_mem_phys_addr(&data->msi_doorbell);
+			*msg = v;
+			wr(dev, MSI_MASK, ~data->msi_used);
+			return v;
+		}
+	}
+	return -ENOSPC;
+}
+
+static void advk_rc_msi_free(const struct device *dev, int v)
+{
+	struct advk_rc_data *data = dev->data;
+
+	data->msi[v].routine = NULL;
+	data->msi_used &= ~BIT(v);
+	wr(dev, MSI_MASK, ~data->msi_used);
+}
+
 /* ------------------------------------------------------------------------ */
 /* pcie_ctrl API                                                             */
 
@@ -580,6 +758,10 @@ static DEVICE_API(pcie_ctrl, advk_rc_api) = {
 	.region_allocate = advk_rc_region_allocate,
 	.region_get_allocate_base = advk_rc_region_get_allocate_base,
 	.region_translate = advk_rc_region_translate,
+#if defined(CONFIG_PCIE_MSI)
+	.msi_device_setup = advk_rc_msi_device_setup,
+	.msi_vector_connect = advk_rc_msi_vector_connect,
+#endif
 };
 
 /* ------------------------------------------------------------------------ */
@@ -878,6 +1060,7 @@ static int advk_rc_init(const struct device *dev)
 	if (ret != 0) {
 		return ret;
 	}
+	irq_setup(dev);
 
 	/* PCIE1_RESETn as GPIO: PERST# is ours, asserted until training */
 	if (cfg->pcfg != NULL) {
@@ -961,6 +1144,37 @@ static int cmd_rc_status(const struct shell *sh, size_t argc, char **argv)
 				    rd(dev, OB_WIN(w, 0x10)), rd(dev, OB_WIN(w, 0x18)));
 		}
 	}
+	return 0;
+}
+
+
+static int cmd_rc_irq(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = RC_DEV;
+	struct advk_rc_data *data = dev->data;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (!rc_active(sh)) {
+		return -ENODEV;
+	}
+	shell_print(sh, "irqs %u, last isr0 %08x; now isr0 %08x mask %08x, isr1 %08x, host %08x",
+		    data->irq_count, data->last_isr0, rd(dev, ISR0), rd(dev, ISR0_MASK),
+		    rd(dev, ISR1), rd(dev, HOST_INT_STATUS));
+	shell_print(sh, "MSI: doorbell 0x%llx, used %08x, mask %08x, status %08x, payload %08x "
+			"(last %08x), spurious %u",
+		    (unsigned long long)k_mem_phys_addr(&data->msi_doorbell), data->msi_used,
+		    rd(dev, MSI_MASK), rd(dev, MSI_STATUS), rd(dev, MSI_PAYLOAD),
+		    data->last_payload, data->msi_spurious);
+	for (int v = 0; v < MSI_VECTORS; v++) {
+		if (data->msi[v].count != 0 || (data->msi_used & BIT(v)) != 0) {
+			shell_print(sh, "  vector %2d: %u%s", v, data->msi[v].count,
+				    data->msi[v].routine != NULL ? "" : " (no handler)");
+		}
+	}
+	shell_print(sh, "error messages: cor %u nonfatal %u fatal %u; INTx a %u b %u c %u d %u",
+		    data->err_cor, data->err_nfat, data->err_fat, data->intx[0], data->intx[1],
+		    data->intx[2], data->intx[3]);
 	return 0;
 }
 
@@ -1108,6 +1322,7 @@ struct nv_ctx {
 	mm_reg_t bar;
 	uint32_t stride;
 	uint32_t to_ms;
+	bool cache;
 	struct nv_q admin, io;
 };
 
@@ -1150,7 +1365,9 @@ static int nv_cmd(struct nv_ctx *c, struct nv_q *q, struct nv_sqe *cmd, uint32_t
 
 	cmd->dw0 = (cmd->dw0 & 0xffff) | ((uint32_t)cid << 16);
 	q->sq[q->tail] = *cmd;
-	sys_cache_data_flush_range(&q->sq[q->tail], sizeof(*cmd));
+	if (c->cache) {
+		sys_cache_data_flush_range(&q->sq[q->tail], sizeof(*cmd));
+	}
 	q->tail = (q->tail + 1) % NV_QSIZE;
 	barrier_dsync_fence_full();
 	sys_write32(q->tail, c->bar + q->sq_db);
@@ -1158,7 +1375,9 @@ static int nv_cmd(struct nv_ctx *c, struct nv_q *q, struct nv_sqe *cmd, uint32_t
 	t0 = k_uptime_get();
 	e = &q->cq[q->head];
 	while (true) {
-		sys_cache_data_invd_range(e, sizeof(*e));
+		if (c->cache) {
+			sys_cache_data_invd_range(e, sizeof(*e));
+		}
 		if ((e->status & 1) == q->phase) {
 			break;
 		}
@@ -1204,15 +1423,91 @@ static int nv_identify(struct nv_ctx *c, uint32_t cns, uint32_t nsid)
 	sys_cache_data_flush_and_invd_range(nv_buf, sizeof(nv_buf));
 	int st = nv_cmd(c, &c->admin, &cmd, NULL);
 
-	sys_cache_data_invd_range(nv_buf, sizeof(nv_buf));
+	if (c->cache) {
+		sys_cache_data_invd_range(nv_buf, sizeof(nv_buf));
+	}
 	return st;
+}
+
+
+static atomic_t nv_msi_count;
+
+static void nv_msi_handler(const void *arg)
+{
+	ARG_UNUSED(arg);
+	atomic_inc(&nv_msi_count);
+}
+
+/* MSI-X entry 0 of the device to one of our vectors; returns the vector */
+static int nv_msix_on(struct nv_ctx *c, const struct device *dev, pcie_bdf_t bdf,
+		      uint64_t bar_phys, uint32_t *cap_out)
+{
+	uint32_t cap = advk_rc_conf_read(dev, bdf, PCIE_CONF_CAPPTR) & 0xfc;
+	uint32_t tbl, addr;
+	uint16_t msg;
+	uint8_t *va;
+	int v;
+
+	for (int ttl = 48; cap >= 0x40 && ttl > 0; ttl--) {
+		uint32_t w = advk_rc_conf_read(dev, bdf, cap >> 2);
+
+		if ((w & 0xff) == 0x11) {
+			break;
+		}
+		cap = (w >> 8) & 0xfc;
+	}
+	if (cap < 0x40) {
+		shell_error(c->sh, "no MSI-X capability");
+		return -ENODEV;
+	}
+	tbl = advk_rc_conf_read(dev, bdf, (cap >> 2) + 1);
+	if ((tbl & 0x7) != 0) {
+		shell_error(c->sh, "MSI-X table in BAR%u, only BAR0 handled", tbl & 0x7);
+		return -ENOTSUP;
+	}
+	v = advk_rc_msi_alloc(dev, nv_msi_handler, NULL, &addr, &msg);
+	if (v < 0) {
+		return v;
+	}
+	tbl &= ~0x7U;
+	k_mem_map_phys_bare(&va, (bar_phys + tbl) & ~0xfffULL, 0x1000,
+			    K_MEM_CACHE_NONE | K_MEM_PERM_RW);
+	volatile uint32_t *e = (volatile uint32_t *)(va + ((bar_phys + tbl) & 0xfff));
+
+	e[0] = addr;
+	e[1] = 0;
+	e[2] = msg;
+	e[3] = 0; /* unmasked */
+	k_mem_unmap_phys_bare(va, 0x1000);
+
+	/* MSI-X enable, function mask off */
+	advk_rc_conf_write(dev, bdf, cap >> 2,
+			   (advk_rc_conf_read(dev, bdf, cap >> 2) & ~BIT(30)) | BIT(31));
+	*cap_out = cap;
+	atomic_set(&nv_msi_count, 0);
+	shell_print(c->sh, "MSI-X cap 0x%02x, table BAR0+0x%x, entry 0 -> vector %d (addr 0x%x)",
+		    cap, tbl, v, addr);
+	return v;
 }
 
 static int cmd_rc_nvme(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = RC_DEV;
-	struct nv_ctx c = {.sh = sh};
-	unsigned long long lba = argc > 2 ? strtoull(argv[2], NULL, 0) : 0;
+	struct nv_ctx c = {.sh = sh, .cache = true};
+	unsigned long long lba = 0;
+	bool use_msi = false;
+	int msi_v = -1;
+	uint32_t msix_cap = 0;
+
+	for (size_t i = 2; i < argc; i++) {
+		if (strcmp(argv[i], "msi") == 0) {
+			use_msi = true;
+		} else if (strcmp(argv[i], "nocache") == 0) {
+			c.cache = false;
+		} else {
+			lba = strtoull(argv[i], NULL, 0);
+		}
+	}
 	uint64_t cap, nsze, bar_phys;
 	uint32_t lo, hi, bs, flbas;
 	pcie_bdf_t bdf;
@@ -1272,6 +1567,15 @@ static int cmd_rc_nvme(const struct shell *sh, size_t argc, char **argv)
 	}
 	shell_print(sh, "enabled, admin queues at 0x%llx / 0x%llx",
 		    (unsigned long long)nv_pa(nv_asq), (unsigned long long)nv_pa(nv_acq));
+	if (!c.cache) {
+		shell_print(sh, "no cache maintenance on queues and data (coherency test)");
+	}
+	if (use_msi) {
+		msi_v = nv_msix_on(&c, dev, bdf, bar_phys, &msix_cap);
+		if (msi_v < 0) {
+			goto out;
+		}
+	}
 
 	st = nv_identify(&c, 1, 0);
 	if (st != 0) {
@@ -1321,7 +1625,9 @@ static int cmd_rc_nvme(const struct shell *sh, size_t argc, char **argv)
 	int64_t t0 = k_uptime_get();
 
 	st = nv_cmd(&c, &c.io, &rd, NULL);
-	sys_cache_data_invd_range(nv_buf, sizeof(nv_buf));
+	if (c.cache) {
+		sys_cache_data_invd_range(nv_buf, sizeof(nv_buf));
+	}
 	if (st != 0) {
 		shell_error(sh, "read LBA %llu: status 0x%x", lba, st);
 		goto out;
@@ -1331,7 +1637,17 @@ static int cmd_rc_nvme(const struct shell *sh, size_t argc, char **argv)
 	if (bs >= 512 && nv_buf[510] == 0x55 && nv_buf[511] == 0xaa) {
 		shell_print(sh, "  55aa at 510: MBR / protective MBR");
 	}
+	if (use_msi) {
+		/* the admin completions interrupt on vector 0; I/O queue 1 has IEN off */
+		shell_print(sh, "MSI-X: %ld interrupts for %u admin commands",
+			    (long)atomic_get(&nv_msi_count), (unsigned int)c.admin.cid);
+	}
 out:
+	if (msi_v >= 0) {
+		advk_rc_conf_write(dev, bdf, msix_cap >> 2,
+				   advk_rc_conf_read(dev, bdf, msix_cap >> 2) & ~BIT(31));
+		advk_rc_msi_free(dev, msi_v);
+	}
 	k_mem_unmap_phys_bare((uint8_t *)c.bar, 0x2000);
 	return 0;
 }
@@ -1443,6 +1759,7 @@ static int cmd_rc_start(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "setup failed, see above");
 		return -EIO;
 	}
+	irq_setup(RC_DEV);
 	data->active = true;
 	shell_print(sh, "%s", advk_rc_link_start(RC_DEV) ? "link up" : "no link");
 	advk_rc_scan(RC_DEV);
@@ -1453,14 +1770,16 @@ SHELL_STATIC_SUBCMD_SET_CREATE(rc_cmds,
 	SHELL_CMD_ARG(status, NULL, "Link, root port windows, PIO errors, outbound windows",
 		      cmd_rc_status, 1, 0),
 	SHELL_CMD_ARG(retrain, NULL, "PERST# pulse, train, rescan", cmd_rc_retrain, 1, 0),
+	SHELL_CMD_ARG(irq, NULL, "Interrupt counters, MSI receiver state", cmd_rc_irq, 1, 0),
 	SHELL_CMD_ARG(scan, NULL, "Enumerate again (bus numbers, BARs, windows)", cmd_rc_scan,
 		      1, 0),
 	SHELL_CMD_ARG(cfg, NULL, "<b:d.f> [<off> [<len>]] Dump config space", cmd_rc_cfg, 2, 2),
 	SHELL_CMD_ARG(cfgw, NULL, "<b:d.f> <off> <val> Write a config dword", cmd_rc_cfgw, 4,
 		      0),
 	IF_ENABLED(CONFIG_PCIE_AARDVARK_NVME_SHELL,
-		   (SHELL_CMD_ARG(nvme, NULL, "<b:d.f> [<lba>] Polled NVMe test: identify, read "
-				  "one block", cmd_rc_nvme, 2, 1),))
+		   (SHELL_CMD_ARG(nvme, NULL, "<b:d.f> [<lba>] [msi] [nocache] Polled NVMe test: "
+				  "identify, read one block; msi: count MSI-X of the admin queue; "
+				  "nocache: no cache maintenance", cmd_rc_nvme, 2, 3),))
 	SHELL_CMD_ARG(probe, NULL, "Do the core registers answer?", cmd_rc_probe, 1, 0),
 	SHELL_CMD_ARG(pinctrl, NULL, "Apply the default pin state", cmd_rc_pinctrl, 1, 0),
 	SHELL_CMD_ARG(clkout, NULL, "on|off COMPHY 100 MHz output", cmd_rc_clkout, 2, 0),
@@ -1478,6 +1797,16 @@ SHELL_CMD_REGISTER(advk_rc, &rc_cmds, "Armada 3700 PCIe root complex", NULL);
 
 #define ADVK_RC_DEFINE(n)                                                                          \
 	IF_ENABLED(ADVK_RC_HAS_PINCTRL(n), (PINCTRL_DT_INST_DEFINE(n);))                          \
+	static void advk_rc_irq_config_##n(const struct device *dev)                               \
+	{                                                                                          \
+		static bool done;                                                                  \
+		if (!done) {                                                                       \
+			IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority), advk_rc_isr,         \
+				    DEVICE_DT_INST_GET(n), DT_INST_IRQ(n, flags));                 \
+			done = true;                                                               \
+		}                                                                                  \
+		irq_enable(DT_INST_IRQN(n));                                                       \
+	}                                                                                          \
 	static const struct pcie_ctrl_config advk_rc_ctrl_cfg_##n = {                              \
 		.cfg_addr = DT_INST_REG_ADDR_BY_NAME(n, ctrl),                                     \
 		.cfg_size = DT_INST_REG_SIZE_BY_NAME(n, ctrl),                                     \
@@ -1498,6 +1827,7 @@ SHELL_CMD_REGISTER(advk_rc, &rc_cmds, "Armada 3700 PCIe root complex", NULL);
 		.comphy_invert = DT_INST_PROP(n, marvell_comphy_polarity_invert),                  \
 		.num_lanes = DT_INST_PROP_OR(n, num_lanes, 1),                                     \
 		.max_speed = DT_INST_PROP_OR(n, max_link_speed, 2),                                \
+		.irq_config = advk_rc_irq_config_##n,                                              \
 	};                                                                                         \
 	static struct advk_rc_data advk_rc_data_##n;                                               \
 	DEVICE_DT_INST_DEFINE(n, advk_rc_init, NULL, &advk_rc_data_##n, &advk_rc_cfg_##n,          \

@@ -497,6 +497,14 @@ bool arch_pcie_msi_vector_connect(msi_vector_t *vector,
 				  const void *parameter,
 				  uint32_t flags)
 {
+	const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_pcie_controller));
+	const struct pcie_ctrl_driver_api *api = DEVICE_API_GET(pcie_ctrl, dev);
+
+	/* the controller receives MSIs itself and demultiplexes them */
+	if (api->msi_vector_connect != NULL) {
+		return api->msi_vector_connect(dev, vector, routine, parameter, flags);
+	}
+
 	if (irq_connect_dynamic(vector->arch.irq, vector->arch.priority, routine,
 				parameter, flags) != vector->arch.irq) {
 		return false;
