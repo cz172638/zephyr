@@ -131,6 +131,14 @@ config SOC_ARMADA37XX_DAP_SHELL
 	  table (DAP-Lite or full CoreSight with funnels/TMC/TPIU);
 	  'dap rd': raw reads of the debug APB.
 
+config SOC_ARMADA37XX_REGS_SHELL
+	bool "regs shell (abort-safe register range reads)"
+	depends on SOC_ARMADA3720 && SHELL && MMU
+	default y
+	help
+	  'regs scan|nz|dump <pa> <len>' and 'regs clk': map an internal
+	  register range and read it, an external abort shows as ????????.
+
 config SOC_ARMADA37XX_CCI_SHELL
 	bool "CCI-400 shell"
 	depends on SOC_ARMADA3720 && SHELL
