@@ -26,6 +26,7 @@
 #include <zephyr/toolchain.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
+#include <zephyr/drivers/pcie/aardvark.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epf.h>
 #ifdef CONFIG_MMU
@@ -736,6 +737,12 @@ static int epf_test_init(const struct device *dev)
 	d->dev = dev;
 
 	if (!device_is_ready(cfg->epc)) {
+#if defined(CONFIG_PCIE_AARDVARK_MODE)
+		if (advk_mode_get() == ADVK_MODE_RC) {
+			LOG_INF("%s: root complex mode, function off", dev->name);
+			return -ENODEV;
+		}
+#endif
 		LOG_ERR("controller %s not ready", cfg->epc->name);
 		return -ENODEV;
 	}
