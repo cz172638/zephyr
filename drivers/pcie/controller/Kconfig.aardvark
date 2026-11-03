@@ -29,6 +29,13 @@ config PCIE_AARDVARK_LINK_TIMEOUT_MS
 	int "Wait for the link [ms]"
 	default 1000
 
+config PCIE_AARDVARK_TRACE_INIT
+	bool "printk checkpoints in the init"
+	help
+	  Prints the core control registers after every bring-up step. A
+	  step whose registers abort is reported and stops the init
+	  in any case.
+
 config PCIE_AARDVARK_SHELL
 	bool "Shell (advk_rc)"
 	default y

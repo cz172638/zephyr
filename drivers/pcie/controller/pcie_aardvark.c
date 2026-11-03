@@ -42,6 +42,8 @@
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/util.h>
 
+#include <soc.h>
+
 LOG_MODULE_REGISTER(pcie_aardvark, LOG_LEVEL_INF);
 
 /* Controller's own config space */
@@ -208,6 +210,26 @@ static bool link_up(const struct device *dev)
 	uint8_t s = ltssm(dev);
 
 	return s >= LTSSM_L0 && s < LTSSM_DISABLED;
+}
+
+/*
+ * Bring-up checkpoints: probe-read a few controller registers (a bus
+ * error is caught, not fatal) and print them. False when the core
+ * registers abort: the init stops there instead of taking the system down.
+ */
+static bool step(const struct device *dev, const char *what)
+{
+	uintptr_t base = REG(dev);
+	uint32_t c0 = 0, cc = 0, id = 0;
+	int e0 = a3700_probe_read32(base + CTRL0, &c0);
+	int e1 = a3700_probe_read32(base + CTRL_CONFIG, &cc);
+	int e2 = a3700_probe_read32(base + 0x0, &id);
+
+	if (IS_ENABLED(CONFIG_PCIE_AARDVARK_TRACE_INIT) || e0 != 0 || e1 != 0 || e2 != 0) {
+		printk("advk_rc: %-24s ctrl0 %s%08x  ctrl_config %s%08x  id %s%08x\n", what,
+		       e0 ? "ABORT " : "", c0, e1 ? "ABORT " : "", cc, e2 ? "ABORT " : "", id);
+	}
+	return e0 == 0 && e1 == 0 && e2 == 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -641,19 +663,32 @@ static int ob_setup(const struct device *dev)
 	return 0;
 }
 
-static void hw_setup(const struct device *dev)
+static int hw_setup(const struct device *dev)
 {
 	const struct advk_rc_config *cfg = dev->config;
 	uint32_t lanes = cfg->num_lanes >= 4 ? 2 : (cfg->num_lanes == 2 ? 1 : 0);
 	uint32_t gen = cfg->max_speed >= 3 ? 2 : (cfg->max_speed == 2 ? 1 : 0);
 
+	if (!step(dev, "mapped")) {
+		return -EIO;
+	}
 	/* Direct mode, reference clock driven to the slot */
 	rmw(dev, CTRL_CONFIG, CTRL_MODE_CMD, 0);
+	if (!step(dev, "direct mode")) {
+		return -EIO;
+	}
 	rmw(dev, REF_CLK, REF_CLK_TX | REF_CLK_RX, REF_CLK_TX);
+	if (!step(dev, "refclk tx")) {
+		return -EIO;
+	}
 
 	/* Root complex, lanes, speed, training off */
 	rmw(dev, CTRL0, CTRL0_IS_RC | CTRL0_LANES_MASK | CTRL0_GEN_MASK | CTRL0_LINK_TRAIN,
 	    CTRL0_IS_RC | FIELD_PREP(CTRL0_LANES_MASK, lanes) | FIELD_PREP(CTRL0_GEN_MASK, gen));
+
+	if (!step(dev, "root complex")) {
+		return -EIO;
+	}
 
 	/* Vendor (and subsystem vendor) ID: erratum, reset value is wrong */
 	wr(dev, LMI_VENDOR_ID, ((uint32_t)VENDOR_MARVELL << 16) | VENDOR_MARVELL);
@@ -686,6 +721,7 @@ static void hw_setup(const struct device *dev)
 	wr(dev, HOST_INT_STATUS, UINT32_MAX);
 	wr(dev, PIO_ISRM, UINT32_MAX);
 	wr(dev, PIO_ISR, UINT32_MAX);
+	return step(dev, "setup done") ? 0 : -EIO;
 }
 
 static void perst(const struct device *dev, bool assert)
@@ -703,10 +739,16 @@ static bool advk_rc_link_start(const struct device *dev)
 	struct advk_rc_data *data = dev->data;
 	int64_t t0;
 
+	if (!step(dev, "link start")) {
+		return false;
+	}
 	rmw(dev, CTRL0, CTRL0_LINK_TRAIN, 0);
 	perst(dev, true);
 	k_msleep(CONFIG_PCIE_AARDVARK_PERST_MS);
 	perst(dev, false);
+	if (!step(dev, "perst released")) {
+		return false;
+	}
 
 	rmw(dev, CTRL0, CTRL0_LINK_TRAIN, CTRL0_LINK_TRAIN);
 	t0 = k_uptime_get();
@@ -770,28 +812,16 @@ static int advk_rc_init(const struct device *dev)
 		return ret;
 	}
 
-	/* PCIE1_RESETn as GPIO: PERST# is ours */
-	if (cfg->pcfg != NULL) {
-		ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
-		if (ret != 0) {
-			return ret;
-		}
-	}
-	if (cfg->perst.port != NULL) {
-		if (!gpio_is_ready_dt(&cfg->perst)) {
-			return -ENODEV;
-		}
-		ret = gpio_pin_configure_dt(&cfg->perst, GPIO_OUTPUT_ACTIVE); /* in reset */
-		if (ret != 0) {
-			return ret;
-		}
-	}
 	if (!device_is_ready(cfg->clk_dev)) {
 		return -ENODEV;
 	}
 	ret = clock_control_on(cfg->clk_dev, cfg->clk_id);
 	if (ret != 0) {
 		return ret;
+	}
+	device_map(&data->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
+	if (!step(dev, "clock on")) {
+		return -EIO;
 	}
 
 	data->comphy_ret = comphy_power_on(dev);
@@ -803,13 +833,41 @@ static int advk_rc_init(const struct device *dev)
 	/* the slot needs the 100 MHz reference (an endpoint build turns it off) */
 	sys_write16(sys_read16(data->comphy + COMPHY_MISC_CTRL0) | COMPHY_CLK100M_EN,
 		    data->comphy + COMPHY_MISC_CTRL0);
+	if (!step(dev, "comphy")) {
+		return -EIO;
+	}
 
-	device_map(&data->reg, cfg->reg_phys, cfg->reg_size, K_MEM_CACHE_NONE);
-
-	hw_setup(dev);
+	ret = hw_setup(dev);
+	if (ret != 0) {
+		LOG_ERR("%s: controller registers abort, root complex not started", dev->name);
+		return ret;
+	}
 	ret = ob_setup(dev);
 	if (ret != 0) {
 		return ret;
+	}
+
+	/* PCIE1_RESETn as GPIO: PERST# is ours, asserted until training */
+	if (cfg->pcfg != NULL) {
+		ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
+		if (ret != 0) {
+			return ret;
+		}
+	}
+	if (!step(dev, "pinctrl")) {
+		return -EIO;
+	}
+	if (cfg->perst.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->perst)) {
+			return -ENODEV;
+		}
+		ret = gpio_pin_configure_dt(&cfg->perst, GPIO_OUTPUT_ACTIVE);
+		if (ret != 0) {
+			return ret;
+		}
+	}
+	if (!step(dev, "perst asserted")) {
+		return -EIO;
 	}
 	data->active = true;
 
