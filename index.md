@@ -5,3 +5,5 @@
 - [Boot chains and plan: Zephyr/ThreadX on all cores of the SBCs](sbc-boot-matrix.md)
 - [ESPRESSObin (Armada 3720): TF-A BL33, NETA + 88E6341](espressobin.md)
 - [ESPRESSObin (Armada 3720): PCIe Aardvark as endpoint (BARs, MSI-X, XOR DMA, DSN, AER)](espressobin-pcie-ep.md)
+- [ESPRESSObin (Armada 3720): PCIe config space and LMI, root complex vs. endpoint](espressobin-pcie-rc-vs-ep.md)
+- [ESPRESSObin (Armada 3720): SATA, USB 2.0/3.0, OTG and the USB-SATA bridge](espressobin-sata-usb.md)
