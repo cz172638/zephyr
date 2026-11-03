@@ -397,6 +397,13 @@ static void rp_write(const struct device *dev, unsigned int reg, uint32_t v)
 	case PCIE_CONF_CMDSTAT * 4:
 		rp->cmd = v & (PCIE_CONF_CMDSTAT_IO | PCIE_CONF_CMDSTAT_MEM |
 			       PCIE_CONF_CMDSTAT_MASTER | BIT(6) | BIT(8) | BIT(10));
+		/*
+		 * Bus master of a root port gates requests from below toward
+		 * memory (device DMA): the hardware's own bit has to follow
+		 * (as Linux does since "PCI: aardvark: Fix support for bus
+		 * mastering bit on emulated bridge").
+		 */
+		rmw(dev, CFG_CMD_STATUS, PCIE_CONF_CMDSTAT_MASTER, v & PCIE_CONF_CMDSTAT_MASTER);
 		return;
 	case 0x18:
 		rp->bus = v & 0x00ffffff;
