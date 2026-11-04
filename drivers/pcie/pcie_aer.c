@@ -79,7 +79,7 @@
 #define WALK_DEPTH 8
 
 const char *const pcie_aer_ue_name[32] = {
-	[4] = "DLP", [5] = "SDES", [12] = "TLP", [13] = "FCP", [14] = "CmpltTO",
+	[0] = "TrainErr", [4] = "DLP", [5] = "SDES", [12] = "TLP", [13] = "FCP", [14] = "CmpltTO",
 	[15] = "CmpltAbrt", [16] = "UnxCmplt", [17] = "RxOF", [18] = "MalfTLP", [19] = "ECRC",
 	[20] = "UnsupReq", [21] = "ACSViol", [22] = "UncorrIntErr", [23] = "BlockedTLP",
 	[24] = "AtomicOpBlocked", [25] = "TLPBlockedErr", [26] = "PoisonTLPBlocked",
