@@ -130,28 +130,41 @@ static bool cpu_decodes(uintptr_t pa)
 }
 
 /*
- * Before touching an address: only when the CPU decodes it. The debug
- * APB (0x80000000) is not on the CPU's bus on the Armada 3700, for the
- * secure world neither (A3700_DBG_SIP reads hang in BL31 the same way):
- * only the DAP's APB-AP reaches it, i.e. JTAG/SWD. "dap smc on" still
- * forces the TF-A path, for an SoC or firmware that maps it.
+ * Before touching an address. Undecoded addresses hang instead of
+ * aborting. The debug APB (0x80000000) is decoded (CPU window 4, target
+ * 3) but every read of it hangs, from BL31 (A3700_DBG_SIP) too and with
+ * the debug clocks on: the debug power domain is presumably off, and
+ * only the DAP (CDBGPWRUPREQ over JTAG/SWD) turns it on. So the window
+ * is read only after "dap force on", e.g. with OpenOCD attached.
  */
+static bool dbg_force;
+
 static int dbg_reachable(const struct shell *sh, uintptr_t pa)
 {
-	if (cpu_decodes(pa)) {
-		return 0;
+	bool in_dbg = pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE;
+
+	if (in_dbg && !dbg_force) {
+		shell_error(sh, "0x%lx is in the debug APB: reads hang while its power domain is "
+			    "off (power it up through the DAP, then \"dap force on\")",
+			    (unsigned long)pa);
+		return -EFAULT;
 	}
-	if (use_smc && pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE) {
-		shell_warn(sh, "0x%lx not decoded for the CPU, reading through TF-A as asked "
-			   "(dap smc on); on the Armada 3700 this hangs", (unsigned long)pa);
-		return 0;
+	if (!cpu_decodes(pa) && !(in_dbg && use_smc)) {
+		shell_error(sh, "0x%lx is not decoded for the CPU (dap win): a read would hang",
+			    (unsigned long)pa);
+		return -EFAULT;
 	}
-	shell_error(sh, "0x%lx is not decoded for the CPU (dap win): a read would hang%s",
-		    (unsigned long)pa,
-		    pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE
-			    ? "; the debug APB is reachable only through the DAP (JTAG/SWD)"
-			    : "");
-	return -EFAULT;
+	return 0;
+}
+
+static int cmd_dap_force(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc > 1) {
+		dbg_force = strcmp(argv[1], "on") == 0;
+	}
+	shell_print(sh, "debug APB reads %s", dbg_force ? "allowed (they hang if it is powered "
+				 "down)" : "refused");
+	return 0;
 }
 
 /* the four ID bytes of a CIDR/PIDR group */
@@ -406,6 +419,10 @@ static int cmd_dap_scan(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "step: multiple of 0x1000, end > start");
 		return -EINVAL;
 	}
+	if (start < DBG_BASE + DBG_SIZE && end > DBG_BASE &&
+	    dbg_reachable(sh, MAX(start, DBG_BASE)) != 0) {
+		return -EFAULT;
+	}
 
 	for (uintptr_t base = start; base < end; base += SCAN_CHUNK) {
 		struct win w;
@@ -565,6 +582,8 @@ static int cmd_dap_smc(const struct shell *sh, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(dap_cmds,
+	SHELL_CMD_ARG(force, NULL, "allow debug APB reads (after the DAP powered it up): [on|off]",
+		      cmd_dap_force, 1, 1),
 	SHELL_CMD_ARG(smc, NULL, "debug window reads through TF-A: [on|off]", cmd_dap_smc, 1, 1),
 	SHELL_CMD_ARG(clk, NULL, "debug/trace clocks: [on]", cmd_dap_clk, 1, 1),
 	SHELL_CMD_ARG(info, NULL, "ROM table walk: [rom table address], default the SoC's debug APB", cmd_dap_info, 1, 1),
