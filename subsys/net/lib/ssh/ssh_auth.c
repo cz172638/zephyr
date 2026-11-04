@@ -13,6 +13,18 @@ LOG_MODULE_DECLARE(ssh, CONFIG_SSH_LOG_LEVEL);
 #define ZEPHYR_SSH_BANNER CONFIG_SSH_DEFAULT_WELCOME_BANNER ZEPHYR_SSH_VERSION
 
 #ifdef CONFIG_SSH_SERVER
+#include <zephyr/net/ssh/server.h>
+
+/* Set by the application (ssh_server_set_banner_text), e.g. board identity */
+static const char *banner_text;
+
+void ssh_server_set_banner_text(const char *text)
+{
+	banner_text = text;
+}
+#endif
+
+#ifdef CONFIG_SSH_SERVER
 static int send_userauth_failure(struct ssh_transport *transport, bool partial_success);
 static int send_userauth_success(struct ssh_transport *transport);
 static int send_userauth_banner(struct ssh_transport *transport);
@@ -522,8 +534,15 @@ static int send_userauth_banner(struct ssh_transport *transport)
 #else
 #define INFO_BANNER ""
 #endif
-	static const struct ssh_string zephyr_ssh_banner =
-		SSH_STRING_LITERAL(ZEPHYR_SSH_BANNER INFO_BANNER);
+	static char text[384];
+	struct ssh_string zephyr_ssh_banner;
+	int n;
+
+	n = snprintk(text, sizeof(text), "%s%s%s%s", ZEPHYR_SSH_BANNER,
+		     banner_text != NULL ? "\n" : "", banner_text != NULL ? banner_text : "",
+		     INFO_BANNER);
+	zephyr_ssh_banner.data = (const uint8_t *)text;
+	zephyr_ssh_banner.len = MIN((uint32_t)n, sizeof(text) - 1);
 	static const struct ssh_string language_tag = SSH_STRING_LITERAL("");
 	int ret;
 

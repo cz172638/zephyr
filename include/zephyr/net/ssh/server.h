@@ -103,6 +103,17 @@ struct ssh_server *ssh_server_instance(int instance);
 
 
 /**
+ * @brief Extra text for the user authentication banner.
+ *
+ * Shown after the welcome line and before the info banner, e.g. the
+ * board and its serial number. The string has to stay valid; NULL
+ * removes it.
+ *
+ * @param text Banner text (may contain newlines) or NULL.
+ */
+void ssh_server_set_banner_text(const char *text);
+
+/**
  * @brief Start an SSH server
  *
  * @param sshd Pointer to the SSH server instance to start.

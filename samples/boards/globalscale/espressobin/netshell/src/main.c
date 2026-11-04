@@ -34,6 +34,7 @@
 #include <zephyr/net/ethernet_mgmt.h>
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/ssh/keygen.h>
+#include <zephyr/net/ssh/server.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/shell/shell.h>
@@ -447,6 +448,41 @@ static int host_key(void)
 	return 0;
 }
 
+/*
+ * SSH banner: board and serial number (the SPI NOR factory unique ID, the
+ * one MAC addresses and the PCIe DSN are derived from), then the MAC of the
+ * default interface.
+ */
+static char banner[160];
+
+static void banner_set(void)
+{
+	int n = snprintf(banner, sizeof(banner), "Board %s", CONFIG_BOARD_TARGET);
+	struct net_if *iface = net_if_get_default();
+
+#if DT_HAS_COMPAT_STATUS_OKAY(jedec_spi_nor) && defined(CONFIG_FLASH_EX_OP_ENABLED)
+	const struct device *nor = DEVICE_DT_GET_ANY(jedec_spi_nor);
+	uint8_t uid[SPI_NOR_UID_LEN];
+
+	if (device_is_ready(nor) && flash_ex_op(nor, FLASH_EX_OP_SPI_NOR_READ_UID, 0, uid) == 0) {
+		n += snprintf(banner + n, sizeof(banner) - n, ", serial ");
+		for (int i = 0; i < SPI_NOR_UID_LEN && n < (int)sizeof(banner) - 3; i++) {
+			n += snprintf(banner + n, sizeof(banner) - n, "%02x", uid[i]);
+		}
+	}
+#endif
+	if (iface != NULL && net_if_get_link_addr(iface)->len == NET_ETH_ADDR_LEN &&
+	    n < (int)sizeof(banner)) {
+		const uint8_t *m = net_if_get_link_addr(iface)->addr;
+
+		(void)snprintf(banner + n, sizeof(banner) - n,
+			       ", MAC %02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4],
+			       m[5]);
+	}
+	ssh_server_set_banner_text(banner);
+	LOG_INF("%s", banner);
+}
+
 int main(void)
 {
 	char cmd[128];
@@ -490,6 +526,7 @@ int main(void)
 		return 0;
 	}
 
+	banner_set();
 	n = snprintf(cmd, sizeof(cmd), "net sshd start -i 0 -k %d", HOST_KEY_IDX);
 
 #if defined(NETSHELL_HAVE_AUTHORIZED_KEY)
