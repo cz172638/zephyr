@@ -1,0 +1,73 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  NVMe endpoint function: the endpoint as an NVM Express controller (class
+  01:08:02 whatever class-code says), one namespace per Zephyr disk. Modelled on the Linux NVMe PCI
+  endpoint target (drivers/nvme/target/pci-epf.c); the host's stock nvme
+  driver binds to it. BAR0 carries the controller registers, the
+  doorbells and the MSI-X table. Child of a PCIe endpoint controller node.
+
+  Example, two SATA disks (port, port multiplier port 1):
+
+    nvme0: function@0 {
+            compatible = "zephyr,pcie-epf-nvme";
+            reg = <0>;
+            vendor-id = <0x11ab>;
+            device-id = <0x0100>;
+            memory-region = <&pcie_bar_mem>;
+            disk-names = "sata0", "sata1";
+    };
+
+compatible: "zephyr,pcie-epf-nvme"
+
+include: pcie-epf.yaml
+
+properties:
+  memory-region:
+    type: phandle
+    description: |
+      Memory backing BAR0 (registers, doorbells, MSI-X table), reachable by
+      the PCIe controller. Without it BAR0 is a static buffer.
+
+  disk-names:
+    type: string-array
+    required: true
+    description: |
+      disk_access names; entry n is namespace n + 1. A disk that is not
+      there is an inactive namespace and is looked for again on the next
+      identify.
+
+  serial-number:
+    type: string
+    description: |
+      Controller serial number (20 characters at most). Default: the
+      Device Serial Number of the function in hex.
+
+  model-number:
+    type: string
+    default: "Zephyr NVMe endpoint"
+    description: Model number (40 characters at most).
+
+  io-queues:
+    type: int
+    default: 4
+    description: |
+      I/O submission/completion queue pairs offered, at most
+      CONFIG_PCIE_EPF_NVME_MAX_IO_QUEUES. Commands run one at a time, more
+      queues only save the host its locking.
+
+  max-queue-entries:
+    type: int
+    default: 256
+    description: CAP.MQES + 1, the largest queue the host may create.
+
+  msix-interrupts:
+    type: int
+    default: 16
+    description: MSI-X vectors, table in BAR0 (0 = no MSI-X).
+
+  msi-interrupts:
+    type: int
+    default: 16
+    description: MSI vectors (0 = no MSI).

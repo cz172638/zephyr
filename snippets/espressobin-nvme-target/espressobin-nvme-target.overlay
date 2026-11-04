@@ -1,0 +1,35 @@
+/*
+ * ESPRESSObin: NVMe endpoint function on the Aardvark controller, the
+ * SATA disks as namespaces. Applied on top of espressobin-pcie-ep (BAR
+ * carveout, link setup) and espressobin-sata (AHCI).
+ *
+ * Host (Linux): the stock nvme driver binds by class code 01:08:02;
+ * nvme list, nvme id-ctrl /dev/nvme0, /dev/nvme0n1 = sata0.
+ */
+
+/delete-node/ &epf_test0;
+
+&pcie_ep {
+	nvme_epf0: function@0 {
+		compatible = "zephyr,pcie-epf-nvme";
+		reg = <0>;
+		/* Marvell / A3720 IDs; class 01:08:02 is set by the function */
+		vendor-id = <0x11ab>;
+		device-id = <0x0100>;
+		subsystem-vendor-id = <0x11ab>;
+		subsystem-id = <0x0100>;
+		/*
+		 * BAR0 (registers, doorbells, MSI-X table) in the carveout of
+		 * espressobin-pcie-ep; the IO decode window lets the host
+		 * reach nothing else.
+		 */
+		memory-region = <&pcie_bar_mem>;
+		/* NSID 1 = the SATA port, 2..5 = port multiplier ports 1..4 */
+		disk-names = "sata0", "sata1", "sata2", "sata3", "sata4";
+		model-number = "ESPRESSObin SATA NVMe";
+		io-queues = <4>;
+		max-queue-entries = <256>;
+		msix-interrupts = <16>;
+		msi-interrupts = <16>;
+	};
+};
