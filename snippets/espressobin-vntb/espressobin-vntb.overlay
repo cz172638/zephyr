@@ -8,10 +8,13 @@
  * peer_db, link, mw_trans, peer_mw) or ntb_transport + ntb_netdev.
  */
 
-/delete-node/ &epf_test0;
+/*
+ * The test function stays: "pcie controller ep function" picks which one
+ * binds (saved), this snippet makes "vntb" the default.
+ */
 
 &pcie_ep {
-	vntb0: function@0 {
+	vntb0: vntb@0 {
 		compatible = "zephyr,pcie-epf-vntb";
 		reg = <0>;
 		vendor-id = <0x1957>;

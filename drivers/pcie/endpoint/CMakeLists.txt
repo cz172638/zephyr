@@ -10,7 +10,7 @@ zephyr_library_sources_ifdef(
   pcie_ep_iproc_msi.c
   )
 
-zephyr_library_sources_ifdef(CONFIG_PCIE_EPC pcie_epc_core.c)
+zephyr_library_sources_ifdef(CONFIG_PCIE_EPC pcie_epc_core.c pcie_epf_select.c)
 zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_DSN_SETTINGS pcie_epc_dsn.c)
 zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_AARDVARK
   pcie_epc_aardvark.c

@@ -7,10 +7,13 @@
  * nvme list, nvme id-ctrl /dev/nvme0, /dev/nvme0n1 = sata0.
  */
 
-/delete-node/ &epf_test0;
+/*
+ * The test function stays: "pcie controller ep function" picks which one
+ * binds (saved), this snippet makes "nvme" the default.
+ */
 
 &pcie_ep {
-	nvme_epf0: function@0 {
+	nvme_epf0: nvme@0 {
 		compatible = "zephyr,pcie-epf-nvme";
 		reg = <0>;
 		/* Marvell / A3720 IDs; class 01:08:02 is set by the function */

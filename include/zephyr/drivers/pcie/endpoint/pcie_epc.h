@@ -384,6 +384,32 @@ static inline uint64_t pcie_epc_cpu_to_axi(const struct device *dev, uintptr_t c
 }
 
 /**
+ * @brief Should the endpoint function @p name bind this boot?
+ *
+ * Several functions may be described for one function number; the one
+ * selected (setting pcie/ep/func, see pcie_epf_select(), else
+ * CONFIG_PCIE_EPF_DEFAULT_FUNCTION, else the first one asking) binds and
+ * the others stay off. Call it first in the function's init; the name is
+ * also recorded for pcie_epf_names().
+ */
+bool pcie_epf_selected(const char *name);
+
+/** @brief The selection in force (saved or default), NULL for "first one". */
+const char *pcie_epf_selection(void);
+
+/** @brief The function that bound this boot, NULL if none. */
+const char *pcie_epf_bound(void);
+
+/** @brief Names of the functions in this build; returns their number. */
+size_t pcie_epf_names(const char **names, size_t max);
+
+/** @brief Save the function for the next boot (must be one of pcie_epf_names()). */
+int pcie_epf_select(const char *name);
+
+/** @brief Drop the saved selection (back to the default). */
+int pcie_epf_select_reset(void);
+
+/**
  * @brief Claim function number @p func for an EPF.
  *
  * @retval -EBUSY function already claimed

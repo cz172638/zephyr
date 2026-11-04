@@ -935,6 +935,11 @@ static int epf_vntb_init(const struct device *dev)
 	k_mutex_init(&d->lock);
 	k_sem_init(&d->kick, 0, 1);
 
+	/* another function may be the one selected for this boot */
+	if (!pcie_epf_selected("vntb")) {
+		return -ENODEV;
+	}
+
 	if (!device_is_ready(cfg->epc)) {
 #if defined(CONFIG_PCIE_AARDVARK_MODE)
 		if (advk_mode_get() == ADVK_MODE_RC) {
@@ -951,6 +956,7 @@ static int epf_vntb_init(const struct device *dev)
 			MAX_DB_COUNT, MAX_MWS);
 		return -EINVAL;
 	}
+
 
 	ret = pcie_epc_claim_function(cfg->epc, cfg->func);
 	if (ret != 0) {

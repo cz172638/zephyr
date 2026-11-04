@@ -775,6 +775,55 @@ static int cmd_ctrl_dsn(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_SUBCMD_SET_CREATE(pcie_debug_cmds, (pcie_debug));
 
+#if defined(CONFIG_PCIE_EPC)
+#include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
+
+/* pcie controller ep function [<name>|reset]: the endpoint function for the next boot */
+static int cmd_ep_function(const struct shell *sh, size_t argc, char **argv)
+{
+	const char *names[8];
+	size_t n = pcie_epf_names(names, ARRAY_SIZE(names));
+	const char *sel;
+	int ret;
+
+	if (argc > 1) {
+		if (strcmp(argv[1], "reset") == 0) {
+			ret = pcie_epf_select_reset();
+		} else {
+			ret = pcie_epf_select(argv[1]);
+			if (ret == -ENOENT) {
+				shell_error(sh, "no function \"%s\" in this build", argv[1]);
+				return ret;
+			}
+		}
+		if (ret != 0) {
+			shell_error(sh, "not saved (%d)", ret);
+			return ret;
+		}
+		shell_print(sh, "saved, takes effect after a reboot (kernel reboot cold)");
+	}
+	sel = pcie_epf_selection();
+	shell_print(sh, "this boot: %s, selected: %s", pcie_epf_bound() ? pcie_epf_bound() : "none",
+		    sel != NULL ? sel : "(first in devicetree)");
+	for (size_t i = 0; i < MIN(n, ARRAY_SIZE(names)); i++) {
+		bool b = pcie_epf_bound() != NULL && strcmp(names[i], pcie_epf_bound()) == 0;
+		bool s2 = sel != NULL && strcmp(names[i], sel) == 0;
+
+		shell_print(sh, "  %c %s%s", b ? '*' : ' ', names[i], s2 ? "  (selected)" : "");
+	}
+	if (n == 0) {
+		shell_print(sh, "  no endpoint functions (root complex mode, or none in this build)");
+	}
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ep_cmds,
+	SHELL_CMD_ARG(function, NULL,
+		      "[<name>|reset] Endpoint function: list, or save the one for the next boot",
+		      cmd_ep_function, 1, 1),
+	SHELL_SUBCMD_SET_END);
+#endif
+
 SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ctrl_cmds,
 	SHELL_CMD_ARG(info, NULL, "Controllers, role, link and state of the active one",
 		      cmd_ctrl_info, 1, 0),
@@ -787,6 +836,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ctrl_cmds,
 		      "[<b:d.f>] [<vid:did> [<svid:ssid> [<class>]]] | [<b:d.f>] reset  "
 		      "Identity (RC: root port, EP: function), saved",
 		      cmd_ctrl_id, 1, 4),
+#if defined(CONFIG_PCIE_EPC)
+	SHELL_CMD(ep, &pcie_ep_cmds, "Endpoint settings: function", NULL),
+#endif
 	SHELL_CMD_ARG(dsn, NULL, "[<b:d.f>] [<hex> | uid | new | reset]  Device Serial Number, saved",
 		      cmd_ctrl_dsn, 1, 2),
 	SHELL_SUBCMD_SET_END);

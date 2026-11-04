@@ -36,6 +36,15 @@ config PCIE_EPC_INIT_PRIORITY
 	  POST_KERNEL priority of EPC controller drivers. Must be after the
 	  firmware (TISCI), power domain and syscon drivers.
 
+config PCIE_EPF_DEFAULT_FUNCTION
+	string "Endpoint function that binds when none is saved"
+	default ""
+	help
+	  Name of the function ("test", "nvme", "vntb", ...) that claims the
+	  controller when the setting pcie/ep/func is not set; empty: the
+	  first function in devicetree order. "pcie controller ep function"
+	  saves another one for the next boot.
+
 config PCIE_EPF_INIT_PRIORITY
 	int "Endpoint function init priority"
 	default 75

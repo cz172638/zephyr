@@ -737,6 +737,11 @@ static int epf_test_init(const struct device *dev)
 
 	d->dev = dev;
 
+	/* another function may be the one selected for this boot */
+	if (!pcie_epf_selected("test")) {
+		return -ENODEV;
+	}
+
 	if (!device_is_ready(cfg->epc)) {
 #if defined(CONFIG_PCIE_AARDVARK_MODE)
 		if (advk_mode_get() == ADVK_MODE_RC) {
@@ -747,6 +752,7 @@ static int epf_test_init(const struct device *dev)
 		LOG_ERR("controller %s not ready", cfg->epc->name);
 		return -ENODEV;
 	}
+
 
 	ret = pcie_epc_claim_function(cfg->epc, cfg->func);
 	if (ret != 0) {
