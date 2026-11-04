@@ -857,7 +857,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cap_cmds,
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cmds,
-	SHELL_CMD_ARG(controller, &pcie_ctrl_cmds, "Controller: info, mode, link, scan, irq, id, dsn",
+	SHELL_CMD_ARG(controller, &pcie_ctrl_cmds, "Controller: info, mode, link, scan, irq, id, ep, dsn",
 		      cmd_ctrl_info, 1, 0),
 	SHELL_CMD_ARG(ls, NULL, "[-v] Devices (EP: the local functions)", cmd_ls, 1, 1),
 	SHELL_CMD_ARG(cfg, &pcie_cfg_cmds, "<b:d.f> [<off> [<len>]] Dump config space", cmd_cfg,

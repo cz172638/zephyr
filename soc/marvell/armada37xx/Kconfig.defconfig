@@ -6,9 +6,14 @@ if SOC_ARMADA3720
 config NUM_IRQS
 	default 192
 
-# Generic timer runs from the 25 MHz crystal
+# Generic timer: the rate is what the boot firmware put in CNTFRQ_EL0
+# (TF-A COUNTER_FREQUENCY, 12.5 MHz on Armada 3700); the compile-time
+# value below is only the fallback and was wrong by 2x (25 MHz crystal).
+configdefault TIMER_READS_ITS_FREQUENCY_AT_RUNTIME
+	default y if ARM_ARCH_TIMER
+
 config SYS_CLOCK_HW_CYCLES_PER_SEC
-	default 25000000
+	default 12500000
 
 config MP_MAX_NUM_CPUS
 	default 2 if SMP
