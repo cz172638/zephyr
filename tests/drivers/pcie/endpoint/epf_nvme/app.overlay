@@ -1,0 +1,40 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	fake_epc: pcie-ep-fake {
+		compatible = "zephyr,pcie-epc-fake";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		nvme0: function@0 {
+			compatible = "zephyr,pcie-epf-nvme";
+			reg = <0>;
+			vendor-id = <0x11ab>;
+			device-id = <0x0100>;
+			/* replaced by the NVMe class */
+			class-code = <0xff0000>;
+			/* the third one does not exist: inactive namespace */
+			disk-names = "RAM0", "RAM1", "NONE";
+			io-queues = <3>;
+			max-queue-entries = <64>;
+			msix-interrupts = <8>;
+		};
+	};
+
+	ramdisk0 {
+		compatible = "zephyr,ram-disk";
+		disk-name = "RAM0";
+		sector-size = <512>;
+		sector-count = <512>;
+	};
+
+	ramdisk1 {
+		compatible = "zephyr,ram-disk";
+		disk-name = "RAM1";
+		sector-size = <4096>;
+		sector-count = <32>;
+	};
+};

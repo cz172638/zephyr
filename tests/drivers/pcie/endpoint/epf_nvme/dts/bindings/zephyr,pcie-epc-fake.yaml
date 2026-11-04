@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: Test endpoint controller, host memory simulated in RAM
+
+compatible: "zephyr,pcie-epc-fake"
+
+include: pcie-ep-controller.yaml
