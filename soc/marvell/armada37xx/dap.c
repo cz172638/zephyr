@@ -438,6 +438,190 @@ static int cmd_dap_info(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * dap find [<start> <end>]: look for a CoreSight ROM table without hanging.
+ * Only addresses that abort (no window: the decoder answers with an
+ * error) or that sit in the internal register space are read; enabled
+ * CPU windows (DRAM, PCIe, the 0x80000000 window that hangs ...) and the
+ * devicetree's own peripherals are skipped. One read of CIDR1 per 4 KiB
+ * page; the full CIDR only where it can be CoreSight. Aborts are summed
+ * up per run with the IO decoders' error status (0xd000c0f8 + p * 0x100,
+ * bits 1:0, write 1 to clear). The ROM table is read-only: its format is
+ * the answer.
+ */
+#define DEC_ERR_STS(p) (0xd000c000UL + (p) * 0x100 + 0xf8)
+#define INTREG_BASE    0xd0000000UL
+#define INTREG_END     0xd2000000UL
+
+#define DT_SKIP_REG(node, i)                                                                       \
+	COND_CODE_1(DT_REG_HAS_IDX(node, i),                                                       \
+		    ({DT_REG_ADDR_BY_IDX(node, i), DT_REG_SIZE_BY_IDX(node, i)},), ())
+#define DT_SKIP_NODE(node) DT_SKIP_REG(node, 0) DT_SKIP_REG(node, 1) DT_SKIP_REG(node, 2)
+
+static const struct {
+	uintptr_t base;
+	size_t size;
+} dt_skip[] = {DT_FOREACH_CHILD(DT_PATH(soc), DT_SKIP_NODE)};
+
+static bool dt_known(uintptr_t pa)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(dt_skip); i++) {
+		if (pa >= dt_skip[i].base && pa - dt_skip[i].base < dt_skip[i].size) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* the enabled IO windows, read once per find */
+static struct {
+	uintptr_t base;
+	uint64_t size;
+} win_cache[5];
+static int win_n;
+
+static void windows_load(void)
+{
+	struct win w;
+
+	win_n = 0;
+	win_map(&w, CPU_DEC_BASE, 0x100);
+	for (int wn = 0; wn < 5; wn++) {
+		uint32_t ctrl, size, base;
+
+		if (a3700_probe_read32((uintptr_t)w.va + 0x10 * wn, &ctrl) == 0 &&
+		    a3700_probe_read32((uintptr_t)w.va + 0x10 * wn + 4, &size) == 0 &&
+		    a3700_probe_read32((uintptr_t)w.va + 0x10 * wn + 8, &base) == 0 &&
+		    (ctrl & 1) != 0) {
+			win_cache[win_n].base = (uintptr_t)base << 16;
+			win_cache[win_n].size = ((uint64_t)size + 1) << 16;
+			win_n++;
+		}
+	}
+	win_unmap(&w);
+}
+
+/* an enabled IO window covers pa */
+static bool in_window(uintptr_t pa)
+{
+	for (int i = 0; i < win_n; i++) {
+		if (pa >= win_cache[i].base && pa - win_cache[i].base < win_cache[i].size) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static uint32_t dec_err_take(void)
+{
+	struct win w;
+	uint32_t mask = 0;
+
+	win_map(&w, DEC_ERR_STS(0), 0x1000);
+	for (int p = 0; p < 16; p++) {
+		uint32_t v;
+		uintptr_t va = (uintptr_t)w.va + (DEC_ERR_STS(p) - DEC_ERR_STS(0));
+
+		if (p == 6 || a3700_probe_read32(va, &v) != 0) {
+			continue;
+		}
+		if ((v & 0x3) != 0) {
+			mask |= BIT(p);
+			sys_write32(0x3, va);
+		}
+	}
+	win_unmap(&w);
+	return mask;
+}
+
+static int cmd_dap_find(const struct shell *sh, size_t argc, char **argv)
+{
+	uint64_t start = argc > 1 ? strtoull(argv[1], NULL, 0) : 0x40000000ULL;
+	uint64_t end = argc > 2 ? strtoull(argv[2], NULL, 0) : 0x100000000ULL;
+	enum { NONE, SKIP, ABORT, READ } run = NONE;
+	uint64_t run_start = 0;
+	uint32_t hits = 0, roms = 0, faults0 = probe_faults;
+
+	start = ROUND_DOWN(start, 0x1000);
+	if (end <= start) {
+		shell_error(sh, "find [<start> <end>]");
+		return -EINVAL;
+	}
+	windows_load();
+	(void)dec_err_take();
+	for (uint64_t pa = start; pa <= end; pa += 0x1000) {
+		int now = NONE;
+		uint32_t c1 = 0;
+
+		if (pa < end) {
+			bool intreg = pa >= INTREG_BASE && pa < INTREG_END;
+
+			if ((pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE && !dbg_force) ||
+			    dt_known((uintptr_t)pa) || (!intreg && in_window((uintptr_t)pa))) {
+				now = SKIP;
+			} else {
+				struct win w;
+
+				win_map(&w, (uintptr_t)pa, 0x1000);
+				now = a3700_probe_read32((uintptr_t)w.va + CS_CIDR0 + 4, &c1) == 0
+					      ? READ : ABORT;
+				if (now == READ && (c1 & 0x0f) == 0 &&
+				    ((c1 >> 4) == CID_CLASS_ROM || (c1 >> 4) == CID_CLASS_CS)) {
+					uint32_t c0 = 0, c2 = 0, c3 = 0;
+
+					(void)a3700_probe_read32((uintptr_t)w.va + CS_CIDR0, &c0);
+					(void)a3700_probe_read32((uintptr_t)w.va + CS_CIDR0 + 8, &c2);
+					(void)a3700_probe_read32((uintptr_t)w.va + CS_CIDR0 + 12, &c3);
+					if ((c0 & 0xff) == 0x0d && (c2 & 0xff) == 0x05 &&
+					    (c3 & 0xff) == 0xb1) {
+						uint8_t cls;
+						uint16_t part, des;
+						uint32_t da, di, dt;
+
+						hits++;
+						win_unmap(&w);
+						(void)describe(sh, (uintptr_t)pa, 0, &cls, &part, &des,
+							       &da, &di, &dt);
+						if (cls == CID_CLASS_ROM ||
+						    (da & 0xffff) == 0x0af7) {
+							roms++;
+							shell_print(sh, "  -> ROM table: dap info 0x%llx",
+								    (unsigned long long)pa);
+						}
+						goto next;
+					}
+				}
+				win_unmap(&w);
+			}
+		}
+next:
+		if (now != run) {
+			if (run == ABORT) {
+				uint32_t dec = dec_err_take();
+
+				shell_print(sh, "%09llx-%09llx  aborts (decoder errors 0x%04x)",
+					    (unsigned long long)run_start,
+					    (unsigned long long)pa - 1, dec);
+			} else if (run == READ) {
+				shell_print(sh, "%09llx-%09llx  reads", (unsigned long long)run_start,
+					    (unsigned long long)pa - 1);
+			} else if (run == SKIP) {
+				shell_print(sh, "%09llx-%09llx  skipped (window / devicetree / "
+					    "0x80000000)", (unsigned long long)run_start,
+					    (unsigned long long)pa - 1);
+			}
+			run = now;
+			run_start = pa;
+		}
+		if ((pa & 0x0fffffff) == 0) {
+			k_yield();
+		}
+	}
+	shell_print(sh, "%u CoreSight components, %u ROM tables, %u aborts", hits, roms,
+		    probe_faults - faults0);
+	return 0;
+}
+
 static int cmd_dap_scan(const struct shell *sh, size_t argc, char **argv)
 {
 	uintptr_t start = ROUND_DOWN((uintptr_t)strtoull(argv[1], NULL, 0), 0x1000);
@@ -621,6 +805,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(dap_cmds,
 	SHELL_CMD_ARG(smc, NULL, "debug window reads through TF-A: [on|off]", cmd_dap_smc, 1, 1),
 	SHELL_CMD_ARG(clk, NULL, "debug/trace clocks: [on]", cmd_dap_clk, 1, 1),
 	SHELL_CMD_ARG(info, NULL, "ROM table walk: [rom table address], default the SoC's debug APB", cmd_dap_info, 1, 1),
+	SHELL_CMD_ARG(find, NULL,
+		      "look for the ROM table without hanging: [<start> <end>], default "
+		      "0x40000000-0x100000000", cmd_dap_find, 1, 2),
 	SHELL_CMD_ARG(scan, NULL, "CoreSight IDs: <start> <end> [step]", cmd_dap_scan, 3, 1),
 	SHELL_CMD_ARG(win, NULL, "CPU address decode windows", cmd_dap_win, 1, 0),
 	SHELL_CMD_ARG(rd, NULL, "probing read: <addr> [words]", cmd_dap_rd, 2, 1),
