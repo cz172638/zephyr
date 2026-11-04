@@ -486,13 +486,42 @@ static int cmd_comphy(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-/* Read-only probe of the GSCR space: registers that answer and are not zero */
+/* Read-only probe of one register space: registers that answer and are not zero */
+static void pm_scan_port(const struct shell *sh, const struct device *dev, uint8_t port,
+			 uint64_t from, uint64_t to)
+{
+	uint32_t ok = 0, nz = 0, err = 0;
+
+	for (uint64_t r = from; r <= to; r++) {
+		uint32_t v;
+
+		if (ahci_pm_read(dev, port, (uint16_t)r, &v) != 0) {
+			err++;
+			continue;
+		}
+		ok++;
+		if (v != 0) {
+			shell_print(sh, "%s[%4llu] 0x%03llx: %08x", port == PMP_CTRL ? "GSCR" : "PSCR",
+				    (unsigned long long)r, (unsigned long long)r, v);
+			nz++;
+		}
+	}
+	shell_print(sh, "%s %u: %u answered (%u non-zero), %u rejected",
+		    port == PMP_CTRL ? "GSCR, port" : "PSCR, port", port, ok, nz, err);
+}
+
+/*
+ * ata debug pm scan [-p <port>|all] [<from> [<to>]]: port 15 (default) is
+ * the GSCR space, 0..n-1 a port's PSCR, all = every port then GSCR.
+ * Default range 0-255 (JMB321 decodes 8 bits and aliases above).
+ */
 static int cmd_pm_scan(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = get_dev(sh);
 	struct ahci_data *data;
-	uint64_t from = 0, to = 2047;
-	uint32_t ok = 0, nz = 0, err = 0;
+	uint64_t from = 0, to = 255, port = PMP_CTRL, v;
+	bool all = false;
+	int pos = 0;
 
 	if (dev == NULL) {
 		return -ENODEV;
@@ -502,27 +531,39 @@ static int cmd_pm_scan(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "no port multiplier");
 		return -ENODEV;
 	}
-	if ((argc > 1 && parse_u64(sh, argv[1], &from) != 0) ||
-	    (argc > 2 && parse_u64(sh, argv[2], &to) != 0) || from > to || to > 0xffff) {
+	for (size_t i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+			i++;
+			if (strcmp(argv[i], "all") == 0) {
+				all = true;
+			} else if (parse_u64(sh, argv[i], &port) != 0 || port > 15) {
+				return -EINVAL;
+			}
+			continue;
+		}
+		if (parse_u64(sh, argv[i], &v) != 0) {
+			return -EINVAL;
+		}
+		if (pos++ == 0) {
+			from = v;
+			to = MAX(to, from);
+		} else {
+			to = v;
+		}
+	}
+	if (from > to || to > 0xffff) {
 		return -EINVAL;
 	}
 	k_mutex_lock(&data->lock, K_FOREVER);
-	for (uint64_t r = from; r <= to; r++) {
-		uint32_t v;
-
-		if (ahci_pm_read(dev, PMP_CTRL, (uint16_t)r, &v) != 0) {
-			err++;
-			continue;
+	if (all) {
+		for (uint8_t p = 0; p < data->pm_ports; p++) {
+			pm_scan_port(sh, dev, p, from, to);
 		}
-		ok++;
-		if (v != 0) {
-			shell_print(sh, "GSCR[%4llu] 0x%03llx: %08x", (unsigned long long)r,
-				    (unsigned long long)r, v);
-			nz++;
-		}
+		pm_scan_port(sh, dev, PMP_CTRL, from, to);
+	} else {
+		pm_scan_port(sh, dev, (uint8_t)port, from, to);
 	}
 	k_mutex_unlock(&data->lock);
-	shell_print(sh, "%u answered (%u non-zero), %u rejected", ok, nz, err);
 	return 0;
 }
 
@@ -563,8 +604,10 @@ static int cmd_pm_rd(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(ata_pm_cmds,
 	SHELL_CMD_ARG(show, NULL, "GSCR and every port's SStatus/SError/SControl", cmd_pm, 1, 0),
-	SHELL_CMD_ARG(scan, NULL, "[<from> [<to>]] Read-only scan of the GSCR space (0-2047)",
-		      cmd_pm_scan, 1, 2),
+	SHELL_CMD_ARG(scan, NULL,
+		      "[-p <port>|all] [<from> [<to>]] Read-only scan: port 15 GSCR (default), "
+		      "0..n-1 that port's PSCR, all every port; range 0-255 by default",
+		      cmd_pm_scan, 1, 4),
 	SHELL_CMD_ARG(rd, NULL, "<port> <reg> Read one register (port 15: GSCR, else PSCR)",
 		      cmd_pm_rd, 3, 0),
 	SHELL_SUBCMD_SET_END);
