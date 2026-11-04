@@ -1,0 +1,12 @@
+name: espressobin-nvme-target
+description: |
+  ESPRESSObin as an NVMe drive on the mini-PCIe slot: the endpoint
+  (espressobin-pcie-ep) runs the NVMe function instead of the test
+  function, one namespace per SATA disk (espressobin-sata): sata0 on the
+  port, sata1..sata4 behind a port multiplier. Give it after both:
+  -S espressobin-pcie-ep -S espressobin-sata -S espressobin-nvme-target
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: espressobin-nvme-target.overlay
+      EXTRA_CONF_FILE: espressobin-nvme-target.conf
