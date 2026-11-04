@@ -486,6 +486,89 @@ static int cmd_comphy(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* Read-only probe of the GSCR space: registers that answer and are not zero */
+static int cmd_pm_scan(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = get_dev(sh);
+	struct ahci_data *data;
+	uint64_t from = 0, to = 2047;
+	uint32_t ok = 0, nz = 0, err = 0;
+
+	if (dev == NULL) {
+		return -ENODEV;
+	}
+	data = dev->data;
+	if (!data->pm) {
+		shell_error(sh, "no port multiplier");
+		return -ENODEV;
+	}
+	if ((argc > 1 && parse_u64(sh, argv[1], &from) != 0) ||
+	    (argc > 2 && parse_u64(sh, argv[2], &to) != 0) || from > to || to > 0xffff) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&data->lock, K_FOREVER);
+	for (uint64_t r = from; r <= to; r++) {
+		uint32_t v;
+
+		if (ahci_pm_read(dev, PMP_CTRL, (uint16_t)r, &v) != 0) {
+			err++;
+			continue;
+		}
+		ok++;
+		if (v != 0) {
+			shell_print(sh, "GSCR[%4llu] 0x%03llx: %08x", (unsigned long long)r,
+				    (unsigned long long)r, v);
+			nz++;
+		}
+	}
+	k_mutex_unlock(&data->lock);
+	shell_print(sh, "%u answered (%u non-zero), %u rejected", ok, nz, err);
+	return 0;
+}
+
+/* One register: GSCR (port 15) or a port's PSCR, read only */
+static int cmd_pm_rd(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = get_dev(sh);
+	struct ahci_data *data;
+	uint64_t port, reg;
+	uint32_t v;
+	int ret;
+
+	ARG_UNUSED(argc);
+	if (dev == NULL) {
+		return -ENODEV;
+	}
+	data = dev->data;
+	if (!data->pm) {
+		shell_error(sh, "no port multiplier");
+		return -ENODEV;
+	}
+	if (parse_u64(sh, argv[1], &port) != 0 || parse_u64(sh, argv[2], &reg) != 0 ||
+	    port > 15 || reg > 0xffff) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = ahci_pm_read(dev, (uint8_t)port, (uint16_t)reg, &v);
+	k_mutex_unlock(&data->lock);
+	if (ret != 0) {
+		shell_error(sh, "port %llu reg %llu: %d", (unsigned long long)port,
+			    (unsigned long long)reg, ret);
+		return ret;
+	}
+	shell_print(sh, "port %llu reg %llu: %08x", (unsigned long long)port,
+		    (unsigned long long)reg, v);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(ata_pm_cmds,
+	SHELL_CMD_ARG(show, NULL, "GSCR and every port's SStatus/SError/SControl", cmd_pm, 1, 0),
+	SHELL_CMD_ARG(scan, NULL, "[<from> [<to>]] Read-only scan of the GSCR space (0-2047)",
+		      cmd_pm_scan, 1, 2),
+	SHELL_CMD_ARG(rd, NULL, "<port> <reg> Read one register (port 15: GSCR, else PSCR)",
+		      cmd_pm_rd, 3, 0),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(ata_debug_cmds,
 	SHELL_CMD_ARG(regs, NULL, "Controller registers 0x000-0x17f", cmd_regs, 1, 0),
 	SHELL_CMD_ARG(phy, NULL,
@@ -493,6 +576,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ata_debug_cmds,
 		      "SATA block at 0x200", cmd_phy, 2, 1),
 	SHELL_CMD_ARG(comphy, NULL, "COMPHY lane 2 SATA power on again (SiP)", cmd_comphy, 1,
 		      0),
+	SHELL_CMD(pm, &ata_pm_cmds, "Port multiplier registers (read only)", cmd_pm),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(ata_cmds,
@@ -507,8 +591,6 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ata_cmds,
 		      cmd_read, 2, 1),
 	SHELL_CMD_ARG(power, NULL, "[standby|idle] Check or set the power mode", cmd_power, 1,
 		      1),
-	SHELL_CMD_ARG(pm, NULL, "Port multiplier: GSCR and per-port SStatus/SError/SControl",
-		      cmd_pm, 1, 0),
 	SHELL_CMD(debug, &ata_debug_cmds, "Registers, PHY", NULL),
 	SHELL_SUBCMD_SET_END);
 
