@@ -1,0 +1,39 @@
+/*
+ * ESPRESSObin: vNTB endpoint function on the Aardvark controller.
+ * Applied on top of espressobin-pcie-ep (BAR carveout, link setup).
+ *
+ * Host (Linux): ntb_hw_epf binds by 1957:0809, class 05:00 (its i.MX8
+ * entry: config BAR0, doorbells BAR2, window BAR4). Then for example
+ * modprobe ntb_tool (debugfs ntb_tool/<bdf>/: spad, peer_spad, db,
+ * peer_db, link, mw_trans, peer_mw) or ntb_transport + ntb_netdev.
+ */
+
+/delete-node/ &epf_test0;
+
+&pcie_ep {
+	vntb0: function@0 {
+		compatible = "zephyr,pcie-epf-vntb";
+		reg = <0>;
+		vendor-id = <0x1957>;
+		device-id = <0x0809>;
+		subsystem-vendor-id = <0x11ab>;
+		subsystem-id = <0x0100>;
+		/*
+		 * All BARs in the 32 MiB carveout of espressobin-pcie-ep,
+		 * largest first: window 4 MiB at +0, config and doorbells
+		 * 64 KiB each (the outbound window granule) after it.
+		 */
+		memory-region = <&pcie_bar_mem>;
+		ctrl-bar = <0>;
+		db-bar = <2>;
+		mw-bars = <4>;
+		/*
+		 * The host's window of the same size goes through the 16 MiB
+		 * outbound window, next to the MSI doorbell page.
+		 */
+		mw-sizes = <0x400000>;
+		spad-count = <64>;
+		/* link, unused, 6 doorbells; MSI-X table size */
+		db-count = <8>;
+	};
+};

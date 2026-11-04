@@ -223,17 +223,18 @@ int advk_ep_init(const struct device *dev, bool autostart)
 	};
 
 	/*
-	 * BARs 0 and 4: 64-bit memory, sized by set_bar through the LMI BAR
-	 * configuration. BAR2 (I/O at reset) and the expansion ROM BAR are
-	 * switched off; the upper halves of the 64-bit BARs and BAR3 are not
-	 * offered.
+	 * BARs 0, 2 and 4: 64-bit memory, sized by set_bar through the LMI
+	 * BAR configuration. BAR2 is I/O at reset and stays switched off
+	 * until a function asks for it (then 64-bit memory, inbound slot
+	 * 0x5808); the expansion ROM BAR is switched off. The upper halves
+	 * of the 64-bit BARs are not offered.
 	 */
 	ep->bar_cfg0 = advk_rd(ep, ADVK_LMI_BAR_CFG0) &
 		       ~((ADVK_BAR_CFG_EN << ADVK_BAR_CFG_SHIFT(2)) | ADVK_BAR_CFG_ROM_EN);
 	ep->bar_cfg1 = advk_rd(ep, ADVK_LMI_BAR_CFG1);
 	advk_wr(ep, ADVK_LMI_BAR_CFG0, ep->bar_cfg0);
-	ep->features.bar_fixed_64bit = BIT(0) | BIT(4);
-	ep->features.reserved_bar = BIT(1) | BIT(2) | BIT(3) | BIT(5);
+	ep->features.bar_fixed_64bit = BIT(0) | BIT(2) | BIT(4);
+	ep->features.reserved_bar = BIT(1) | BIT(3) | BIT(5);
 	for (int b = 0; b < PCIE_EPC_NUM_BARS; b += 2) {
 		uint32_t f = (ep->bar_cfg0 >> ADVK_BAR_CFG_SHIFT(b)) & ADVK_BAR_CFG_FIELD;
 
@@ -311,13 +312,14 @@ int advk_ep_set_bar(const struct device *dev, uint8_t func, const struct pcie_ep
 	/*
 	 * Size, enable and prefetchable from the LMI BAR configuration; the
 	 * backing store is placed with the inbound translation of the BAR,
-	 * which takes the address bits above the BAR size. BAR0 and BAR4 only.
+	 * which takes the address bits above the BAR size. BAR0, BAR2 and
+	 * BAR4, all 64-bit.
 	 */
 	uint8_t b = bar->barno;
 	size_t hw = MAX((size_t)ADVK_BAR_MIN_SIZE, bar->size);
 	uint32_t field;
 
-	if (b != 0 && b != 4) {
+	if (b != 0 && b != 2 && b != 4) {
 		LOG_ERR("BAR%u is not offered", b);
 		return -EINVAL;
 	}

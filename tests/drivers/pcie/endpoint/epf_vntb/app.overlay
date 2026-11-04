@@ -1,0 +1,26 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	fake_epc: pcie-ep-fake {
+		compatible = "zephyr,pcie-epc-fake";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		vntb0: function@0 {
+			compatible = "zephyr,pcie-epf-vntb";
+			reg = <0>;
+			/* i.MX8 layout of ntb_hw_epf */
+			vendor-id = <0x1957>;
+			device-id = <0x0809>;
+			ctrl-bar = <0>;
+			db-bar = <2>;
+			mw-bars = <4>;
+			mw-sizes = <0x10000>;
+			spad-count = <16>;
+			db-count = <8>;
+		};
+	};
+};
