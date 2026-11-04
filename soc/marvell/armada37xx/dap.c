@@ -5,8 +5,8 @@
  *
  * Looking for the debug infrastructure from the running system.
  *
- * MDRAR_EL1 of the A53 cluster is 0 on the Armada 3720: the debug APB is
- * not announced in the system map. The DAP's APB-AP sees it at
+ * MDRAR_EL1 is deprecated in Armv8 (and 0 on the Armada 3720), so the ROM
+ * table address is the SoC's (CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE). The DAP's APB-AP sees it at
  * 0x80000000 (OpenOCD: CTIs at 0x80820000/0x80920000), the system may
  * map it elsewhere, or not at all. Every read here goes through a probe
  * that turns an external abort into an error, so ranges can be scanned:
@@ -310,22 +310,32 @@ static int cmd_dap_info(const struct shell *sh, size_t argc, char **argv)
 	uintptr_t rom;
 	bool trace;
 
-	shell_print(sh, "MDRAR_EL1 0x%016llx (%s)", mdrar,
-		    (mdrar & 0x3) == 0x3 ? "ROM table address valid" : "no memory mapped ROM table");
+	shell_print(sh, "MDRAR_EL1 0x%016llx (deprecated in Armv8, not used for the address)",
+		    mdrar);
 	shell_print(sh, "DBGAUTHSTATUS 0x%08x: NS invasive %s, NS non-invasive %s, "
 		    "S invasive %s, S non-invasive %s", auth,
 		    (auth & 0x3) == 0x3 ? "on" : "off", ((auth >> 2) & 0x3) == 0x3 ? "on" : "off",
 		    ((auth >> 4) & 0x3) == 0x3 ? "on" : "off",
 		    ((auth >> 6) & 0x3) == 0x3 ? "on" : "off");
 
-	if (argc > 1) {
-		rom = (uintptr_t)strtoull(argv[1], NULL, 0);
-	} else if ((mdrar & 0x3) == 0x3) {
-		rom = (uintptr_t)(mdrar & GENMASK64(47, 12));
-	} else {
-		shell_print(sh, "no ROM table address: 'dap scan' for one, then 'dap info <addr>'");
-		return 0;
+	/* the ROM table where the SoC puts it (debug APB), or the one given */
+	rom = argc > 1 ? (uintptr_t)strtoull(argv[1], NULL, 0)
+		       : (uintptr_t)CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE;
+	if (!use_smc && rom >= DBG_BASE && rom < DBG_BASE + DBG_SIZE) {
+		struct win w;
+		uint32_t v;
+
+		win_map(&w, rom, 0x1000);
+		if (prd(&w, rom + CS_CIDR0, &v) != 0) {
+			/* the debug APB is secure only: through BL31 (A3700_DBG_SIP) */
+			use_smc = true;
+			shell_print(sh, "direct read of 0x%lx aborts: reading through TF-A (dap smc on)",
+				    (unsigned long)rom);
+		}
+		win_unmap(&w);
 	}
+	shell_print(sh, "ROM table at 0x%lx (%s)", (unsigned long)rom,
+		    argc > 1 ? "given" : "CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE");
 
 	walk(sh, rom, 0, &s);
 
@@ -511,7 +521,7 @@ static int cmd_dap_smc(const struct shell *sh, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(dap_cmds,
 	SHELL_CMD_ARG(smc, NULL, "debug window reads through TF-A: [on|off]", cmd_dap_smc, 1, 1),
 	SHELL_CMD_ARG(clk, NULL, "debug/trace clocks: [on]", cmd_dap_clk, 1, 1),
-	SHELL_CMD_ARG(info, NULL, "ROM table walk: [rom table address]", cmd_dap_info, 1, 1),
+	SHELL_CMD_ARG(info, NULL, "ROM table walk: [rom table address], default the SoC's debug APB", cmd_dap_info, 1, 1),
 	SHELL_CMD_ARG(scan, NULL, "CoreSight IDs: <start> <end> [step]", cmd_dap_scan, 3, 1),
 	SHELL_CMD_ARG(win, NULL, "CPU address decode windows", cmd_dap_win, 1, 0),
 	SHELL_CMD_ARG(rd, NULL, "probing read: <addr> [words]", cmd_dap_rd, 2, 1),
