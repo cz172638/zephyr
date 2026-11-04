@@ -8,3 +8,4 @@
 - [ESPRESSObin (Armada 3720): PCIe config space and LMI, root complex vs. endpoint](espressobin-pcie-rc-vs-ep.md)
 - [ESPRESSObin (Armada 3720): SATA, USB 2.0/3.0, OTG and the USB-SATA bridge](espressobin-sata-usb.md)
 - [ESPRESSObin (Armada 3720): NVMe endpoint, SATA disks as NVMe namespaces](espressobin-nvme-target.md)
+- [ESPRESSObin (Armada 3720): vNTB endpoint, NTB between the host and Zephyr](espressobin-vntb.md)
