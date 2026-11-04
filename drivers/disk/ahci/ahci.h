@@ -203,6 +203,8 @@ struct ahci_data {
 	uint32_t irqs;
 	uint32_t cmds;
 	uint32_t errors;
+	uint32_t short_xfers;	/* PRDBC below the length asked for */
+	uint32_t last_prdbc;
 	bool hba_ok;
 	bool link;		/* port 0 link up, devices probed */
 	bool pm;		/* a port multiplier is attached */

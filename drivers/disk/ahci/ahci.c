@@ -240,6 +240,15 @@ static int ahci_issue(const struct device *dev, uint32_t opts, const uint8_t *cf
 		(void)sys_cache_data_invd_range(buf, len);
 	}
 	(void)sys_cache_data_invd_range(data->rfis, 256);
+	/* bytes the HBA actually moved: a short transfer is no success */
+	(void)sys_cache_data_invd_range(hdr, sizeof(*hdr));
+	data->last_prdbc = hdr->prdbc;
+	if (len != 0 && hdr->prdbc != len) {
+		if (data->short_xfers++ < 8) {
+			LOG_WRN("cmd %02x: %u of %zu bytes transferred (PRDBC)", cfis[2], hdr->prdbc,
+				len);
+		}
+	}
 	if (check && ((is & PxIS_ERRORS) != 0 || (ahci_rd(dev, P0(AHCI_PxTFD)) & TFD_ERR) != 0)) {
 		return -EIO;
 	}

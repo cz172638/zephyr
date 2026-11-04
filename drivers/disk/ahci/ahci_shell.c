@@ -177,8 +177,9 @@ static int cmd_info(const struct shell *sh, size_t argc, char **argv)
 		    ahci_rd(dev, P0(AHCI_PxSIG)), ahci_rd(dev, P0(AHCI_PxSERR)),
 		    ahci_rd(dev, P0(AHCI_PxIS)), ahci_rd(dev, P0(AHCI_PxIE)),
 		    ahci_rd(dev, P0(AHCI_PxCI)));
-	shell_print(sh, "        link %s, %u commands, %u errors, %u interrupts",
-		    data->link ? "up" : "down", data->cmds, data->errors, data->irqs);
+	shell_print(sh, "        link %s, %u commands, %u errors, %u short transfers, %u interrupts",
+		    data->link ? "up" : "down", data->cmds, data->errors, data->short_xfers,
+		    data->irqs);
 	if (data->pm) {
 		shell_print(sh, "port multiplier %04x:%04x rev %08x, %u ports",
 			    data->pm_id & 0xffff, data->pm_id >> 16, data->pm_rev, data->pm_ports);
@@ -321,8 +322,11 @@ static int cmd_read(const struct shell *sh, size_t argc, char **argv)
 	uint32_t ss = dk->id.sector_size;
 	uint32_t chunk = data->buf_size / ss;
 
+	uint32_t short0 = data->short_xfers;
+	uint64_t moved = 0;
+
 	k_mutex_lock(&data->lock, K_FOREVER);
-	t0 = k_uptime_get();
+	t0 = (int64_t)k_cycle_get_64();
 	for (uint64_t done = 0; done < n && ret == 0;) {
 		uint32_t c = (uint32_t)MIN(n - done, (uint64_t)chunk);
 
@@ -331,9 +335,10 @@ static int cmd_read(const struct shell *sh, size_t argc, char **argv)
 		if (done == 0 && ret == 0) {
 			shell_hexdump(sh, data->buf, MIN(ss, 512U));
 		}
+		moved += data->last_prdbc;
 		done += c;
 	}
-	dt = k_uptime_get() - t0;
+	dt = (int64_t)k_cyc_to_us_floor64(k_cycle_get_64() - (uint64_t)t0);
 	k_mutex_unlock(&data->lock);
 	if (ret != 0) {
 		shell_error(sh, "read: %d", ret);
@@ -342,8 +347,11 @@ static int cmd_read(const struct shell *sh, size_t argc, char **argv)
 	if (n > 1) {
 		uint64_t bytes = n * ss;
 
-		shell_print(sh, "%llu sectors in %lld ms = %llu kB/s", (unsigned long long)n, dt,
-			    dt > 0 ? (unsigned long long)(bytes / (uint64_t)dt) : 0ULL);
+		shell_print(sh, "%llu sectors in %lld.%03lld ms = %llu kB/s, HBA moved %llu of %llu "
+			    "bytes%s", (unsigned long long)n, dt / 1000, dt % 1000,
+			    dt > 0 ? (unsigned long long)(bytes * 1000ULL / (uint64_t)dt) : 0ULL,
+			    (unsigned long long)moved, (unsigned long long)bytes,
+			    data->short_xfers != short0 ? " (SHORT TRANSFERS)" : "");
 	}
 	return 0;
 }
