@@ -43,4 +43,94 @@ config PCIE_EPF_TEST_CHUNK
 	  Host transfers are mapped and copied in chunks of this size, which
 	  also sizes the bounce buffer.
 
+config PCIE_EPF_NVME
+	bool "NVMe endpoint function"
+	default y
+	depends on DT_HAS_ZEPHYR_PCIE_EPF_NVME_ENABLED
+	depends on DISK_ACCESS
+	help
+	  The endpoint as an NVM Express controller with one namespace per
+	  Zephyr disk, modelled on the Linux NVMe PCI endpoint target
+	  (nvmet-pci-epf). The host's stock nvme driver binds to it by class
+	  code 01:08:02.
+
+if PCIE_EPF_NVME
+
+config PCIE_EPF_NVME_MAX_IO_QUEUES
+	int "Most I/O queue pairs of any instance"
+	default 8
+	range 1 64
+	help
+	  Sizes the per-instance queue tables and the doorbell area in BAR0;
+	  the io-queues property picks the number offered.
+
+config PCIE_EPF_NVME_MAX_NAMESPACES
+	int "Most namespaces (disk-names entries) of any instance"
+	default 5
+	range 1 32
+
+config PCIE_EPF_NVME_MDTS_KB
+	int "Maximum data transfer size [KiB]"
+	default 128
+	help
+	  Power of two, at least 4. Every instance holds a buffer of this
+	  size; a command is fetched into it, executed on the disk and sent
+	  back. The host splits larger requests.
+
+config PCIE_EPF_NVME_DMA
+	bool "Move data with the controller DMA"
+	default y
+	help
+	  pcie_epc_xfer_dma() where the controller has it, CPU copies
+	  through an outbound window otherwise.
+
+config PCIE_EPF_NVME_VWC
+	bool "Report a volatile write cache"
+	default y
+	help
+	  The host then sends Flush, executed as DISK_IOCTL_CTRL_SYNC
+	  (FLUSH CACHE EXT on a SATA disk).
+
+config PCIE_EPF_NVME_READY_TIMEOUT_MS
+	int "CAP.TO: how long the host waits for CSTS.RDY [ms]"
+	default 15000
+	range 500 127500
+
+config PCIE_EPF_NVME_CC_POLL_MS
+	int "CC poll period while the controller is disabled [ms]"
+	default 10
+
+config PCIE_EPF_NVME_BUSY_POLL_MS
+	int "Busy polling of the doorbells after the last command [ms]"
+	default 100
+	help
+	  The polling thread yields but does not sleep for this long after
+	  the last command, then polls every PCIE_EPF_NVME_IDLE_POLL_US.
+
+config PCIE_EPF_NVME_IDLE_POLL_US
+	int "Doorbell poll period when idle [us]"
+	default 1000
+
+config PCIE_EPF_NVME_THREAD_PRIORITY
+	int "Polling thread priority"
+	default 14
+	help
+	  Preemptible; busy polling yields to threads of the same priority
+	  only, so keep it at the shell's or lower.
+
+config PCIE_EPF_NVME_STACK_SIZE
+	int "Polling thread stack size"
+	default 4096
+
+config PCIE_EPF_NVME_TEMPERATURE_K
+	int "Composite temperature reported in the SMART log [K]"
+	default 313
+
+config PCIE_EPF_NVME_SHELL
+	bool "nvme_epf shell command"
+	default y
+	depends on SHELL
+
+endif # PCIE_EPF_NVME
+
 endif # PCIE_EPC
