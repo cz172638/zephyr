@@ -1,0 +1,12 @@
+name: espressobin-vntb
+description: |
+  ESPRESSObin as a vNTB endpoint on the mini-PCIe slot: the endpoint
+  (espressobin-pcie-ep) runs the vNTB function instead of the test
+  function, in the i.MX8 BAR layout the Linux ntb_hw_epf driver knows.
+  Give it after espressobin-pcie-ep:
+  -S espressobin-pcie-ep -S espressobin-vntb
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: espressobin-vntb.overlay
+      EXTRA_CONF_FILE: espressobin-vntb.conf

@@ -133,4 +133,56 @@ config PCIE_EPF_NVME_SHELL
 
 endif # PCIE_EPF_NVME
 
+config PCIE_EPF_VNTB
+	bool "vNTB endpoint function"
+	default y
+	depends on DT_HAS_ZEPHYR_PCIE_EPF_VNTB_ENABLED
+	select NTB
+	help
+	  Non-Transparent Bridge between the PCIe host and Zephyr, the
+	  counterpart of the Linux pci-epf-vntb function. The host binds
+	  its ntb_hw_epf driver by vendor/device ID and runs ntb_tool,
+	  ntb_transport and friends; Zephyr gets the NTB API
+	  (zephyr/drivers/ntb.h).
+
+if PCIE_EPF_VNTB
+
+config PCIE_EPF_VNTB_POLL_US
+	int "Command and doorbell poll period [us]"
+	default 1000
+	help
+	  The host's commands (it waits up to 1 s for each) and doorbells
+	  land in BAR memory and are polled. Linux polls every 5 ms.
+
+config PCIE_EPF_VNTB_THREAD_PRIORITY
+	int "Polling thread priority"
+	default 10
+	help
+	  Client callbacks (link and doorbell events) run in this thread.
+
+config PCIE_EPF_VNTB_STACK_SIZE
+	int "Polling thread stack size"
+	default 2048
+
+config PCIE_EPF_VNTB_DMA
+	bool "Copy to and from host windows with the controller DMA"
+	default y
+	help
+	  ntb_peer_mw_xfer() uses pcie_epc_xfer_dma() where the controller
+	  has it, CPU copies through the outbound window otherwise.
+
+config PCIE_EPF_VNTB_STATIC_MEM_SIZE
+	hex "BAR memory without memory-region"
+	default 0x40000
+	help
+	  Without a memory-region the BARs (config, doorbell, windows) live
+	  in a static buffer of this size, a power of two.
+
+config PCIE_EPF_VNTB_SHELL
+	bool "vntb shell command"
+	default y
+	depends on SHELL
+
+endif # PCIE_EPF_VNTB
+
 endif # PCIE_EPC

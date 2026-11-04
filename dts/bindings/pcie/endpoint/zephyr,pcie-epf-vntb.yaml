@@ -1,0 +1,87 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  vNTB endpoint function: a Non-Transparent Bridge between the PCIe host
+  and Zephyr, the counterpart of the Linux pci-epf-vntb function. The host
+  runs the ntb_hw_epf driver, which picks the BAR layout by vendor and
+  device ID, so the IDs and the BARs here must match one of its entries:
+
+    ID          class   config  doorbell  windows
+    1957:0809   0500xx  BAR0    BAR2      BAR4 (BAR5)    (i.MX8)
+    1912:0030   0500xx  BAR0    BAR4      BAR2           (R-Car)
+    104c:b00d   0500xx  BAR0    BAR2      BAR2..BAR5     (J721E; peer
+                                                          scratchpads in BAR1)
+
+  The J721E layout puts the doorbells and the first window into one BAR
+  and the scratchpads into another, neither of which this function
+  does: use the i.MX8 or R-Car layout. Zephyr sees the bridge through the
+  NTB API (zephyr/drivers/ntb.h). Child of a PCIe endpoint controller.
+
+  Example, i.MX8 layout, one 4 MiB window:
+
+    vntb0: function@0 {
+            compatible = "zephyr,pcie-epf-vntb";
+            reg = <0>;
+            vendor-id = <0x1957>;
+            device-id = <0x0809>;
+            memory-region = <&pcie_bar_mem>;
+            ctrl-bar = <0>;
+            db-bar = <2>;
+            mw-bars = <4>;
+            mw-sizes = <0x400000>;
+    };
+
+compatible: "zephyr,pcie-epf-vntb"
+
+include: pcie-epf.yaml
+
+properties:
+  class-code:
+    default: 0x050000
+    description: |
+      24-bit class code; ntb_hw_epf matches 05:00 (memory controller,
+      RAM).
+
+  memory-region:
+    type: phandle
+    description: |
+      Memory backing the BARs, reachable by the PCIe controller. Each BAR
+      is placed aligned to its size, largest first. Without it the BARs
+      live in a static buffer (CONFIG_PCIE_EPF_VNTB_STATIC_MEM_SIZE).
+
+  ctrl-bar:
+    type: int
+    default: 0
+    description: |
+      BAR of the control region, the MSI-X table and the scratchpads of
+      both sides.
+
+  db-bar:
+    type: int
+    default: 2
+    description: BAR of the doorbell slots, one 32-bit word each.
+
+  mw-bars:
+    type: array
+    default: [4]
+    description: BARs of the memory windows (1 to 4), local memory the host writes.
+
+  mw-sizes:
+    type: array
+    default: [0x100000]
+    description: |
+      Size of each memory window in bytes, one entry per mw-bars entry;
+      rounded up to what the controller can do (a power of two).
+
+  spad-count:
+    type: int
+    default: 64
+    description: Scratchpads on each side.
+
+  db-count:
+    type: int
+    default: 8
+    description: |
+      Interrupt slots, 3 to 32: the link event, a slot the protocol keeps
+      unused, and db-count - 2 doorbells. Also the MSI-X table size.
