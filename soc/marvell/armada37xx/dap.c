@@ -101,6 +101,72 @@ static int prd(const struct win *w, uintptr_t pa, uint32_t *v)
 	return a3700_probe_read32((uintptr_t)w->va + (pa - w->pa), v);
 }
 
+/*
+ * Is @p pa decoded for the CPU at all? An address no window covers does
+ * not abort on the Armada 3700, the load just hangs: internal registers
+ * (0xd0000000, 32 MiB) and the enabled CPU decode windows only.
+ */
+static bool cpu_decodes(uintptr_t pa)
+{
+	struct win w;
+	bool yes = pa >= 0xd0000000UL && pa < 0xd2000000UL;
+
+	win_map(&w, CPU_DEC_BASE, 0x100);
+	for (int wn = 0; wn < 5 && !yes; wn++) {
+		uint32_t ctrl, size, base;
+
+		if (a3700_probe_read32((uintptr_t)w.va + 0x10 * wn, &ctrl) != 0 ||
+		    a3700_probe_read32((uintptr_t)w.va + 0x10 * wn + 4, &size) != 0 ||
+		    a3700_probe_read32((uintptr_t)w.va + 0x10 * wn + 8, &base) != 0) {
+			continue;
+		}
+		if ((ctrl & 1) != 0 && pa >= ((uintptr_t)base << 16) &&
+		    pa < ((uintptr_t)base << 16) + (((uintptr_t)size + 1) << 16)) {
+			yes = true;
+		}
+	}
+	win_unmap(&w);
+	return yes;
+}
+
+/* TF-A built with A3700_DBG_SIP answers the debug window read */
+static bool sip_dbg_present(void)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SIP_DBG_READ, CS_CIDR0, 0, 0, 0, 0, 0, 0, &res);
+	return (long)res.a0 != -1; /* SMC_UNK */
+}
+
+/*
+ * Before touching the debug window: directly only when decoded, else
+ * through TF-A, else not at all (it would hang).
+ */
+static int dbg_reachable(const struct shell *sh, uintptr_t pa)
+{
+	if (pa < DBG_BASE || pa >= DBG_BASE + DBG_SIZE) {
+		if (!cpu_decodes(pa)) {
+			shell_error(sh, "0x%lx is not decoded for the CPU (dap win): a read would hang",
+				    (unsigned long)pa);
+			return -EFAULT;
+		}
+		return 0;
+	}
+	if (!use_smc && cpu_decodes(pa)) {
+		return 0;
+	}
+	if (!sip_dbg_present()) {
+		shell_error(sh, "0x%lx: the debug APB is not decoded for the CPU and TF-A has no "
+			    "A3700_DBG_SIP; image with A3700_DBG_SIP=1, or JTAG", (unsigned long)pa);
+		return -ENOTSUP;
+	}
+	if (!use_smc) {
+		shell_print(sh, "debug APB not decoded for the CPU: reading through TF-A");
+		use_smc = true;
+	}
+	return 0;
+}
+
 /* the four ID bytes of a CIDR/PIDR group */
 static int pid4(const struct win *w, uintptr_t pa, uint32_t *out)
 {
@@ -321,18 +387,8 @@ static int cmd_dap_info(const struct shell *sh, size_t argc, char **argv)
 	/* the ROM table where the SoC puts it (debug APB), or the one given */
 	rom = argc > 1 ? (uintptr_t)strtoull(argv[1], NULL, 0)
 		       : (uintptr_t)CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE;
-	if (!use_smc && rom >= DBG_BASE && rom < DBG_BASE + DBG_SIZE) {
-		struct win w;
-		uint32_t v;
-
-		win_map(&w, rom, 0x1000);
-		if (prd(&w, rom + CS_CIDR0, &v) != 0) {
-			/* the debug APB is secure only: through BL31 (A3700_DBG_SIP) */
-			use_smc = true;
-			shell_print(sh, "direct read of 0x%lx aborts: reading through TF-A (dap smc on)",
-				    (unsigned long)rom);
-		}
-		win_unmap(&w);
+	if (dbg_reachable(sh, rom) != 0) {
+		return -EFAULT;
 	}
 	shell_print(sh, "ROM table at 0x%lx (%s)", (unsigned long)rom,
 		    argc > 1 ? "given" : "CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE");
@@ -448,6 +504,9 @@ static int cmd_dap_rd(const struct shell *sh, size_t argc, char **argv)
 	uint32_t v;
 
 	n = CLAMP(n, 1, 256);
+	if (dbg_reachable(sh, pa) != 0) {
+		return -EFAULT;
+	}
 	win_map(&w, pa, 4 * n);
 	for (int i = 0; i < n; i++) {
 		if (prd(&w, pa + 4 * i, &v) < 0) {
