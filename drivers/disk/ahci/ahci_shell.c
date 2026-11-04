@@ -195,32 +195,56 @@ static int cmd_dev(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* IDENTIFY every device found (or the one given): fresh data, printed */
 static int cmd_identify(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = get_dev(sh);
 	struct ahci_data *data;
-	struct ahci_disk *dk;
-	int ret;
+	uint64_t only = UINT64_MAX;
+	int ret = 0, n = 0;
 
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-	if (dev == NULL || (dk = cur_dk(sh, dev, false)) == NULL) {
+	if (dev == NULL) {
 		return -ENODEV;
 	}
 	data = dev->data;
+	if (argc > 1 && (parse_u64(sh, argv[1], &only) != 0 || only >= AHCI_MAX_DEV)) {
+		shell_error(sh, "device 0..%u", AHCI_MAX_DEV - 1);
+		return -EINVAL;
+	}
 	if (!data->link) {
 		shell_error(sh, "link down (ata link up)");
 		return -ENODEV;
 	}
-	k_mutex_lock(&data->lock, K_FOREVER);
-	ret = ahci_identify(dev, dk);
-	k_mutex_unlock(&data->lock);
-	if (ret != 0) {
-		shell_error(sh, "identify: %d", ret);
-		return ret;
+	for (int i = 0; i < AHCI_MAX_DEV; i++) {
+		struct ahci_disk *dk = &data->d[i];
+		int r;
+
+		if ((only != UINT64_MAX && i != (int)only) || (only == UINT64_MAX && !dk->present)) {
+			continue;
+		}
+		if (dk->sig != SIG_ATA && dk->present) {
+			shell_print(sh, "%s (PM port %u): signature %08x, %s", dk->name, dk->pmp,
+				    dk->sig, dk->sig == SIG_ATAPI ? "ATAPI, not handled" : "unknown");
+			continue;
+		}
+		k_mutex_lock(&data->lock, K_FOREVER);
+		r = ahci_identify(dev, dk);
+		k_mutex_unlock(&data->lock);
+		if (n++ != 0) {
+			shell_print(sh, "");
+		}
+		if (r != 0) {
+			shell_error(sh, "%s (PM port %u): identify: %d", dk->name, dk->pmp, r);
+			ret = r;
+			continue;
+		}
+		print_ident(sh, dk);
 	}
-	print_ident(sh, dk);
-	return 0;
+	if (n == 0) {
+		shell_error(sh, "no device%s", only != UINT64_MAX ? " there" : " found");
+		return -ENODEV;
+	}
+	return ret;
 }
 
 static int cmd_link(const struct shell *sh, size_t argc, char **argv)
@@ -475,7 +499,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ata_cmds,
 	SHELL_CMD_ARG(info, NULL, "Controller, link and disk state", cmd_info, 1, 0),
 	SHELL_CMD_ARG(dev, NULL, "[<n>] Device the commands work on (PM port), default 0",
 		      cmd_dev, 1, 1),
-	SHELL_CMD_ARG(identify, NULL, "IDENTIFY DEVICE again", cmd_identify, 1, 0),
+	SHELL_CMD_ARG(identify, NULL, "[<n>] IDENTIFY every device found, or device n",
+		      cmd_identify, 1, 1),
 	SHELL_CMD_ARG(link, NULL, "[up|reset] Link state; up: bring up, reset: COMRESET",
 		      cmd_link, 1, 1),
 	SHELL_CMD_ARG(read, NULL, "<lba> [<count>] Read, dump the first sector, rate if count>1",
