@@ -126,3 +126,27 @@ K čemu jsou BARy root portu: ve stromu je ovladač neprogramuje a inbound jde p
    - SSID `0x0100` v RC hardwarové hlavičce (reset, nikdo ho nezapisuje).
    - Neznámý zapisovatelný `0x32c` v EP.
    - `0x6000 [23:0]` (`ff21` vs `ff09`).
+
+## 6. Emulovaný root port (00:00.0) proti hardwaru
+
+Hlavička typu 1 (0x00–0x3f) je v RAM. Od PCIe capability (0xc0) výš je registr hardwarový, kromě položek níže. Napojení na hardware je stejné jako v Linuxu (`pci-aardvark.c`, `pci-bridge-emul`).
+
+| Registr | Chování | Hardware |
+|---|---|---|
+| Bus numbers, okna mem/io/pref | jen informace, nic nefiltruje | adresy překládají outbound okna 0x4c00 |
+| Command Bus Master | zrcadlí se | `CFG_CMD_STATUS` bit 2 hradí DMA zespodu |
+| Secondary Status (0x1e) | Received Master/Target Abort z PIO UR/CA, RW1C | – |
+| Bridge Control SERR# | přerušení pro ERR_* zprávy | ISR0_MASK bity 11–13 |
+| Bridge Control Secondary Bus Reset | hot reset linky | CTRL1 (0x4804) bit 0 |
+| LnkCap DLLLARC | nastaven | v hardwaru natvrdo 0 |
+| LnkSta Link Training / DLL Link Active | odvozeno z LTSSM | LMI 0x6000 [29:24] |
+| Slot Cap / Slot Status | slot 1, Presence Detect natrvalo | – |
+| Root Cap / Root Control | CRS SV; PME IE, CRS SVE | – |
+| Root Status | PME status a requester | ISR0 bit 7, MSG_LOG 0x4830 [31:16] |
+| AER včetně Root Error Command/Status/Source ID | průchozí | 0x100–0x137 (Linux je čte přímo, takže se do nich asi zapisuje) |
+
+Opakování konfiguračního požadavku po odpovědi CRS: až `CONFIG_PCIE_AARDVARK_CRS_TIMEOUT_MS` (1 s podle specifikace, dřív 100 ms). Týká se switchů, které po resetu načítají EEPROM.
+
+`pcie debug hotreset`: nastaví Secondary Bus Reset na 2 ms, počká na linku a 100 ms, pak spustí novou enumeraci. Je to alternativa k PERST#.
+
+Bez hardwarového protějšku zůstává ACS (P2P izolace) a hot plug.
