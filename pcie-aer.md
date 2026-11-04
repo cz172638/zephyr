@@ -89,9 +89,16 @@ one of them multifunction. The test checks:
 - servicing from the Source ID,
 - the sweep without a latched source.
 
+## Ověřeno na HW (2026-11-04, image 145)
+
+RC ESPRESSObin → ASM1184 (všechny porty s AER) → 02:07.0 → EP ESPRESSObin (06:00.0, NVMe funkce).
+
+- `devmem 0xe8080000 32 …` (v okně 02:07.0 `0xe8000000–0xe80fffff`, mimo BAR0 EP): EP odmítne posted zápis jako UR, pošle ERR_NONFATAL, porty ho přepošlou, ISR0 bit 12 → obsluha.
+- **Root port Aardvarku Source ID v RC zapisuje** (`unc 06:00.0`), obsluha šla přímou cestou. Header log `40008001 0000180f e8080000` = MWr na tu adresu.
+- **ASM1184 neloguje UR na konfigurační požadavek** na zařízení ≠ 0 za downstream portem (`pcie cfg 06:05.0`): vrátí `ffffffff`, ale nenastaví DevSta UR ani AER. Advisory chyby se na něm netestují. Na test je lepší posted zápis.
+- Zdvojené řádky logu na UART konzoli: dva backendy (`LOG_BACKEND_UART` + shell), ne dvě události.
+
 ## Open
 
-- Whether the Aardvark root port latches Root Error Status / Source ID in
-  RC mode needs checking on hardware. If it doesn't, the sweep covers it.
-- Whether the ASM1184 has AER (`pcie cap ls` on its ports).
-- No recovery (link retrain, secondary bus reset on fatal), only reporting.
+- Bez zotavení (retrain linky, secondary bus reset při fatální chybě), jen hlášení.
+- ASM1806 (ACS) za stejným testem.
