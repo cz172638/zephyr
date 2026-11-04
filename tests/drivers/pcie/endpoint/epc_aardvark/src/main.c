@@ -154,8 +154,8 @@ ZTEST(epc_aardvark, test_setup)
 	zassert_true(f->msi_capable);
 	zassert_false(f->msix_capable);
 	zassert_equal(f->align, ADVK_OB_MIN_SIZE);
-	zassert_equal(f->bar_fixed_64bit, BIT(0) | BIT(4));
-	zassert_equal(f->reserved_bar, BIT(1) | BIT(2) | BIT(5));
+	zassert_equal(f->bar_fixed_64bit, BIT(0) | BIT(2) | BIT(4));
+	zassert_equal(f->reserved_bar, BIT(1) | BIT(3) | BIT(5));
 
 	zassert_ok(pcie_epc_start(epc));
 	zassert_true(R(ADVK_CTRL0) & ADVK_CTRL0_LINK_TRAIN);
@@ -222,11 +222,72 @@ ZTEST(epc_aardvark, test_msi)
 	zassert_equal(pcie_epc_get_msi(epc, 0), 4);
 
 	memset(ob, 0, sizeof(ob));
+	zassert_equal(pcie_epc_raise_irq(epc, 0, PCIE_EPC_IRQ_MSI, 3), -EACCES, "no BME");
+	W(ADVK_CFG_CMD_STATUS, R(ADVK_CFG_CMD_STATUS) | ADVK_CMD_MASTER);
 	zassert_ok(pcie_epc_raise_irq(epc, 0, PCIE_EPC_IRQ_MSI, 3));
-	/* the window was freed again, the allocator handed out page 0 */
+	/* the doorbell page stays mapped (allocator page 0) for the next one */
 	zassert_equal(sys_read32((mem_addr_t)&ob[0x40]), 0x4022);
-	zassert_equal(R(ADVK_OB_MATCH_LS(0)), 0, "window released");
+	zassert_equal(R(ADVK_OB_MATCH_LS(0)) & ADVK_OB_WIN_ENABLE, ADVK_OB_WIN_ENABLE,
+		      "doorbell window kept");
+	zassert_ok(pcie_epc_raise_irq(epc, 0, PCIE_EPC_IRQ_MSI, 4));
+	zassert_equal(sys_read32((mem_addr_t)&ob[0x40]), 0x4023);
+	zassert_equal(advk_ep(epc)->irq_remaps, 1, "same page, one mapping");
 	zassert_equal(pcie_epc_raise_irq(epc, 0, PCIE_EPC_IRQ_MSI, 5), -EINVAL, "beyond MME");
+	W(ADVK_CFG_CMD_STATUS, R(ADVK_CFG_CMD_STATUS) & ~ADVK_CMD_MASTER);
+
+	/* give the window back for the other tests */
+	pcie_epc_unmap_host(epc, &advk_ep(epc)->irq_map);
+	advk_ep(epc)->irq_map_valid = false;
+}
+
+ZTEST(epc_aardvark, test_bars)
+{
+	struct pcie_epc_bar bar = {.flags = PCIE_EPC_BAR_MEM64};
+	uint32_t c0, c1;
+
+	/* BAR0 4 KiB, BAR2 128 B (the minimum), BAR4 1 MiB */
+	bar.barno = 0;
+	bar.size = 0x1000;
+	bar.phys = 0x10000000;
+	zassert_ok(pcie_epc_set_bar(epc, 0, &bar));
+	bar.barno = 2;
+	bar.size = 64;
+	bar.phys = 0x10001000;
+	zassert_ok(pcie_epc_set_bar(epc, 0, &bar));
+	bar.barno = 4;
+	bar.size = 0x100000;
+	bar.phys = 0x10100000;
+	zassert_ok(pcie_epc_set_bar(epc, 0, &bar));
+
+	c0 = R(ADVK_LMI_BAR_CFG0);
+	c1 = R(ADVK_LMI_BAR_CFG1);
+	/* aperture = log2(size) - 7, enable bit 5 */
+	zassert_equal((c0 >> ADVK_BAR_CFG_SHIFT(0)) & ADVK_BAR_CFG_FIELD,
+		      ADVK_BAR_CFG_EN | (12 - 7));
+	zassert_equal((c0 >> ADVK_BAR_CFG_SHIFT(2)) & ADVK_BAR_CFG_FIELD, ADVK_BAR_CFG_EN | 0);
+	zassert_equal((c0 >> ADVK_BAR_CFG_SHIFT(4)) & ADVK_BAR_CFG_FIELD,
+		      ADVK_BAR_CFG_EN | (20 - 7));
+	/* all three 64-bit memory, BAR2 no longer I/O */
+	zassert_equal(c1 & (ADVK_BAR_CFG1_64(0) | ADVK_BAR_CFG1_64(2) | ADVK_BAR_CFG1_64(4)),
+		      ADVK_BAR_CFG1_64(0) | ADVK_BAR_CFG1_64(2) | ADVK_BAR_CFG1_64(4));
+	zassert_equal(c1 & ADVK_BAR_CFG1_IO(2), 0);
+	zassert_equal(R(ADVK_IB_BAR_LO(0)), 0x10000000);
+	zassert_equal(R(ADVK_IB_BAR_LO(2)), 0x10001000);
+	zassert_equal(R(ADVK_IB_BAR_LO(4)), 0x10100000);
+
+	/* the upper half of a 64-bit BAR, misaligned backing */
+	bar.barno = 3;
+	zassert_equal(pcie_epc_set_bar(epc, 0, &bar), -EINVAL);
+	bar.barno = 2;
+	bar.size = 0x2000;
+	bar.phys = 0x10001000;
+	zassert_equal(pcie_epc_set_bar(epc, 0, &bar), -EINVAL);
+
+	pcie_epc_clear_bar(epc, 0, 2);
+	zassert_equal(R(ADVK_LMI_BAR_CFG0) & (ADVK_BAR_CFG_EN << ADVK_BAR_CFG_SHIFT(2)), 0);
+	zassert_equal(R(ADVK_IB_BAR_LO(2)), 0);
+	pcie_epc_clear_bar(epc, 0, 0);
+	pcie_epc_clear_bar(epc, 0, 4);
 }
 
 ZTEST(epc_aardvark, test_intx)
