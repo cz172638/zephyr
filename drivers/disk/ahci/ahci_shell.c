@@ -11,6 +11,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/byteorder.h>
 
 #include "ahci.h"
 
@@ -364,6 +365,241 @@ static int cmd_power(const struct shell *sh, size_t argc, char **argv)
 		    d2h[12] == 0x00 ? "standby" : d2h[12] == 0x80 ? "idle" :
 		    d2h[12] == 0xff ? "active/idle" : "?");
 	return 0;
+}
+
+/*
+ * SMART: SMART command (0xb0) with the LBA mid/high key 4f/c2. Attribute
+ * table and thresholds (30 entries of 12 bytes), health (RETURN STATUS:
+ * c24f good, 2cf4 threshold exceeded), self-tests and their log.
+ */
+#define SMART_KEY(low) ((0xc2ULL << 16) | (0x4fULL << 8) | (low))
+#define SMART_READ_DATA   0xd0
+#define SMART_READ_THRESH 0xd1
+#define SMART_OFFLINE     0xd4
+#define SMART_READ_LOG    0xd5
+#define SMART_STATUS      0xda
+
+static const struct {
+	uint8_t id;
+	const char *name;
+} smart_names[] = {
+	{1, "Raw_Read_Error_Rate"},     {2, "Throughput_Performance"},
+	{3, "Spin_Up_Time"},            {4, "Start_Stop_Count"},
+	{5, "Reallocated_Sector_Ct"},   {7, "Seek_Error_Rate"},
+	{8, "Seek_Time_Performance"},   {9, "Power_On_Hours"},
+	{10, "Spin_Retry_Count"},       {11, "Calibration_Retry_Count"},
+	{12, "Power_Cycle_Count"},      {183, "Runtime_Bad_Block"},
+	{184, "End-to-End_Error"},      {187, "Reported_Uncorrect"},
+	{188, "Command_Timeout"},       {189, "High_Fly_Writes"},
+	{190, "Airflow_Temperature"},   {191, "G-Sense_Error_Rate"},
+	{192, "Power-Off_Retract_Count"}, {193, "Load_Cycle_Count"},
+	{194, "Temperature_Celsius"},   {195, "Hardware_ECC_Recovered"},
+	{196, "Reallocated_Event_Count"}, {197, "Current_Pending_Sector"},
+	{198, "Offline_Uncorrectable"}, {199, "UDMA_CRC_Error_Count"},
+	{200, "Multi_Zone_Error_Rate"}, {220, "Disk_Shift"},
+	{222, "Loaded_Hours"},          {223, "Load_Retry_Count"},
+	{224, "Load_Friction"},         {226, "Load-in_Time"},
+	{240, "Head_Flying_Hours"},     {241, "Total_LBAs_Written"},
+	{242, "Total_LBAs_Read"},       {254, "Free_Fall_Sensor"},
+};
+
+static const char *smart_name(uint8_t id)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(smart_names); i++) {
+		if (smart_names[i].id == id) {
+			return smart_names[i].name;
+		}
+	}
+	return "Unknown_Attribute";
+}
+
+static int smart_cmd(const struct device *dev, struct ahci_disk *dk, uint8_t sub, uint8_t low,
+		     void *buf, size_t len, uint8_t *d2h)
+{
+	return ahci_exec(dev, dk->pmp, ATA_SMART, sub, SMART_KEY(low), len != 0 ? 1 : 0, buf, len,
+			 false, d2h);
+}
+
+static const char *selftest_status(uint8_t st)
+{
+	switch (st >> 4) {
+	case 0x0:
+		return "completed without error";
+	case 0x1:
+		return "aborted by the host";
+	case 0x2:
+		return "interrupted by a reset";
+	case 0x3:
+		return "fatal error";
+	case 0x4:
+		return "failed (unknown element)";
+	case 0x5:
+		return "failed (electrical)";
+	case 0x6:
+		return "failed (servo/seek)";
+	case 0x7:
+		return "failed (read)";
+	case 0x8:
+		return "failed (handling damage)";
+	case 0xf:
+		return "in progress";
+	default:
+		return "?";
+	}
+}
+
+static int smart_health(const struct shell *sh, const struct device *dev, struct ahci_disk *dk)
+{
+	uint8_t d2h[20];
+	int ret = smart_cmd(dev, dk, SMART_STATUS, 0, NULL, 0, d2h);
+	uint16_t k;
+
+	if (ret != 0) {
+		shell_error(sh, "%s: SMART RETURN STATUS: %d (SMART off? ata smart enable)",
+			    dk->name, ret);
+		return ret;
+	}
+	k = ((uint16_t)d2h[6] << 8) | d2h[5];
+	shell_print(sh, "%s: SMART overall health: %s (%04x)", dk->name,
+		    k == 0xc24f ? "PASSED" : k == 0x2cf4 ? "FAILED, threshold exceeded" : "?", k);
+	return 0;
+}
+
+static int smart_attrs(const struct shell *sh, const struct device *dev, struct ahci_disk *dk)
+{
+	struct ahci_data *data = dev->data;
+	static uint8_t val[512], thr[512];
+	int ret;
+
+	ret = smart_cmd(dev, dk, SMART_READ_DATA, 0, data->buf, 512, NULL);
+	if (ret != 0) {
+		shell_error(sh, "%s: SMART READ DATA: %d", dk->name, ret);
+		return ret;
+	}
+	memcpy(val, data->buf, 512);
+	/* thresholds are obsolete in ACS but still answered by most disks */
+	if (smart_cmd(dev, dk, SMART_READ_THRESH, 0, data->buf, 512, NULL) == 0) {
+		memcpy(thr, data->buf, 512);
+	} else {
+		memset(thr, 0, sizeof(thr));
+	}
+	shell_print(sh, "ID# %-24s FLAG  VALUE WORST THRESH %s RAW_VALUE", "ATTRIBUTE_NAME",
+		    "WHEN");
+	for (int i = 0; i < 30; i++) {
+		const uint8_t *e = &val[2 + 12 * i];
+		const uint8_t *t = &thr[2 + 12 * i];
+		uint64_t raw = 0;
+		uint8_t th = t[0] == e[0] ? t[1] : 0;
+		uint16_t fl = sys_get_le16(&e[1]);
+		char rs[48];
+
+		if (e[0] == 0) {
+			continue;
+		}
+		for (int b = 5; b >= 0; b--) {
+			raw = (raw << 8) | e[5 + b];
+		}
+		if (e[0] == 194 || e[0] == 190) {
+			snprintf(rs, sizeof(rs), "%u (min/max %u/%u)", e[5], MIN(e[7], e[9]), MAX(e[7], e[9]));
+		} else if (e[0] == 9 || e[0] == 240) {
+			snprintf(rs, sizeof(rs), "%u", (uint32_t)raw);
+		} else {
+			snprintf(rs, sizeof(rs), "%llu", (unsigned long long)raw);
+		}
+		shell_print(sh, "%3u %-24s %04x  %03u   %03u   %03u    %-4s %s", e[0],
+			    smart_name(e[0]), fl, e[3], e[4], th,
+			    (th != 0 && e[3] <= th) ? "NOW" : (th != 0 && e[4] <= th) ? "PAST" : "-",
+			    rs);
+	}
+	shell_print(sh, "self-test: %s, %u%% remaining", selftest_status(val[363]),
+		    (val[363] & 0xf) * 10);
+	return 0;
+}
+
+static int smart_log(const struct shell *sh, const struct device *dev, struct ahci_disk *dk)
+{
+	struct ahci_data *data = dev->data;
+	const uint8_t *l = data->buf;
+	int ret = smart_cmd(dev, dk, SMART_READ_LOG, 0x06, data->buf, 512, NULL);
+	uint8_t idx;
+	int n = 0;
+
+	if (ret != 0) {
+		shell_error(sh, "%s: self-test log: %d", dk->name, ret);
+		return ret;
+	}
+	idx = l[508]; /* most recent entry, 1-based */
+	shell_print(sh, "Num  Test       Status                       Remaining LifeTime(h) LBA");
+	for (int k = 0; k < 21; k++) {
+		int i = ((int)idx - 1 - k + 21) % 21;
+		const uint8_t *e = &l[2 + 24 * i];
+		static const char *const tn[] = {"offline", "short", "extended", "conveyance"};
+
+		if (idx == 0 || (e[0] == 0 && e[1] == 0 && sys_get_le16(&e[2]) == 0)) {
+			continue;
+		}
+		shell_print(sh, "#%-3d %-10s %-28s %3u%%      %-11u 0x%08x", ++n,
+			    (e[0] & 0x7f) < ARRAY_SIZE(tn) ? tn[e[0] & 0x7f] : "vendor",
+			    selftest_status(e[1]), (e[1] & 0xf) * 10, sys_get_le16(&e[2]),
+			    sys_get_le32(&e[5]));
+	}
+	if (n == 0) {
+		shell_print(sh, "no self-tests logged");
+	}
+	return 0;
+}
+
+/* ata smart [health|attr|enable|disable|test short|long|abort|log] */
+static int cmd_smart(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = get_dev(sh);
+	const char *what = argc > 1 ? argv[1] : "";
+	struct ahci_data *data;
+	struct ahci_disk *dk;
+	int ret = 0;
+
+	if (dev == NULL || (dk = cur_dk(sh, dev, true)) == NULL) {
+		return -ENODEV;
+	}
+	data = dev->data;
+	if (!dk->id.smart) {
+		shell_error(sh, "%s does not support SMART", dk->name);
+		return -ENOTSUP;
+	}
+	k_mutex_lock(&data->lock, K_FOREVER);
+	if (what[0] == '\0') {
+		ret = smart_health(sh, dev, dk);
+		if (ret == 0) {
+			ret = smart_attrs(sh, dev, dk);
+		}
+	} else if (strcmp(what, "health") == 0) {
+		ret = smart_health(sh, dev, dk);
+	} else if (strcmp(what, "attr") == 0) {
+		ret = smart_attrs(sh, dev, dk);
+	} else if (strcmp(what, "log") == 0) {
+		ret = smart_log(sh, dev, dk);
+	} else if (strcmp(what, "enable") == 0 || strcmp(what, "disable") == 0) {
+		ret = smart_cmd(dev, dk, what[0] == 'e' ? 0xd8 : 0xd9, 0, NULL, 0, NULL);
+		shell_print(sh, "%s: SMART %sd: %d", dk->name, what, ret);
+	} else if (strcmp(what, "test") == 0 && argc > 2) {
+		uint8_t sub = strcmp(argv[2], "short") == 0 ? 0x01 : strcmp(argv[2], "long") == 0 ? 0x02
+			      : strcmp(argv[2], "abort") == 0 ? 0x7f : 0;
+
+		if (sub == 0) {
+			shell_error(sh, "test short|long|abort");
+			ret = -EINVAL;
+		} else {
+			ret = smart_cmd(dev, dk, SMART_OFFLINE, sub, NULL, 0, NULL);
+			shell_print(sh, "%s: self-test %s %s (%d); progress: ata smart attr, "
+				    "result: ata smart log", dk->name, argv[2],
+				    ret == 0 ? "started" : "failed", ret);
+		}
+	} else {
+		shell_error(sh, "smart [health|attr|log|enable|disable|test short|long|abort]");
+		ret = -EINVAL;
+	}
+	k_mutex_unlock(&data->lock);
+	return ret;
 }
 
 /*
@@ -742,6 +978,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ata_cmds,
 		      cmd_link, 1, 1),
 	SHELL_CMD_ARG(read, NULL, "<lba> [<count>] Read, dump the first sector, rate if count>1",
 		      cmd_read, 2, 1),
+	SHELL_CMD_ARG(smart, NULL,
+		      "[health|attr|log|enable|disable|test short|long|abort] SMART of the "
+		      "current device (ata dev); no argument: health and attributes",
+		      cmd_smart, 1, 2),
 	SHELL_CMD_ARG(power, NULL, "[standby|idle] Check or set the power mode", cmd_power, 1,
 		      1),
 	SHELL_CMD(debug, &ata_debug_cmds, "Registers, PHY", NULL),
