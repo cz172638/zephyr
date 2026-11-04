@@ -95,6 +95,7 @@
 #define ATA_IDLE_IMMEDIATE     0xe1
 #define ATA_CHECK_POWER_MODE   0xe5
 #define ATA_SMART              0xb0
+#define ATA_TRUSTED_RECEIVE    0x5c
 #define ATA_READ_PM            0xe4
 #define ATA_WRITE_PM           0xe8
 
@@ -153,6 +154,11 @@ struct ahci_ident {
 	uint16_t ncq_ext;	/* word 77 */
 	uint8_t qdepth;		/* word 75 + 1 */
 	uint8_t zoned;		/* word 69 bits 1:0 */
+	uint16_t sec;		/* word 128: ATA Security status */
+	uint16_t sec_erase;	/* word 89: SECURITY ERASE time */
+	uint16_t sec_enh_erase;	/* word 90: enhanced erase time */
+	bool sec_supported;	/* word 82 bit 1 */
+	bool trusted;		/* word 48: Trusted Computing (TRUSTED SEND/RECEIVE) */
 	bool lba48;
 	bool ncq;
 	bool smart;

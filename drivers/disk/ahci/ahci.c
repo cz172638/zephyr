@@ -402,6 +402,11 @@ int ahci_identify(const struct device *dev, struct ahci_disk *dk)
 	id->ncq_ext = w[77];
 	id->qdepth = id->ncq ? (uint8_t)((w[75] & 0x1f) + 1) : 1;
 	id->zoned = w[69] & 0x3;
+	id->sec_supported = (w[82] & BIT(1)) != 0;
+	id->sec = w[128];
+	id->sec_erase = w[89];
+	id->sec_enh_erase = w[90];
+	id->trusted = (w[48] & 0xc001) == 0x4001;
 	id->smart = (w[82] & BIT(0)) != 0;
 	id->trim = (w[169] & BIT(0)) != 0;
 	id->rpm = w[217];

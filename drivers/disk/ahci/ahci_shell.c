@@ -122,6 +122,26 @@ static void print_ident(const struct shell *sh, struct ahci_disk *dk)
 			    (id->ncq_ext & BIT(6)) ? ", send/receive queued" : "");
 	}
 	shell_print(sh, "zoned   %s", zoned_str(id->zoned));
+	if (id->sec_supported) {
+		uint16_t w = id->sec;
+
+		shell_print(sh, "security %s%s%s%s%s, master password %s, erase %s%s",
+			    (w & BIT(1)) ? "enabled (password set)" : "not enabled",
+			    (w & BIT(2)) ? ", LOCKED" : "", (w & BIT(3)) ? ", frozen" : ", not frozen",
+			    (w & BIT(4)) ? ", attempts exhausted" : "",
+			    (w & BIT(5)) ? ", enhanced erase supported" : "",
+			    (w & BIT(8)) ? "maximum" : "high",
+			    id->sec_erase == 0 ? "time n/a" : "",
+			    id->sec_erase == 0 ? "" : (id->sec_erase == 255 ? ">508 min" : "timed"));
+		if (id->sec_erase != 0 && id->sec_erase != 255) {
+			shell_print(sh, "         erase ~%u min, enhanced ~%u min", id->sec_erase * 2,
+				    id->sec_enh_erase * 2);
+		}
+	} else {
+		shell_print(sh, "security ATA Security feature set not supported");
+	}
+	shell_print(sh, "trusted  %s", id->trusted ? "Trusted Computing supported "
+					       "(ata sec: TCG discovery)" : "not supported");
 	if (id->rpm == 1) {
 		shell_print(sh, "media   solid state");
 	} else if (id->rpm >= 0x401 && id->rpm != 0xffff) {
@@ -603,6 +623,163 @@ static int cmd_smart(const struct shell *sh, size_t argc, char **argv)
 }
 
 /*
+ * Security protocols (TRUSTED RECEIVE, read only): protocol 0 lists the
+ * protocols the drive speaks, protocol 1 ComID 1 is the TCG Level 0
+ * Discovery (Opal, Enterprise, Pyrite, ... and the locking state).
+ */
+static int trusted_rx(const struct device *dev, struct ahci_disk *dk, uint8_t proto,
+		      uint16_t spsp, void *buf, size_t len)
+{
+	/* count = length in 512 B blocks (7:0), LBA 7:0 = length 15:8, LBA 23:8 = SP specific */
+	uint16_t blocks = (uint16_t)(len / 512);
+
+	return ahci_exec(dev, dk->pmp, ATA_TRUSTED_RECEIVE, proto,
+			 ((uint64_t)spsp << 8) | (blocks >> 8), blocks & 0xff, buf, len, false,
+			 NULL);
+}
+
+static const char *tcg_feature(uint16_t c)
+{
+	switch (c) {
+	case 0x0001:
+		return "TPer";
+	case 0x0002:
+		return "Locking";
+	case 0x0003:
+		return "Geometry";
+	case 0x0100:
+		return "Enterprise SSC";
+	case 0x0200:
+		return "Opal SSC 1.0";
+	case 0x0201:
+		return "Single User Mode";
+	case 0x0202:
+		return "DataStore tables";
+	case 0x0203:
+		return "Opal SSC 2.0";
+	case 0x0301:
+		return "Opalite SSC";
+	case 0x0302:
+		return "Pyrite SSC 1.0";
+	case 0x0303:
+		return "Pyrite SSC 2.0";
+	case 0x0304:
+		return "Ruby SSC";
+	case 0x0401:
+		return "Locking LBA ranges control";
+	case 0x0402:
+		return "Block SID authentication";
+	case 0x0403:
+		return "Configurable namespace locking";
+	case 0x0404:
+		return "Data removal mechanism";
+	default:
+		return c >= 0xc000 ? "vendor unique" : "?";
+	}
+}
+
+static int cmd_sec(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = get_dev(sh);
+	struct ahci_data *data;
+	struct ahci_disk *dk;
+	const uint8_t *b;
+	uint32_t total;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (dev == NULL || (dk = cur_dk(sh, dev, true)) == NULL) {
+		return -ENODEV;
+	}
+	data = dev->data;
+	b = data->buf;
+	if (data->pm) {
+		/*
+		 * The multiplier's control port: the spec has only READ/WRITE PORT
+		 * MULTIPLIER there; ask anyway (read only), a vendor may answer.
+		 */
+		struct ahci_disk pmd = {.pmp = PMP_CTRL, .up = true};
+		int r;
+
+		strncpy(pmd.name, "pm", sizeof(pmd.name));
+		k_mutex_lock(&data->lock, K_FOREVER);
+		r = ahci_identify(dev, &pmd);
+		k_mutex_unlock(&data->lock);
+		if (r == 0) {
+			shell_print(sh, "port multiplier answers IDENTIFY:");
+			print_ident(sh, &pmd);
+		} else {
+			shell_print(sh, "port multiplier: IDENTIFY rejected (%d), as the spec says", r);
+		}
+		if (r == 0 && pmd.id.trusted) {
+			k_mutex_lock(&data->lock, K_FOREVER);
+			r = trusted_rx(dev, &pmd, 0x00, 0x0000, data->buf, 512);
+			k_mutex_unlock(&data->lock);
+			shell_print(sh, "port multiplier: security protocols %s",
+				    r == 0 ? "answered (see hexdump)" : "rejected");
+			if (r == 0) {
+				shell_hexdump(sh, data->buf, 64);
+			}
+		}
+		shell_print(sh, "");
+	}
+	if (!dk->id.trusted) {
+		shell_print(sh, "%s: no Trusted Computing (no Opal / TCG); ATA Security: see "
+			    "ata identify", dk->name);
+		return 0;
+	}
+	k_mutex_lock(&data->lock, K_FOREVER);
+	ret = trusted_rx(dev, dk, 0x00, 0x0000, data->buf, 512);
+	if (ret == 0) {
+		uint16_t n = sys_get_be16(&b[6]);
+		char l[128];
+		int o = 0;
+
+		for (uint16_t i = 0; i < n && i < 64 && o < (int)sizeof(l) - 4; i++) {
+			o += snprintf(l + o, sizeof(l) - o, " %02x", b[8 + i]);
+		}
+		shell_print(sh, "%s: security protocols:%s", dk->name, o != 0 ? l : " none");
+	} else {
+		shell_error(sh, "%s: TRUSTED RECEIVE protocol 0: %d", dk->name, ret);
+	}
+	ret = trusted_rx(dev, dk, 0x01, 0x0001, data->buf, 512);
+	if (ret != 0) {
+		k_mutex_unlock(&data->lock);
+		shell_error(sh, "%s: TCG Level 0 Discovery: %d (no TCG SSC)", dk->name, ret);
+		return ret;
+	}
+	total = MIN(sys_get_be32(&b[0]) + 4, 512U);
+	shell_print(sh, "TCG Level 0 Discovery: %u bytes, version %08x", total, sys_get_be32(&b[4]));
+	for (uint32_t o = 48; o + 4 <= total;) {
+		uint16_t code = sys_get_be16(&b[o]);
+		uint8_t ver = b[o + 2] >> 4, len = b[o + 3];
+		const uint8_t *f = &b[o + 4];
+
+		shell_print(sh, "  %04x v%u %s", code, ver, tcg_feature(code));
+		if (code == 0x0002 && len >= 1) {
+			shell_print(sh, "       locking %s, %s, %s, media encryption %s, MBR %s%s",
+				    (f[0] & BIT(0)) ? "supported" : "not supported",
+				    (f[0] & BIT(1)) ? "enabled" : "not enabled",
+				    (f[0] & BIT(2)) ? "LOCKED" : "unlocked",
+				    (f[0] & BIT(3)) ? "yes" : "no",
+				    (f[0] & BIT(4)) ? "shadowing enabled" : "shadowing off",
+				    (f[0] & BIT(5)) ? " (done)" : "");
+		} else if ((code == 0x0203 || code == 0x0200 || code == 0x0302 || code == 0x0303 ||
+			    code == 0x0100) && len >= 4) {
+			shell_print(sh, "       base ComID 0x%04x, %u ComIDs", sys_get_be16(&f[0]),
+				    sys_get_be16(&f[2]));
+		}
+		o += 4 + len;
+		if (len == 0 && code == 0) {
+			break;
+		}
+	}
+	k_mutex_unlock(&data->lock);
+	return 0;
+}
+
+/*
  * Human readable port multiplier registers (bring-up aid, ata debug only).
  * Names and fields from the SATA spec (Port Multiplier, SStatus/SError/
  * SControl); anything else is shown as vendor specific.
@@ -982,6 +1159,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ata_cmds,
 		      "[health|attr|log|enable|disable|test short|long|abort] SMART of the "
 		      "current device (ata dev); no argument: health and attributes",
 		      cmd_smart, 1, 2),
+	SHELL_CMD_ARG(sec, NULL,
+		      "Security protocols and TCG Level 0 Discovery (Opal ...), read only",
+		      cmd_sec, 1, 0),
 	SHELL_CMD_ARG(power, NULL, "[standby|idle] Check or set the power mode", cmd_power, 1,
 		      1),
 	SHELL_CMD(debug, &ata_debug_cmds, "Registers, PHY", NULL),
