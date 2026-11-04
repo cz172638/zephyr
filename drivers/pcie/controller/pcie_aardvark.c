@@ -98,6 +98,8 @@ LOG_MODULE_REGISTER(pcie_aardvark, LOG_LEVEL_INF);
 #define CTRL0_IS_RC          BIT(2)
 #define CTRL0_LANES_MASK     GENMASK(4, 3)
 #define CTRL0_LINK_TRAIN     BIT(6)
+#define CTRL1                0x4804
+#define CTRL1_HOT_RESET      BIT(0)
 #define CTRL2                0x4808
 #define CTRL2_RESERVED       0x7
 #define CTRL2_TD             BIT(4)
@@ -106,7 +108,9 @@ LOG_MODULE_REGISTER(pcie_aardvark, LOG_LEVEL_INF);
 #define REF_CLK_TX           BIT(1)
 #define REF_CLK_RX           BIT(2)
 #define CTRL2_MSI_EN         BIT(10)
+#define MSG_LOG              0x4830 /* last inbound message, requester ID [31:16] */
 #define ISR0                 0x4840
+#define ISR0_PME             BIT(7)
 #define ISR0_CORR_ERR        BIT(11)
 #define ISR0_NFAT_ERR        BIT(12)
 #define ISR0_FAT_ERR         BIT(13)
@@ -137,8 +141,12 @@ LOG_MODULE_REGISTER(pcie_aardvark, LOG_LEVEL_INF);
 #define LMI_LTSSM_SHIFT      24
 #define LMI_LTSSM_MASK       0x3f
 #define LMI_VENDOR_ID        0x6044
+#define LTSSM_CONFIG_LW_START 0x05
+#define LTSSM_CONFIG_IDLE    0x0a
 #define LTSSM_L0             0x10
 #define LTSSM_DISABLED       0x20
+#define LTSSM_RECOVERY_EQ0   0x28
+#define LTSSM_RECOVERY_EQ3   0x2b
 
 #define CTRL_CONFIG          0x18000
 #define CTRL_MODE_CMD        BIT(0)
@@ -191,6 +199,9 @@ struct root_port {
 	uint32_t pref_lim; /* 0x2c */
 	uint32_t io_hi;    /* 0x30 */
 	uint32_t bridge;   /* 0x3c: interrupt line/pin, bridge control */
+	uint16_t secsta;   /* 0x1e: from the PIO completions */
+	uint16_t rootctl;  /* PCIe cap + 0x1c: PME interrupt, CRS visibility */
+	uint32_t rootsta;  /* PCIe cap + 0x20: PME requester and status */
 };
 
 /* Root port identity: Vendor/Device ID, Subsystem (cap 0x0d at 0x40) */
@@ -229,7 +240,7 @@ struct advk_rc_data {
 		const void *parameter;
 		uint32_t count;
 	} msi[MSI_VECTORS];
-	uint32_t irq_count, msi_spurious, err_cor, err_nfat, err_fat, intx[4];
+	uint32_t irq_count, msi_spurious, err_cor, err_nfat, err_fat, intx[4], pme;
 	uint32_t last_isr0, last_payload;
 	int64_t link_up_ms;
 #if defined(CONFIG_PCIE_AARDVARK_AER)
@@ -266,6 +277,23 @@ static bool link_up(const struct device *dev)
 	uint8_t s = ltssm(dev);
 
 	return s >= LTSSM_L0 && s < LTSSM_DISABLED;
+}
+
+/* Data Link Layer Link Active: Configuration.Idle, Recovery, L0, L0s, L1, L2 */
+static bool link_active(const struct device *dev)
+{
+	uint8_t s = ltssm(dev);
+
+	return s >= LTSSM_CONFIG_IDLE && s < LTSSM_DISABLED;
+}
+
+/* Link Training: Configuration and Recovery states */
+static bool link_training(const struct device *dev)
+{
+	uint8_t s = ltssm(dev);
+
+	return (s >= LTSSM_CONFIG_LW_START && s < LTSSM_L0) ||
+	       (s >= LTSSM_RECOVERY_EQ0 && s <= LTSSM_RECOVERY_EQ3);
 }
 
 /*
@@ -324,9 +352,11 @@ static int pio_status(const struct device *dev)
 		return -EAGAIN;
 	case PIO_COMP_UR:
 		data->pio_ur++;
+		data->rp.secsta |= BIT(13); /* Received Master Abort */
 		return -EIO;
 	case PIO_COMP_CA:
 		data->pio_ca++;
+		data->rp.secsta |= BIT(12); /* Received Target Abort */
 		return -EIO;
 	default:
 		data->pio_err++;
@@ -343,7 +373,7 @@ static int pio_cfg(const struct device *dev, bool write, bool type1, pcie_bdf_t 
 	int ret = -EIO;
 
 	k_mutex_lock(&data->pio_lock, K_FOREVER);
-	for (int retry = 0; retry < 100; retry++) {
+	for (int retry = 0; retry < CONFIG_PCIE_AARDVARK_CRS_TIMEOUT_MS; retry++) {
 		if (rd(dev, PIO_START) != 0) {
 			/* a previous request never completed */
 			ret = -EBUSY;
@@ -402,7 +432,7 @@ static uint32_t rp_read(const struct device *dev, unsigned int reg)
 	case 0x18:
 		return rp->bus;
 	case 0x1c:
-		return rp->io;
+		return rp->io | ((uint32_t)rp->secsta << 16);
 	case 0x20:
 		return rp->mem;
 	case 0x24:
@@ -421,7 +451,19 @@ static uint32_t rp_read(const struct device *dev, unsigned int reg)
 	case CFG_SSVID_CAP + 4:
 		return ((uint32_t)data->id.ssid << 16) | data->id.svid;
 	case 0x3c:
-		return rp->bridge;
+		/*
+		 * Bridge Control as in Linux: SERR# Enable is the error message
+		 * interrupt (ISR0 bits 11-13 unmasked), Secondary Bus Reset is
+		 * the hot reset generator
+		 */
+		v = rp->bridge & ~(BIT(16 + 1) | BIT(16 + 6));
+		if ((rd(dev, ISR0_MASK) & ISR0_ERR_MASK) == 0) {
+			v |= BIT(16 + 1);
+		}
+		if ((rd(dev, CTRL1) & CTRL1_HOT_RESET) != 0) {
+			v |= BIT(16 + 6);
+		}
+		return v;
 	default:
 		break;
 	}
@@ -436,10 +478,37 @@ static uint32_t rp_read(const struct device *dev, unsigned int reg)
 		return 0xffffffff;
 	}
 
+	switch (off - CFG_PCIE_CAP) {
+	case 0x14:
+		/* Slot Capabilities: physical slot 1, nothing else */
+		return 1U << 19;
+	case 0x18:
+		/* Slot Status: Presence Detect State, no hot plug */
+		return BIT(16 + 6);
+	case 0x1c:
+		/* Root Control (PME interrupt, CRS visibility), Root Capabilities: CRS SV */
+		return rp->rootctl | BIT(16);
+	case 0x20:
+		return rp->rootsta;
+	default:
+		break;
+	}
+
 	v = rd(dev, off);
 	if (off == CFG_PCIE_CAP) {
 		/* Root Port, slot implemented, end of the legacy chain */
 		v = (v & ~(GENMASK(23, 20) | GENMASK(15, 8))) | (0x4U << 20) | BIT(24);
+	} else if (off == CFG_PCIE_CAP + 0x0c) {
+		/* Link Capabilities: DL Active reporting (emulated from the LTSSM) */
+		v |= BIT(20);
+	} else if (off == CFG_PCIE_CAP + 0x10) {
+		v &= ~(BIT(16 + 11) | BIT(16 + 13));
+		if (link_training(dev)) {
+			v |= BIT(16 + 11);
+		}
+		if (link_active(dev)) {
+			v |= BIT(16 + 13);
+		}
 	}
 	return v;
 }
@@ -466,8 +535,9 @@ static void rp_write(const struct device *dev, unsigned int reg, uint32_t v)
 		rp->bus = v & 0x00ffffff;
 		return;
 	case 0x1c:
-		/* secondary status is RW1C, nothing latched here */
+		/* secondary status is RW1C */
 		rp->io = v & 0x0000ffff;
+		rp->secsta &= ~(v >> 16);
 		return;
 	case 0x20:
 		rp->mem = v & 0xfff0fff0;
@@ -486,6 +556,24 @@ static void rp_write(const struct device *dev, unsigned int reg, uint32_t v)
 		return;
 	case 0x3c:
 		rp->bridge = (rp->bridge & 0x0000ff00) | (v & 0xffff00ff);
+		rmw(dev, ISR0_MASK, ISR0_ERR_MASK, (v & BIT(16 + 1)) ? 0 : ISR0_ERR_MASK);
+		rmw(dev, CTRL1, CTRL1_HOT_RESET, (v & BIT(16 + 6)) ? CTRL1_HOT_RESET : 0);
+		return;
+	default:
+		break;
+	}
+
+	switch (off - CFG_PCIE_CAP) {
+	case 0x14:
+	case 0x18:
+		return; /* slot: nothing to control */
+	case 0x1c:
+		rp->rootctl = v & (BIT(3) | BIT(4)); /* PME IE, CRS SV enable */
+		return;
+	case 0x20:
+		if ((v & BIT(16)) != 0) {
+			rp->rootsta = 0; /* PME Status, RW1C */
+		}
 		return;
 	default:
 		break;
@@ -516,6 +604,14 @@ static void advk_rc_isr(const struct device *dev)
 
 	data->irq_count++;
 	data->last_isr0 = isr0;
+
+	/* PME first: the message log holds only the last inbound message */
+	if ((isr0 & ISR0_PME) != 0) {
+		data->pme++;
+		if ((data->rp.rootsta & BIT(16)) == 0) {
+			data->rp.rootsta = (rd(dev, MSG_LOG) >> 16) | BIT(16);
+		}
+	}
 
 	if ((isr0 & ISR0_MSI_PENDING) != 0) {
 		uint32_t st = rd(dev, MSI_STATUS) & ~rd(dev, MSI_MASK);
@@ -654,7 +750,8 @@ static void irq_setup(const struct device *dev)
 	/* MSI, error messages and INTx assertions; nothing from ISR1 */
 	wr(dev, ISR0, UINT32_MAX);
 	wr(dev, ISR1, UINT32_MAX);
-	wr(dev, ISR0_MASK, (uint32_t)~(ISR0_MSI_PENDING | ISR0_ERR_MASK | ISR0_INTX_MASK));
+	wr(dev, ISR0_MASK,
+	   (uint32_t)~(ISR0_MSI_PENDING | ISR0_PME | ISR0_ERR_MASK | ISR0_INTX_MASK));
 	wr(dev, ISR1_MASK, UINT32_MAX);
 	wr(dev, HOST_INT_STATUS, UINT32_MAX);
 	wr(dev, HOST_INT_MASK, (uint32_t)~HOST_INT_CORE);
@@ -1432,6 +1529,9 @@ static void sh_irq(const struct device *dev, const struct shell *sh)
 #if defined(CONFIG_PCIE_AARDVARK_AER)
 	shell_print(sh, "AER events serviced: %u (pcie aer)", data->aer_events);
 #endif
+	shell_print(sh, "PME messages %u, root status %08x (requester %02x:%02x.%x)", data->pme,
+		    data->rp.rootsta, (data->rp.rootsta >> 8) & 0xff, (data->rp.rootsta >> 3) & 0x1f,
+		    data->rp.rootsta & 7);
 }
 
 static int sh_link(const struct device *dev, const struct shell *sh, bool retrain)
@@ -2612,6 +2712,43 @@ static int cmd_rc_start(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * Hot reset of the link (Secondary Bus Reset of the root port): TS1 with
+ * the Hot Reset bit, the device resets without PERST#. Then the link
+ * trains again, 100 ms for the device, and the tree is enumerated again.
+ */
+static int cmd_rc_hotreset(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = RC_DEV;
+	int64_t t0;
+	uint32_t bc;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (!rc_active(sh)) {
+		return -ENODEV;
+	}
+	bc = advk_rc_conf_read(dev, PCIE_BDF(0, 0, 0), 0x3c / 4);
+	advk_rc_conf_write(dev, PCIE_BDF(0, 0, 0), 0x3c / 4, bc | BIT(16 + 6));
+	k_msleep(2); /* Trst >= 1 ms */
+	shell_print(sh, "hot reset: ltssm 0x%02x", ltssm(dev));
+	advk_rc_conf_write(dev, PCIE_BDF(0, 0, 0), 0x3c / 4, bc & ~BIT(16 + 6));
+	t0 = k_uptime_get();
+	while (!link_up(dev)) {
+		if (k_uptime_get() - t0 > CONFIG_PCIE_AARDVARK_LINK_TIMEOUT_MS) {
+			shell_error(sh, "no link after %d ms, ltssm 0x%02x",
+				    CONFIG_PCIE_AARDVARK_LINK_TIMEOUT_MS, ltssm(dev));
+			return -ETIMEDOUT;
+		}
+		k_msleep(1);
+	}
+	shell_print(sh, "link up in %lld ms", k_uptime_get() - t0);
+	k_msleep(100);
+	advk_rc_scan(dev);
+	shell_print(sh, "rescanned, see: pcie ls");
+	return 0;
+}
+
 /* pcie debug bringup ...: the init steps one by one */
 SHELL_STATIC_SUBCMD_SET_CREATE(rc_bringup_cmds,
 	SHELL_CMD_ARG(probe, NULL, "Do the core registers answer?", cmd_rc_probe, 1, 0),
@@ -2624,6 +2761,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(rc_bringup_cmds,
 	SHELL_SUBCMD_SET_END);
 SHELL_SUBCMD_ADD((pcie_debug), bringup, &rc_bringup_cmds,
 		 "Root complex bring-up step by step", NULL, 1, 0);
+SHELL_SUBCMD_ADD((pcie_debug), hotreset, NULL,
+		 "Hot reset of the link (Secondary Bus Reset), retrain, rescan",
+		 cmd_rc_hotreset, 1, 0);
 #if defined(CONFIG_PCIE_AARDVARK_NVME_SHELL)
 SHELL_SUBCMD_ADD((pcie_debug), nvme, NULL,
 		 "<b:d.f> [<lba>] [msi] [nocache] Polled NVMe test: identify, read one block; "

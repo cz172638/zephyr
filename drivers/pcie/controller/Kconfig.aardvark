@@ -37,6 +37,16 @@ config PCIE_AARDVARK_LINK_TIMEOUT_MS
 	int "Wait for the link [ms]"
 	default 1000
 
+config PCIE_AARDVARK_CRS_TIMEOUT_MS
+	int "Retry a configuration request answered with CRS for, ms"
+	default 1000
+	help
+	  A device still initialising (a switch loading its EEPROM) answers
+	  configuration requests with Configuration Request Retry Status.
+	  The base specification allows 1 s after a reset; the request is
+	  repeated every millisecond for that long, then the function is
+	  taken as absent.
+
 config PCIE_AARDVARK_TRACE_INIT
 	bool "printk checkpoints in the init"
 	help
