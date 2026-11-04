@@ -140,14 +140,15 @@ config SOC_ARMADA37XX_REGS_SHELL
 	  register range and read it, an external abort shows as ????????.
 
 config SOC_ARMADA37XX_DAP_ROM_BASE
-	hex "CoreSight ROM table (debug APB) for dap info"
-	default 0x80000000
+	hex "CPU address of the CoreSight ROM table for dap info (0: unknown)"
+	default 0x0
 	depends on SOC_ARMADA37XX_DAP_SHELL
 	help
-	  Where "dap info" starts its walk without an address argument.
-	  MDRAR_EL1 is deprecated in Armv8 (and 0 on the Armada 3720), so the
-	  address comes from the SoC: the debug APB the DAP's APB-AP sees.
-	  Secure only on this SoC: reads go through TF-A (A3700_DBG_SIP).
+	  Where "dap info" starts its walk without an address argument, as
+	  the CPU sees it. MDRAR_EL1 is deprecated in Armv8 (and 0 here).
+	  0x80000000 is the debug APB in the DAP's APB-AP address space
+	  (JTAG), not a CPU address: the CPU address is not known on the
+	  Armada 3720, hence 0 (dap info then needs the address).
 
 config SOC_ARMADA37XX_CCI_SHELL
 	bool "CCI-400 shell"

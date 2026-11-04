@@ -6,7 +6,8 @@
  * Looking for the debug infrastructure from the running system.
  *
  * MDRAR_EL1 is deprecated in Armv8 (and 0 on the Armada 3720), so the ROM
- * table address is the SoC's (CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE). The DAP's APB-AP sees it at
+ * table address is the SoC's (CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE, unknown = 0 on the
+ * Armada 3720). The DAP's APB-AP (JTAG) sees the debug APB at
  * 0x80000000 (OpenOCD: CTIs at 0x80820000/0x80920000), the system may
  * map it elsewhere, or not at all. Every read here goes through a probe
  * that turns an external abort into an error, so ranges can be scanned:
@@ -144,9 +145,8 @@ static int dbg_reachable(const struct shell *sh, uintptr_t pa)
 	bool in_dbg = pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE;
 
 	if (in_dbg && !dbg_force) {
-		shell_error(sh, "0x%lx is in the debug APB: reads hang while its power domain is "
-			    "off (power it up through the DAP, then \"dap force on\")",
-			    (unsigned long)pa);
+		shell_error(sh, "0x%lx: CPU window 4 (target 3, 0x80000000) hangs on read; "
+			    "\"dap force on\" to try anyway", (unsigned long)pa);
 		return -EFAULT;
 	}
 	if (!cpu_decodes(pa) && !(in_dbg && use_smc)) {
@@ -157,13 +157,40 @@ static int dbg_reachable(const struct shell *sh, uintptr_t pa)
 	return 0;
 }
 
+/*
+ * Claim tags: set and cleared through system registers here, visible to
+ * the DAP at core debug base + 0xfa0 (CLAIMSET) / 0xfa4 (CLAIMCLR reads
+ * the tags). Set a pattern here, read it over JTAG: that names this
+ * core's debug block in the APB-AP view; the other way round as well.
+ */
+static int cmd_dap_claim(const struct shell *sh, size_t argc, char **argv)
+{
+	uint64_t v;
+
+	if (argc > 2) {
+		uint64_t bits = strtoull(argv[2], NULL, 0) & 0xff;
+
+		if (strcmp(argv[1], "set") == 0) {
+			__asm__ volatile("msr dbgclaimset_el1, %0; isb" : : "r"(bits));
+		} else if (strcmp(argv[1], "clr") == 0) {
+			__asm__ volatile("msr dbgclaimclr_el1, %0; isb" : : "r"(bits));
+		} else {
+			shell_error(sh, "claim [set|clr <bits>]");
+			return -EINVAL;
+		}
+	}
+	__asm__ volatile("mrs %0, dbgclaimclr_el1" : "=r"(v));
+	shell_print(sh, "CPU %u claim tags 0x%02llx (DAP: core debug base + 0xfa4)",
+		    arch_curr_cpu()->id, (unsigned long long)(v & 0xff));
+	return 0;
+}
+
 static int cmd_dap_force(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc > 1) {
 		dbg_force = strcmp(argv[1], "on") == 0;
 	}
-	shell_print(sh, "debug APB reads %s", dbg_force ? "allowed (they hang if it is powered "
-				 "down)" : "refused");
+	shell_print(sh, "reads of 0x80000000.. %s", dbg_force ? "allowed (they hang)" : "refused");
 	return 0;
 }
 
@@ -387,6 +414,11 @@ static int cmd_dap_info(const struct shell *sh, size_t argc, char **argv)
 	/* the ROM table where the SoC puts it (debug APB), or the one given */
 	rom = argc > 1 ? (uintptr_t)strtoull(argv[1], NULL, 0)
 		       : (uintptr_t)CONFIG_SOC_ARMADA37XX_DAP_ROM_BASE;
+	if (rom == 0) {
+		shell_print(sh, "CPU address of the ROM table unknown (0x80000000 is the DAP's "
+			    "APB-AP view): dap info <addr>; to match both views see dap claim");
+		return 0;
+	}
 	if (dbg_reachable(sh, rom) != 0) {
 		return -EFAULT;
 	}
@@ -582,7 +614,9 @@ static int cmd_dap_smc(const struct shell *sh, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(dap_cmds,
-	SHELL_CMD_ARG(force, NULL, "allow debug APB reads (after the DAP powered it up): [on|off]",
+	SHELL_CMD_ARG(claim, NULL, "claim tags of this core: [set|clr <bits>]", cmd_dap_claim, 1,
+		      2),
+	SHELL_CMD_ARG(force, NULL, "allow reads of CPU window 0x80000000 (they hang): [on|off]",
 		      cmd_dap_force, 1, 1),
 	SHELL_CMD_ARG(smc, NULL, "debug window reads through TF-A: [on|off]", cmd_dap_smc, 1, 1),
 	SHELL_CMD_ARG(clk, NULL, "debug/trace clocks: [on]", cmd_dap_clk, 1, 1),
