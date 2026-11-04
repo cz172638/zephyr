@@ -366,6 +366,117 @@ static int cmd_power(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * Human readable port multiplier registers (bring-up aid, ata debug only).
+ * Names and fields from the SATA spec (Port Multiplier, SStatus/SError/
+ * SControl); anything else is shown as vendor specific.
+ */
+static void bits_str(char *b, size_t n, uint32_t v, const char *const names[32])
+{
+	size_t o = 0;
+
+	b[0] = '\0';
+	for (int i = 0; i < 32; i++) {
+		if ((v & BIT(i)) != 0 && o < n) {
+			o += snprintf(b + o, n - o, "%s%s", o != 0 ? " " : "",
+				      names[i] != NULL ? names[i] : "?");
+		}
+	}
+	if (o == 0) {
+		snprintf(b, n, "-");
+	}
+}
+
+static const char *const serr_names[32] = {
+	[0] = "recovered-data", [1] = "recovered-comm", [8] = "transient-data",
+	[9] = "persistent-comm", [10] = "protocol", [11] = "internal",
+	[16] = "PhyRdy-change", [17] = "PHY-internal", [18] = "comm-wake",
+	[19] = "10b8b", [20] = "disparity", [21] = "CRC", [22] = "handshake",
+	[23] = "link-seq", [24] = "transport", [25] = "unknown-FIS", [26] = "exchanged",
+};
+
+static const char *const feat_names[32] = {
+	[0] = "BIST", [1] = "PMREQ", [2] = "dynamic-SSC", [3] = "async-notify",
+};
+
+static void pm_reg_desc(uint8_t port, uint16_t reg, uint32_t v, char *b, size_t n)
+{
+	char t[160];
+
+	if (port != PMP_CTRL) {
+		switch (reg) {
+		case PSCR_SSTATUS:
+			snprintf(b, n, "SStatus: %s, %s, %s", det(SSTS_DET(v)), spd(SSTS_SPD(v)),
+				 ipm(SSTS_IPM(v)));
+			return;
+		case PSCR_SERROR:
+			bits_str(t, sizeof(t), v, serr_names);
+			snprintf(b, n, "SError: %s", t);
+			return;
+		case PSCR_SCONTROL: {
+			static const char *const d[] = {"no action", "COMRESET", "?", "?",
+							"PHY offline"};
+			static const char *const i[] = {"partial+slumber allowed",
+							"no partial", "no slumber",
+							"no partial/slumber"};
+			uint32_t sp = SSTS_SPD(v);
+
+			snprintf(b, n, "SControl: %s, speed %s, %s",
+				 SSTS_DET(v) < ARRAY_SIZE(d) ? d[SSTS_DET(v)] : "?",
+				 sp == 0 ? "no limit" : sp == 1 ? "max Gen1" : sp == 2 ? "max Gen2"
+						 : sp == 3 ? "max Gen3" : "?",
+				 SSTS_IPM(v) < ARRAY_SIZE(i) ? i[SSTS_IPM(v)] : "?");
+			return;
+		}
+		default:
+			snprintf(b, n, "vendor specific");
+			return;
+		}
+	}
+	switch (reg) {
+	case GSCR_PROD_ID:
+		snprintf(b, n, "product ID: vendor %04x%s, device %04x", v & 0xffff,
+			 (v & 0xffff) == 0x197b ? " (JMicron)" : "", v >> 16);
+		return;
+	case GSCR_REV:
+		snprintf(b, n, "revision: spec%s%s%s, chip rev %u", (v & BIT(1)) ? " 1.0" : "",
+			 (v & BIT(2)) ? " 1.1" : "", (v & BIT(3)) ? " 1.2" : "", (v >> 8) & 0xff);
+		return;
+	case GSCR_INFO:
+		snprintf(b, n, "port info: %u device ports", v & 0xf);
+		return;
+	case GSCR_ERROR:
+		snprintf(b, n, "error: ports with SError set 0x%04x", v & 0xffff);
+		return;
+	case GSCR_ERROR_EN:
+		snprintf(b, n, "error enable: ports 0x%04x", v & 0xffff);
+		return;
+	case GSCR_FEAT:
+		bits_str(t, sizeof(t), v, feat_names);
+		snprintf(b, n, "features supported: %s", t);
+		return;
+	case GSCR_FEAT_EN:
+		bits_str(t, sizeof(t), v, feat_names);
+		snprintf(b, n, "features enabled: %s", t);
+		return;
+	default:
+		snprintf(b, n, "%s", reg < 256 && reg != 132 ? "reserved" : "vendor specific");
+		return;
+	}
+}
+
+static void pm_reg_print(const struct shell *sh, uint8_t port, uint16_t reg, uint32_t v)
+{
+	char d[200];
+
+	pm_reg_desc(port, reg, v, d, sizeof(d));
+	if (port == PMP_CTRL) {
+		shell_print(sh, "GSCR[%3u] %08x  %s", reg, v, d);
+	} else {
+		shell_print(sh, "  port %u PSCR[%u] %08x  %s", port, reg, v, d);
+	}
+}
+
 /* Port multiplier registers: GSCR and every port's SStatus/SError/SControl */
 static int cmd_pm(const struct shell *sh, size_t argc, char **argv)
 {
@@ -373,7 +484,7 @@ static int cmd_pm(const struct shell *sh, size_t argc, char **argv)
 					GSCR_ERROR_EN, GSCR_FEAT, GSCR_FEAT_EN};
 	const struct device *dev = get_dev(sh);
 	struct ahci_data *data;
-	uint32_t v[3];
+	uint32_t v;
 	int ret = 0;
 
 	ARG_UNUSED(argc);
@@ -388,18 +499,19 @@ static int cmd_pm(const struct shell *sh, size_t argc, char **argv)
 	}
 	k_mutex_lock(&data->lock, K_FOREVER);
 	for (size_t i = 0; i < ARRAY_SIZE(gscr) && ret == 0; i++) {
-		ret = ahci_pm_read(dev, PMP_CTRL, gscr[i], &v[0]);
+		ret = ahci_pm_read(dev, PMP_CTRL, gscr[i], &v);
 		if (ret == 0) {
-			shell_print(sh, "GSCR[%3u] %08x", gscr[i], v[0]);
+			pm_reg_print(sh, PMP_CTRL, gscr[i], v);
 		}
 	}
 	for (uint8_t p = 0; p < data->pm_ports && ret == 0; p++) {
-		for (int r = 0; r < 3 && ret == 0; r++) {
-			ret = ahci_pm_read(dev, p, r, &v[r]);
-		}
-		if (ret == 0) {
-			shell_print(sh, "port %u: SStatus %08x (%s, %s) SError %08x SControl %08x", p,
-				    v[0], det(SSTS_DET(v[0])), spd(SSTS_SPD(v[0])), v[1], v[2]);
+		shell_print(sh, "port %u%s%s", p, data->d[p].up ? ": " : "",
+			    data->d[p].up ? data->d[p].id.model : "");
+		for (uint16_t r = 0; r < 3 && ret == 0; r++) {
+			ret = ahci_pm_read(dev, p, r, &v);
+			if (ret == 0) {
+				pm_reg_print(sh, p, r, v);
+			}
 		}
 	}
 	k_mutex_unlock(&data->lock);
@@ -501,8 +613,7 @@ static void pm_scan_port(const struct shell *sh, const struct device *dev, uint8
 		}
 		ok++;
 		if (v != 0) {
-			shell_print(sh, "%s[%4llu] 0x%03llx: %08x", port == PMP_CTRL ? "GSCR" : "PSCR",
-				    (unsigned long long)r, (unsigned long long)r, v);
+			pm_reg_print(sh, port, (uint16_t)r, v);
 			nz++;
 		}
 	}
@@ -597,8 +708,7 @@ static int cmd_pm_rd(const struct shell *sh, size_t argc, char **argv)
 			    (unsigned long long)reg, ret);
 		return ret;
 	}
-	shell_print(sh, "port %llu reg %llu: %08x", (unsigned long long)port,
-		    (unsigned long long)reg, v);
+	pm_reg_print(sh, (uint8_t)port, (uint16_t)reg, v);
 	return 0;
 }
 
