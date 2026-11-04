@@ -77,11 +77,34 @@ static const char *ipm(uint32_t i)
 	}
 }
 
-static void print_ident(const struct shell *sh, struct ahci_data *data)
+/* The device the commands work on: "ata dev <n>" (PM port), 0 by default */
+static uint8_t cur;
+
+static struct ahci_disk *cur_dk(const struct shell *sh, const struct device *dev, bool need_up)
 {
-	const struct ahci_ident *id = &data->id;
+	struct ahci_data *data = dev->data;
+	struct ahci_disk *dk = &data->d[cur];
+
+	if (need_up && !dk->up) {
+		shell_error(sh, "%s not ready (ata link up, ata dev)", dk->name);
+		return NULL;
+	}
+	return dk;
+}
+
+static const char *zoned_str(uint8_t z)
+{
+	static const char *const t[] = {"not zoned", "host-aware", "device-managed", "reserved"};
+
+	return t[z & 3];
+}
+
+static void print_ident(const struct shell *sh, struct ahci_disk *dk)
+{
+	const struct ahci_ident *id = &dk->id;
 	uint16_t c = id->sata_cap;
 
+	shell_print(sh, "%s (PM port %u)", dk->name, dk->pmp);
 	shell_print(sh, "model   %s", id->model);
 	shell_print(sh, "serial  %s  fw %s", id->serial, id->fw);
 	shell_print(sh, "size    %llu sectors x %u B = %llu MB (phys sector %u B)%s",
@@ -91,6 +114,13 @@ static void print_ident(const struct shell *sh, struct ahci_data *data)
 	shell_print(sh, "SATA    %s%s%s%s%s%s", (c & BIT(1)) ? "Gen1 " : "",
 		    (c & BIT(2)) ? "Gen2 " : "", (c & BIT(3)) ? "Gen3 " : "",
 		    id->ncq ? "NCQ " : "", id->smart ? "SMART " : "", id->trim ? "TRIM" : "");
+	if (id->ncq) {
+		shell_print(sh, "NCQ     depth %u%s%s%s%s", id->qdepth, (c & BIT(12)) ? ", priority" : "",
+			    (id->ncq_ext & BIT(4)) ? ", streaming" : "",
+			    (id->ncq_ext & BIT(5)) ? ", queue management" : "",
+			    (id->ncq_ext & BIT(6)) ? ", send/receive queued" : "");
+	}
+	shell_print(sh, "zoned   %s", zoned_str(id->zoned));
 	if (id->rpm == 1) {
 		shell_print(sh, "media   solid state");
 	} else if (id->rpm >= 0x401 && id->rpm != 0xffff) {
@@ -102,7 +132,7 @@ static int cmd_info(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = get_dev(sh);
 	struct ahci_data *data;
-	uint32_t ssts, vs;
+	uint32_t ssts, vs, cap;
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
@@ -111,10 +141,13 @@ static int cmd_info(const struct shell *sh, size_t argc, char **argv)
 	}
 	data = dev->data;
 	vs = ahci_rd(dev, AHCI_VS);
-	shell_print(sh, "%s: AHCI %x.%x CAP %08x GHC %08x IS %08x PI %08x, COMPHY %ld",
-		    dev->name, vs >> 16, (vs >> 4) & 0xff, ahci_rd(dev, AHCI_CAP),
-		    ahci_rd(dev, AHCI_GHC), ahci_rd(dev, AHCI_IS), ahci_rd(dev, AHCI_PI),
-		    data->comphy_ret);
+	cap = ahci_rd(dev, AHCI_CAP);
+	shell_print(sh, "%s: AHCI %x.%x CAP %08x (%u slots%s%s%s) GHC %08x PI %08x, COMPHY %ld",
+		    dev->name, vs >> 16, (vs >> 4) & 0xff, cap,
+		    (unsigned int)FIELD_GET(AHCI_CAP_NCS, cap) + 1,
+		    (cap & AHCI_CAP_SNCQ) ? ", NCQ" : "", (cap & AHCI_CAP_SPM) ? ", SPM" : "",
+		    (cap & AHCI_CAP_FBS) ? ", FBS" : "", ahci_rd(dev, AHCI_GHC),
+		    ahci_rd(dev, AHCI_PI), data->comphy_ret);
 	ssts = ahci_rd(dev, P0(AHCI_PxSSTS));
 	shell_print(sh, "port 0: SSTS %08x (%s, %s, %s) SCTL %08x", ssts, det(SSTS_DET(ssts)),
 		    spd(SSTS_SPD(ssts)), ipm(SSTS_IPM(ssts)), ahci_rd(dev, P0(AHCI_PxSCTL)));
@@ -123,11 +156,42 @@ static int cmd_info(const struct shell *sh, size_t argc, char **argv)
 		    ahci_rd(dev, P0(AHCI_PxSIG)), ahci_rd(dev, P0(AHCI_PxSERR)),
 		    ahci_rd(dev, P0(AHCI_PxIS)), ahci_rd(dev, P0(AHCI_PxIE)),
 		    ahci_rd(dev, P0(AHCI_PxCI)));
-	shell_print(sh, "        %s, %u commands, %u errors, %u interrupts",
-		    data->up ? "up" : "down", data->cmds, data->errors, data->irqs);
-	if (data->up) {
-		print_ident(sh, data);
+	shell_print(sh, "        link %s, %u commands, %u errors, %u interrupts",
+		    data->link ? "up" : "down", data->cmds, data->errors, data->irqs);
+	if (data->pm) {
+		shell_print(sh, "port multiplier %04x:%04x rev %08x, %u ports",
+			    data->pm_id & 0xffff, data->pm_id >> 16, data->pm_rev, data->pm_ports);
 	}
+	for (int i = 0; i < AHCI_MAX_DEV; i++) {
+		struct ahci_disk *dk = &data->d[i];
+
+		if (!dk->present) {
+			continue;
+		}
+		shell_print(sh, "%c %-6s pmp %u sig %08x %s%s%s", i == cur ? '*' : ' ', dk->name,
+			    dk->pmp, dk->sig, dk->up ? dk->id.model : "not ready",
+			    dk->up ? ", " : "", dk->up ? (dk->registered ? "disk" : "unregistered")
+						   : "");
+	}
+	return 0;
+}
+
+static int cmd_dev(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = get_dev(sh);
+	uint64_t n;
+
+	if (dev == NULL) {
+		return -ENODEV;
+	}
+	if (argc > 1) {
+		if (parse_u64(sh, argv[1], &n) != 0 || n >= AHCI_MAX_DEV) {
+			shell_error(sh, "device 0..%u", AHCI_MAX_DEV - 1);
+			return -EINVAL;
+		}
+		cur = (uint8_t)n;
+	}
+	shell_print(sh, "device %u: %s", cur, ((struct ahci_data *)dev->data)->d[cur].name);
 	return 0;
 }
 
@@ -135,22 +199,27 @@ static int cmd_identify(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = get_dev(sh);
 	struct ahci_data *data;
+	struct ahci_disk *dk;
 	int ret;
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
-	if (dev == NULL) {
+	if (dev == NULL || (dk = cur_dk(sh, dev, false)) == NULL) {
 		return -ENODEV;
 	}
 	data = dev->data;
+	if (!data->link) {
+		shell_error(sh, "link down (ata link up)");
+		return -ENODEV;
+	}
 	k_mutex_lock(&data->lock, K_FOREVER);
-	ret = ahci_identify(dev);
+	ret = ahci_identify(dev, dk);
 	k_mutex_unlock(&data->lock);
 	if (ret != 0) {
 		shell_error(sh, "identify: %d", ret);
 		return ret;
 	}
-	print_ident(sh, data);
+	print_ident(sh, dk);
 	return 0;
 }
 
@@ -178,8 +247,9 @@ static int cmd_link(const struct shell *sh, size_t argc, char **argv)
 	}
 	uint32_t ssts = ahci_rd(dev, P0(AHCI_PxSSTS));
 
-	shell_print(sh, "%s, %s, %s, disk %s", det(SSTS_DET(ssts)), spd(SSTS_SPD(ssts)),
-		    ipm(SSTS_IPM(ssts)), data->up ? "ready" : "not ready");
+	shell_print(sh, "%s, %s, %s, link %s%s", det(SSTS_DET(ssts)), spd(SSTS_SPD(ssts)),
+		    ipm(SSTS_IPM(ssts)), data->link ? "up" : "down",
+		    data->pm ? ", port multiplier" : "");
 	return 0;
 }
 
@@ -187,6 +257,7 @@ static int cmd_read(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = get_dev(sh);
 	struct ahci_data *data;
+	struct ahci_disk *dk;
 	uint64_t lba, n = 1;
 	int64_t t0, dt;
 	int ret = 0;
@@ -198,11 +269,11 @@ static int cmd_read(const struct shell *sh, size_t argc, char **argv)
 	if (parse_u64(sh, argv[1], &lba) != 0 || (argc > 2 && parse_u64(sh, argv[2], &n) != 0)) {
 		return -EINVAL;
 	}
-	if (!data->up) {
-		shell_error(sh, "disk not ready (ata link up)");
+	dk = cur_dk(sh, dev, true);
+	if (dk == NULL) {
 		return -ENODEV;
 	}
-	uint32_t ss = data->id.sector_size;
+	uint32_t ss = dk->id.sector_size;
 	uint32_t chunk = data->buf_size / ss;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
@@ -210,8 +281,8 @@ static int cmd_read(const struct shell *sh, size_t argc, char **argv)
 	for (uint64_t done = 0; done < n && ret == 0;) {
 		uint32_t c = (uint32_t)MIN(n - done, (uint64_t)chunk);
 
-		ret = ahci_exec(dev, ATA_READ_DMA_EXT, 0, lba + done, (uint16_t)c, data->buf,
-				(size_t)c * ss, false, NULL);
+		ret = ahci_exec(dev, dk->pmp, ATA_READ_DMA_EXT, 0, lba + done, (uint16_t)c,
+				data->buf, (size_t)c * ss, false, NULL);
 		if (done == 0 && ret == 0) {
 			shell_hexdump(sh, data->buf, MIN(ss, 512U));
 		}
@@ -236,11 +307,12 @@ static int cmd_power(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *dev = get_dev(sh);
 	struct ahci_data *data;
+	struct ahci_disk *dk;
 	uint8_t d2h[20];
 	uint8_t cmd = ATA_CHECK_POWER_MODE;
 	int ret;
 
-	if (dev == NULL) {
+	if (dev == NULL || (dk = cur_dk(sh, dev, true)) == NULL) {
 		return -ENODEV;
 	}
 	data = dev->data;
@@ -255,19 +327,62 @@ static int cmd_power(const struct shell *sh, size_t argc, char **argv)
 		}
 	}
 	k_mutex_lock(&data->lock, K_FOREVER);
-	ret = ahci_exec(dev, cmd, 0, 0, 0, NULL, 0, false, d2h);
+	ret = ahci_exec(dev, dk->pmp, cmd, 0, 0, 0, NULL, 0, false, d2h);
 	if (ret == 0 && cmd != ATA_CHECK_POWER_MODE) {
-		ret = ahci_exec(dev, ATA_CHECK_POWER_MODE, 0, 0, 0, NULL, 0, false, d2h);
+		ret = ahci_exec(dev, dk->pmp, ATA_CHECK_POWER_MODE, 0, 0, 0, NULL, 0, false, d2h);
 	}
 	k_mutex_unlock(&data->lock);
 	if (ret != 0) {
 		shell_error(sh, "power: %d", ret);
 		return ret;
 	}
-	shell_print(sh, "power mode %02x: %s", d2h[12],
+	shell_print(sh, "%s power mode %02x: %s", dk->name, d2h[12],
 		    d2h[12] == 0x00 ? "standby" : d2h[12] == 0x80 ? "idle" :
 		    d2h[12] == 0xff ? "active/idle" : "?");
 	return 0;
+}
+
+/* Port multiplier registers: GSCR and every port's SStatus/SError/SControl */
+static int cmd_pm(const struct shell *sh, size_t argc, char **argv)
+{
+	static const uint16_t gscr[] = {GSCR_PROD_ID, GSCR_REV, GSCR_INFO, GSCR_ERROR,
+					GSCR_ERROR_EN, GSCR_FEAT, GSCR_FEAT_EN};
+	const struct device *dev = get_dev(sh);
+	struct ahci_data *data;
+	uint32_t v[3];
+	int ret = 0;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	if (dev == NULL) {
+		return -ENODEV;
+	}
+	data = dev->data;
+	if (!data->pm) {
+		shell_error(sh, "no port multiplier (ata link reset probes again)");
+		return -ENODEV;
+	}
+	k_mutex_lock(&data->lock, K_FOREVER);
+	for (size_t i = 0; i < ARRAY_SIZE(gscr) && ret == 0; i++) {
+		ret = ahci_pm_read(dev, PMP_CTRL, gscr[i], &v[0]);
+		if (ret == 0) {
+			shell_print(sh, "GSCR[%3u] %08x", gscr[i], v[0]);
+		}
+	}
+	for (uint8_t p = 0; p < data->pm_ports && ret == 0; p++) {
+		for (int r = 0; r < 3 && ret == 0; r++) {
+			ret = ahci_pm_read(dev, p, r, &v[r]);
+		}
+		if (ret == 0) {
+			shell_print(sh, "port %u: SStatus %08x (%s, %s) SError %08x SControl %08x", p,
+				    v[0], det(SSTS_DET(v[0])), spd(SSTS_SPD(v[0])), v[1], v[2]);
+		}
+	}
+	k_mutex_unlock(&data->lock);
+	if (ret != 0) {
+		shell_error(sh, "PM register read: %d", ret);
+	}
+	return ret;
 }
 
 static int cmd_regs(const struct shell *sh, size_t argc, char **argv)
@@ -358,6 +473,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ata_debug_cmds,
 
 SHELL_STATIC_SUBCMD_SET_CREATE(ata_cmds,
 	SHELL_CMD_ARG(info, NULL, "Controller, link and disk state", cmd_info, 1, 0),
+	SHELL_CMD_ARG(dev, NULL, "[<n>] Device the commands work on (PM port), default 0",
+		      cmd_dev, 1, 1),
 	SHELL_CMD_ARG(identify, NULL, "IDENTIFY DEVICE again", cmd_identify, 1, 0),
 	SHELL_CMD_ARG(link, NULL, "[up|reset] Link state; up: bring up, reset: COMRESET",
 		      cmd_link, 1, 1),
@@ -365,6 +482,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ata_cmds,
 		      cmd_read, 2, 1),
 	SHELL_CMD_ARG(power, NULL, "[standby|idle] Check or set the power mode", cmd_power, 1,
 		      1),
+	SHELL_CMD_ARG(pm, NULL, "Port multiplier: GSCR and per-port SStatus/SError/SControl",
+		      cmd_pm, 1, 0),
 	SHELL_CMD(debug, &ata_debug_cmds, "Registers, PHY", NULL),
 	SHELL_SUBCMD_SET_END);
 

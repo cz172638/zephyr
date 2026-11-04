@@ -17,6 +17,8 @@
 #define AHCI_CAP_NP      GENMASK(4, 0)
 #define AHCI_CAP_NCS     GENMASK(12, 8)
 #define AHCI_CAP_ISS     GENMASK(23, 20)
+#define AHCI_CAP_FBS     BIT(16)
+#define AHCI_CAP_SPM     BIT(17)
 #define AHCI_CAP_SCLO    BIT(24)
 #define AHCI_CAP_SSS     BIT(27)
 #define AHCI_CAP_SNCQ    BIT(30)
@@ -60,6 +62,7 @@
 #define PxCMD_POD        BIT(2)
 #define PxCMD_CLO        BIT(3)
 #define PxCMD_FRE        BIT(4)
+#define PxCMD_PMA        BIT(17)
 #define PxCMD_FR         BIT(14)
 #define PxCMD_CR         BIT(15)
 
@@ -92,6 +95,27 @@
 #define ATA_IDLE_IMMEDIATE     0xe1
 #define ATA_CHECK_POWER_MODE   0xe5
 #define ATA_SMART              0xb0
+#define ATA_READ_PM            0xe4
+#define ATA_WRITE_PM           0xe8
+
+/* Signatures (PxSIG, D2H after reset) */
+#define SIG_ATA   0x00000101
+#define SIG_ATAPI 0xeb140101
+#define SIG_PM    0x96690101
+
+/* Port multiplier: control port, GSCR (on port 15) and PSCR (per port) */
+#define PMP_CTRL       15
+#define AHCI_MAX_DEV   8
+#define GSCR_PROD_ID   0
+#define GSCR_REV       1
+#define GSCR_INFO      2
+#define GSCR_ERROR     32
+#define GSCR_ERROR_EN  33
+#define GSCR_FEAT      64
+#define GSCR_FEAT_EN   96
+#define PSCR_SSTATUS   0
+#define PSCR_SERROR    1
+#define PSCR_SCONTROL  2
 
 /* DMA structures */
 struct ahci_cmd_hdr {
@@ -126,10 +150,25 @@ struct ahci_ident {
 	uint32_t phys_sector_size;
 	uint16_t sata_cap;	/* word 76 */
 	uint16_t rpm;		/* word 217 */
+	uint16_t ncq_ext;	/* word 77 */
+	uint8_t qdepth;		/* word 75 + 1 */
+	uint8_t zoned;		/* word 69 bits 1:0 */
 	bool lba48;
 	bool ncq;
 	bool smart;
 	bool trim;
+};
+
+/* One device: direct attached (pmp 0) or behind a port multiplier */
+struct ahci_disk {
+	struct disk_info disk;
+	char name[16];
+	uint32_t sig;
+	uint8_t pmp;
+	bool present;
+	bool up;
+	bool registered;
+	struct ahci_ident id;
 };
 
 struct ahci_config {
@@ -145,7 +184,6 @@ struct ahci_config {
 struct ahci_data {
 	DEVICE_MMIO_RAM;
 	const struct device *dev;
-	struct disk_info disk;
 	struct k_mutex lock;
 	struct k_sem done;
 	struct ahci_cmd_hdr *clb;
@@ -160,8 +198,11 @@ struct ahci_data {
 	uint32_t cmds;
 	uint32_t errors;
 	bool hba_ok;
-	bool up;
-	struct ahci_ident id;
+	bool link;		/* port 0 link up, devices probed */
+	bool pm;		/* a port multiplier is attached */
+	uint32_t pm_id, pm_rev;
+	uint8_t pm_ports;
+	struct ahci_disk d[AHCI_MAX_DEV];
 };
 
 /* Shared with the shell */
@@ -171,10 +212,13 @@ uint16_t ahci_phy_rd(const struct device *dev, uint16_t reg);
 void ahci_phy_wr(const struct device *dev, uint16_t reg, uint16_t v);
 long ahci_comphy_power_on(const struct device *dev);
 int ahci_port_up(const struct device *dev, bool comreset);
-int ahci_exec(const struct device *dev, uint8_t cmd, uint16_t feat, uint64_t lba,
+int ahci_exec(const struct device *dev, uint8_t pmp, uint8_t cmd, uint16_t feat, uint64_t lba,
 	      uint16_t count, void *buf, size_t len, bool write, uint8_t *d2h);
-int ahci_rw(const struct device *dev, uint64_t lba, uint32_t count, void *buf, bool write);
-int ahci_identify(const struct device *dev);
+int ahci_rw(const struct device *dev, struct ahci_disk *d, uint64_t lba, uint32_t count,
+	    void *buf, bool write);
+int ahci_identify(const struct device *dev, struct ahci_disk *d);
+int ahci_pm_read(const struct device *dev, uint8_t port, uint16_t reg, uint32_t *val);
+int ahci_pm_write(const struct device *dev, uint8_t port, uint16_t reg, uint32_t val);
 const struct device *ahci_first(void);
 
 #endif /* ZEPHYR_DRIVERS_DISK_AHCI_AHCI_H_ */
