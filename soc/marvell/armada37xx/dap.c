@@ -32,6 +32,8 @@
 #include <zephyr/arch/arm64/exception.h>
 #include <zephyr/kernel/internal/mm.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/settings/settings.h>
 #include <soc.h>
 #include <zephyr/sys/util.h>
 
@@ -534,6 +536,115 @@ static uint32_t dec_err_take(void)
 	return mask;
 }
 
+/*
+ * Ranges a find hung on, kept in settings (dap/skip): after a hang and a
+ * reset the next find goes past them.
+ */
+#define SKIP_MAX 16
+static struct {
+	uint64_t start, end;
+} skip[SKIP_MAX];
+static int n_skip = -1;
+
+static int skip_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+		   void *param)
+{
+	ARG_UNUSED(key);
+	ARG_UNUSED(param);
+	if (len <= sizeof(skip) && len % sizeof(skip[0]) == 0 &&
+	    read_cb(cb_arg, skip, len) == (ssize_t)len) {
+		n_skip = (int)(len / sizeof(skip[0]));
+	}
+	return 0;
+}
+
+static void skip_load(void)
+{
+	if (n_skip >= 0) {
+		return;
+	}
+	n_skip = 0;
+	if (IS_ENABLED(CONFIG_SETTINGS) && settings_subsys_init() == 0) {
+		(void)settings_load_subtree_direct("dap/skip", skip_cb, NULL);
+	}
+}
+
+static int skip_save(void)
+{
+	if (!IS_ENABLED(CONFIG_SETTINGS)) {
+		return -ENOTSUP;
+	}
+	return n_skip == 0 ? settings_delete("dap/skip")
+			   : settings_save_one("dap/skip", skip, n_skip * sizeof(skip[0]));
+}
+
+static bool skipped(uint64_t pa)
+{
+	for (int i = 0; i < n_skip; i++) {
+		if (pa >= skip[i].start && pa < skip[i].end) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static int cmd_dap_skip(const struct shell *sh, size_t argc, char **argv)
+{
+	skip_load();
+	if (argc > 1 && strcmp(argv[1], "add") == 0 && argc > 3) {
+		if (n_skip >= SKIP_MAX) {
+			shell_error(sh, "skip list full");
+			return -ENOSPC;
+		}
+		skip[n_skip].start = ROUND_DOWN(strtoull(argv[2], NULL, 0), 0x1000);
+		skip[n_skip].end = ROUND_UP(strtoull(argv[3], NULL, 0), 0x1000);
+		if (skip[n_skip].end <= skip[n_skip].start) {
+			skip[n_skip].end = skip[n_skip].start + 0x1000;
+		}
+		n_skip++;
+		(void)skip_save();
+	} else if (argc > 1 && strcmp(argv[1], "del") == 0 && argc > 2) {
+		int i = (int)strtol(argv[2], NULL, 0);
+
+		if (i < 0 || i >= n_skip) {
+			return -EINVAL;
+		}
+		memmove(&skip[i], &skip[i + 1], (n_skip - i - 1) * sizeof(skip[0]));
+		n_skip--;
+		(void)skip_save();
+	} else if (argc > 1 && strcmp(argv[1], "clear") == 0) {
+		n_skip = 0;
+		(void)skip_save();
+	} else if (argc > 1 && strcmp(argv[1], "list") != 0) {
+		shell_error(sh, "skip [list|add <start> <end>|del <n>|clear]");
+		return -EINVAL;
+	}
+	for (int i = 0; i < n_skip; i++) {
+		shell_print(sh, "%2d: %09llx-%09llx", i, (unsigned long long)skip[i].start,
+			    (unsigned long long)skip[i].end - 1);
+	}
+	if (n_skip == 0) {
+		shell_print(sh, "no ranges skipped");
+	}
+	return 0;
+}
+
+/* Progress straight out of the console UART: still there after a hang */
+static void progress(uint64_t pa)
+{
+#if DT_HAS_CHOSEN(zephyr_console)
+	static const struct device *const con = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+	char b[16];
+	int n = snprintf(b, sizeof(b), "\r@%09llx ", (unsigned long long)pa);
+
+	for (int i = 0; i < n; i++) {
+		uart_poll_out(con, b[i]);
+	}
+#else
+	ARG_UNUSED(pa);
+#endif
+}
+
 static int cmd_dap_find(const struct shell *sh, size_t argc, char **argv)
 {
 	uint64_t start = argc > 1 ? strtoull(argv[1], NULL, 0) : 0x40000000ULL;
@@ -548,6 +659,7 @@ static int cmd_dap_find(const struct shell *sh, size_t argc, char **argv)
 		return -EINVAL;
 	}
 	windows_load();
+	skip_load();
 	(void)dec_err_take();
 	for (uint64_t pa = start; pa <= end; pa += 0x1000) {
 		int now = NONE;
@@ -557,10 +669,15 @@ static int cmd_dap_find(const struct shell *sh, size_t argc, char **argv)
 			bool intreg = pa >= INTREG_BASE && pa < INTREG_END;
 
 			if ((pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE && !dbg_force) ||
-			    dt_known((uintptr_t)pa) || (!intreg && in_window((uintptr_t)pa))) {
+			    dt_known((uintptr_t)pa) || (!intreg && in_window((uintptr_t)pa)) ||
+			    skipped(pa)) {
 				now = SKIP;
 			} else {
 				struct win w;
+
+				if (intreg || (pa & 0xffff) == 0) {
+					progress(pa);
+				}
 
 				win_map(&w, (uintptr_t)pa, 0x1000);
 				now = a3700_probe_read32((uintptr_t)w.va + CS_CIDR0 + 4, &c1) == 0
@@ -599,15 +716,15 @@ next:
 			if (run == ABORT) {
 				uint32_t dec = dec_err_take();
 
-				shell_print(sh, "%09llx-%09llx  aborts (decoder errors 0x%04x)",
+				shell_print(sh, "\r%09llx-%09llx  aborts (decoder errors 0x%04x)",
 					    (unsigned long long)run_start,
 					    (unsigned long long)pa - 1, dec);
 			} else if (run == READ) {
-				shell_print(sh, "%09llx-%09llx  reads", (unsigned long long)run_start,
+				shell_print(sh, "\r%09llx-%09llx  reads", (unsigned long long)run_start,
 					    (unsigned long long)pa - 1);
 			} else if (run == SKIP) {
-				shell_print(sh, "%09llx-%09llx  skipped (window / devicetree / "
-					    "0x80000000)", (unsigned long long)run_start,
+				shell_print(sh, "\r%09llx-%09llx  skipped (window, devicetree, "
+					    "0x80000000, dap skip)", (unsigned long long)run_start,
 					    (unsigned long long)pa - 1);
 			}
 			run = now;
@@ -808,6 +925,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(dap_cmds,
 	SHELL_CMD_ARG(find, NULL,
 		      "look for the ROM table without hanging: [<start> <end>], default "
 		      "0x40000000-0x100000000", cmd_dap_find, 1, 2),
+	SHELL_CMD_ARG(skip, NULL,
+		      "ranges dap find leaves out, saved: [list|add <start> <end>|del <n>|clear]",
+		      cmd_dap_skip, 1, 3),
 	SHELL_CMD_ARG(scan, NULL, "CoreSight IDs: <start> <end> [step]", cmd_dap_scan, 3, 1),
 	SHELL_CMD_ARG(win, NULL, "CPU address decode windows", cmd_dap_win, 1, 0),
 	SHELL_CMD_ARG(rd, NULL, "probing read: <addr> [words]", cmd_dap_rd, 2, 1),
