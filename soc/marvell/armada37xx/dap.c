@@ -129,42 +129,29 @@ static bool cpu_decodes(uintptr_t pa)
 	return yes;
 }
 
-/* TF-A built with A3700_DBG_SIP answers the debug window read */
-static bool sip_dbg_present(void)
-{
-	struct arm_smccc_res res;
-
-	arm_smccc_smc(SIP_DBG_READ, CS_CIDR0, 0, 0, 0, 0, 0, 0, &res);
-	return (long)res.a0 != -1; /* SMC_UNK */
-}
-
 /*
- * Before touching the debug window: directly only when decoded, else
- * through TF-A, else not at all (it would hang).
+ * Before touching an address: only when the CPU decodes it. The debug
+ * APB (0x80000000) is not on the CPU's bus on the Armada 3700, for the
+ * secure world neither (A3700_DBG_SIP reads hang in BL31 the same way):
+ * only the DAP's APB-AP reaches it, i.e. JTAG/SWD. "dap smc on" still
+ * forces the TF-A path, for an SoC or firmware that maps it.
  */
 static int dbg_reachable(const struct shell *sh, uintptr_t pa)
 {
-	if (pa < DBG_BASE || pa >= DBG_BASE + DBG_SIZE) {
-		if (!cpu_decodes(pa)) {
-			shell_error(sh, "0x%lx is not decoded for the CPU (dap win): a read would hang",
-				    (unsigned long)pa);
-			return -EFAULT;
-		}
+	if (cpu_decodes(pa)) {
 		return 0;
 	}
-	if (!use_smc && cpu_decodes(pa)) {
+	if (use_smc && pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE) {
+		shell_warn(sh, "0x%lx not decoded for the CPU, reading through TF-A as asked "
+			   "(dap smc on); on the Armada 3700 this hangs", (unsigned long)pa);
 		return 0;
 	}
-	if (!sip_dbg_present()) {
-		shell_error(sh, "0x%lx: the debug APB is not decoded for the CPU and TF-A has no "
-			    "A3700_DBG_SIP; image with A3700_DBG_SIP=1, or JTAG", (unsigned long)pa);
-		return -ENOTSUP;
-	}
-	if (!use_smc) {
-		shell_print(sh, "debug APB not decoded for the CPU: reading through TF-A");
-		use_smc = true;
-	}
-	return 0;
+	shell_error(sh, "0x%lx is not decoded for the CPU (dap win): a read would hang%s",
+		    (unsigned long)pa,
+		    pa >= DBG_BASE && pa < DBG_BASE + DBG_SIZE
+			    ? "; the debug APB is reachable only through the DAP (JTAG/SWD)"
+			    : "");
+	return -EFAULT;
 }
 
 /* the four ID bytes of a CIDR/PIDR group */
