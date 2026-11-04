@@ -434,11 +434,20 @@ static int pm_port_up(const struct device *dev, uint8_t p, bool comreset)
 
 	dk->present = false;
 	dk->up = false;
+	uint32_t sc = 0;
+
 	ret = ahci_pm_read(dev, p, PSCR_SSTATUS, &ss);
+	if (ret == 0) {
+		ret = ahci_pm_read(dev, p, PSCR_SCONTROL, &sc);
+	}
 	if (ret != 0) {
 		return ret;
 	}
-	if (comreset || SSTS_DET(ss) != 3) {
+	/*
+	 * Also a port that came up by itself (SControl still 0): the reset
+	 * renegotiates the speed and turns partial/slumber off (IPM = 3).
+	 */
+	if (comreset || SSTS_DET(ss) != 3 || (sc & 0xf00) != 0x300) {
 		(void)ahci_pm_write(dev, p, PSCR_SCONTROL, 0x301);
 		k_msleep(2);
 		(void)ahci_pm_write(dev, p, PSCR_SCONTROL, 0x300);
