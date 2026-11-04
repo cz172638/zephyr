@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig NTB
+	bool "Non-Transparent Bridge (NTB) drivers"
+	help
+	  Devices bridging two memory domains with scratchpads, doorbells
+	  and memory windows (include/zephyr/drivers/ntb.h), such as the
+	  vNTB PCIe endpoint function.
+
+if NTB
+
+config NTB_SHELL
+	bool "ntb shell command"
+	default y
+	depends on SHELL
+	select CRC
+	help
+	  Link, scratchpads, doorbells and memory windows of any NTB device
+	  from the shell, the counterpart of the Linux ntb_tool. Includes
+	  an echo responder for doorbell round trips.
+
+endif # NTB
