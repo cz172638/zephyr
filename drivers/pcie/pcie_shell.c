@@ -5,6 +5,7 @@
  * Controller-neutral "pcie" shell, see <zephyr/drivers/pcie/pcie_shell.h>.
  */
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -775,6 +776,221 @@ static int cmd_ctrl_dsn(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_SUBCMD_SET_CREATE(pcie_debug_cmds, (pcie_debug));
 
+#if defined(CONFIG_PCIE_AER)
+#include <zephyr/drivers/pcie/aer.h>
+
+/* ------------------------------------------------------------------------ */
+/* pcie aer                                                                  */
+
+static const char *const rsta_name[32] = {
+	[0] = "ErrCorRcvd", [1] = "MultiErrCor", [2] = "ErrUncRcvd", [3] = "MultiErrUnc",
+	[4] = "FirstUncFatal", [5] = "NonFatalRcvd", [6] = "FatalRcvd",
+};
+
+static const struct pcie_aer_stat *aer_stat(pcie_bdf_t bdf)
+{
+	const struct pcie_aer_stat *st;
+
+	for (int i = 0; (st = pcie_aer_stat_get(i)) != NULL; i++) {
+		if (st->bdf == bdf) {
+			return st;
+		}
+	}
+	return NULL;
+}
+
+static void aer_devsta(char *b, size_t len, uint16_t sta)
+{
+	snprintf(b, len, "%s%s%s%s%s", (sta & BIT(0)) ? "C" : "", (sta & BIT(1)) ? "N" : "",
+		 (sta & BIT(2)) ? "F" : "", (sta & BIT(3)) ? "U" : "", (sta & 0xf) ? "" : "-");
+}
+
+static void aer_line(const struct device *dev, pcie_bdf_t bdf, void *user)
+{
+	const struct shell *sh = user;
+	const struct pcie_aer_stat *st = aer_stat(bdf);
+	struct pcie_aer_info in;
+	char ue[64], ce[48], ds[8], dc[8];
+
+	if (pcie_aer_info(dev, bdf, &in) != 0) {
+		return;
+	}
+	pcie_aer_bits_str(ue, sizeof(ue), in.ue, pcie_aer_ue_name);
+	pcie_aer_bits_str(ce, sizeof(ce), in.ce, pcie_aer_ce_name);
+	aer_devsta(ds, sizeof(ds), in.devsta);
+	aer_devsta(dc, sizeof(dc), in.devctl);
+	shell_print(sh, "%02x:%02x.%x %-10s %-3s rep %-4s%s sta %-4s UE %s CE %s | msgs c%u n%u f%u",
+		    PCIE_BDF_TO_BUS(bdf), PCIE_BDF_TO_DEV(bdf), PCIE_BDF_TO_FUNC(bdf),
+		    pcie_aer_type_name(in.type), in.aer ? "AER" : "-", dc,
+		    in.bridge ? ((in.bctl & BIT(1)) ? " fwd" : " NOFWD") : "", ds,
+		    ue[0] ? ue : "-", ce[0] ? ce : "-", st ? st->cnt[0] : 0, st ? st->cnt[1] : 0,
+		    st ? st->cnt[2] : 0);
+}
+
+static void aer_detail(const struct shell *sh, const struct device *dev, pcie_bdf_t bdf)
+{
+	const struct pcie_aer_stat *st = aer_stat(bdf);
+	struct pcie_aer_info in;
+	char b[160];
+
+	if (pcie_aer_info(dev, bdf, &in) != 0) {
+		shell_error(sh, "%02x:%02x.%x absent", PCIE_BDF_TO_BUS(bdf), PCIE_BDF_TO_DEV(bdf),
+			    PCIE_BDF_TO_FUNC(bdf));
+		return;
+	}
+	shell_print(sh, "%02x:%02x.%x %s, PCIe cap @%03x, AER @%03x", PCIE_BDF_TO_BUS(bdf),
+		    PCIE_BDF_TO_DEV(bdf), PCIE_BDF_TO_FUNC(bdf), pcie_aer_type_name(in.type),
+		    in.exp, in.aer);
+	shell_print(sh, "  Command  SERR# %c, parity %c; Status %04x%s%s%s", (in.cmd & BIT(8)) ? '+' : '-',
+		    (in.cmd & BIT(6)) ? '+' : '-', in.sta, (in.sta & BIT(14)) ? " SigSysErr" : "",
+		    (in.sta & BIT(13)) ? " RcvMAbort" : "", (in.sta & BIT(15)) ? " DetParErr" : "");
+	if (in.bridge) {
+		shell_print(sh, "  BridgeCtl %04x  SERR# forward %c, parity %c", in.bctl,
+			    (in.bctl & BIT(1)) ? '+' : '-', (in.bctl & BIT(0)) ? '+' : '-');
+	}
+	if (in.exp != 0) {
+		shell_print(sh, "  DevCtl   report cor%c nfat%c fat%c ur%c; DevSta %s%s%s%s",
+			    (in.devctl & BIT(0)) ? '+' : '-', (in.devctl & BIT(1)) ? '+' : '-',
+			    (in.devctl & BIT(2)) ? '+' : '-', (in.devctl & BIT(3)) ? '+' : '-',
+			    (in.devsta & BIT(0)) ? "CorrErr " : "",
+			    (in.devsta & BIT(1)) ? "NonFatalErr " : "",
+			    (in.devsta & BIT(2)) ? "FatalErr " : "",
+			    (in.devsta & BIT(3)) ? "UnsupReq" : "");
+	}
+	if (in.aer == 0) {
+		shell_print(sh, "  no AER capability: Device Status only");
+	} else {
+		static const struct {
+			const char *n;
+			size_t o;
+			bool ue;
+		} r[] = {
+			{"UESta", offsetof(struct pcie_aer_info, ue), true},
+			{"UEMsk", offsetof(struct pcie_aer_info, uem), true},
+			{"UESvrt", offsetof(struct pcie_aer_info, ues), true},
+			{"CESta", offsetof(struct pcie_aer_info, ce), false},
+			{"CEMsk", offsetof(struct pcie_aer_info, cem), false},
+		};
+
+		for (int i = 0; i < ARRAY_SIZE(r); i++) {
+			uint32_t v = *(const uint32_t *)((const uint8_t *)&in + r[i].o);
+
+			pcie_aer_bits_str(b, sizeof(b), v, r[i].ue ? pcie_aer_ue_name
+								   : pcie_aer_ce_name);
+			shell_print(sh, "  %-8s %08x %s", r[i].n, v, b);
+		}
+		shell_print(sh, "  CapCtl   %08x first error %u, ECRC gen %s%s, check %s%s",
+			    in.capctl, in.capctl & 0x1f, (in.capctl & BIT(5)) ? "cap" : "-",
+			    (in.capctl & BIT(6)) ? "+en" : "", (in.capctl & BIT(7)) ? "cap" : "-",
+			    (in.capctl & BIT(8)) ? "+en" : "");
+		shell_print(sh, "  HdrLog   %08x %08x %08x %08x", in.hdr[0], in.hdr[1], in.hdr[2],
+			    in.hdr[3]);
+		if (in.type == PCIE_AER_TYPE_RP || in.type == PCIE_AER_TYPE_RCEC) {
+			pcie_aer_bits_str(b, sizeof(b), in.root_sta, rsta_name);
+			shell_print(sh, "  RootCmd  %08x interrupt cor%c nfat%c fat%c",
+				    in.root_cmd, (in.root_cmd & BIT(0)) ? '+' : '-',
+				    (in.root_cmd & BIT(1)) ? '+' : '-',
+				    (in.root_cmd & BIT(2)) ? '+' : '-');
+			shell_print(sh, "  RootSta  %08x %s", in.root_sta, b[0] ? b : "-");
+			shell_print(sh, "  SourceID cor %02x:%02x.%x, unc %02x:%02x.%x",
+				    (in.root_src >> 8) & 0xff, (in.root_src >> 3) & 0x1f,
+				    in.root_src & 7, (in.root_src >> 24) & 0xff,
+				    (in.root_src >> 19) & 0x1f, (in.root_src >> 16) & 7);
+		}
+	}
+	if (st != NULL) {
+		char ue[96], ce[64];
+
+		pcie_aer_bits_str(ue, sizeof(ue), st->ue_acc, pcie_aer_ue_name);
+		pcie_aer_bits_str(ce, sizeof(ce), st->ce_acc, pcie_aer_ce_name);
+		shell_print(sh, "  messages cor %u nonfatal %u fatal %u, last at %lld ms",
+			    st->cnt[0], st->cnt[1], st->cnt[2], st->last_ms);
+		shell_print(sh, "  seen UE %s, CE %s", ue[0] ? ue : "-", ce[0] ? ce : "-");
+	} else {
+		shell_print(sh, "  no messages from this function");
+	}
+}
+
+static void aer_clear_fn(const struct device *dev, pcie_bdf_t bdf, void *user)
+{
+	ARG_UNUSED(user);
+	pcie_aer_clear(dev, bdf);
+}
+
+/* pcie aer [<b:d.f> | setup [ur] [urbridge] [ecrc] | clear | poll] */
+static int cmd_aer(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const pcie_bdf_t root = PCIE_BDF(0, 0, 0);
+	const struct pcie_aer_stat *st;
+	pcie_bdf_t bdf;
+	int n;
+
+	if (c == NULL) {
+		return -ENODEV;
+	}
+	if (c->role != PCIE_SHELL_ROLE_RC) {
+		shell_error(sh, "endpoint mode: the function's own AER is in pcie debug aer");
+		return -ENOTSUP;
+	}
+	if (argc > 1 && strcmp(argv[1], "setup") == 0) {
+		uint32_t flags = 0;
+
+		for (size_t i = 2; i < argc; i++) {
+			if (strcmp(argv[i], "ur") == 0) {
+				flags |= PCIE_AER_UR_EP;
+			} else if (strcmp(argv[i], "urbridge") == 0) {
+				flags |= PCIE_AER_UR_BRIDGE;
+			} else if (strcmp(argv[i], "ecrc") == 0) {
+				flags |= PCIE_AER_ECRC;
+			} else {
+				shell_error(sh, "ur | urbridge | ecrc");
+				return -EINVAL;
+			}
+		}
+		n = pcie_aer_setup(c->dev, root, flags);
+		shell_print(sh, "AER set up on %d function(s)%s%s%s", n,
+			    (flags & PCIE_AER_UR_EP) ? ", UR on endpoints" : "",
+			    (flags & PCIE_AER_UR_BRIDGE) ? ", UR on ports" : "",
+			    (flags & PCIE_AER_ECRC) ? ", ECRC" : "");
+		return n < 0 ? n : 0;
+	}
+	if (argc > 1 && strcmp(argv[1], "clear") == 0) {
+		(void)pcie_aer_walk(c->dev, root, aer_clear_fn, NULL);
+		pcie_aer_stat_clear();
+		shell_print(sh, "status and counters cleared");
+		return 0;
+	}
+	if (argc > 1 && strcmp(argv[1], "poll") == 0) {
+		n = pcie_aer_root_service(c->dev, root, NULL);
+		shell_print(sh, "%d event(s) taken (status cleared, counted)", n);
+		return 0;
+	}
+	if (argc > 1) {
+		if (pcie_shell_parse_bdf(argv[1], &bdf) != 0) {
+			shell_error(sh, "<b:d.f> | setup | clear | poll");
+			return -EINVAL;
+		}
+		aer_detail(sh, c->dev, bdf);
+		return 0;
+	}
+	shell_print(sh, "rep: reporting enabled C(or) N(onfatal) F(atal) U(R); fwd: bridge "
+			"forwards ERR_(NON)FATAL; sta: Device Status");
+	n = pcie_aer_walk(c->dev, root, aer_line, (void *)sh);
+	if (n < 0) {
+		shell_error(sh, "no root port");
+		return n;
+	}
+	for (int i = 0; (st = pcie_aer_stat_get(i)) != NULL; i++) {
+		if (st->bdf == PCIE_BDF_NONE) {
+			shell_print(sh, "unidentified source: c%u n%u f%u", st->cnt[0],
+				    st->cnt[1], st->cnt[2]);
+		}
+	}
+	return 0;
+}
+#endif /* CONFIG_PCIE_AER */
+
 #if defined(CONFIG_PCIE_EPC)
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
 
@@ -863,6 +1079,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cmds,
 	SHELL_CMD_ARG(cfg, &pcie_cfg_cmds, "<b:d.f> [<off> [<len>]] Dump config space", cmd_cfg,
 		      2, 2),
 	SHELL_CMD(cap, &pcie_cap_cmds, "Capabilities: ls, get, set", NULL),
+#if defined(CONFIG_PCIE_AER)
+	SHELL_CMD_ARG(aer, NULL,
+		      "[<b:d.f> | setup [ur] [urbridge] [ecrc] | clear | poll] Error reporting: "
+		      "tree summary, one function, set up again, clear, service by hand",
+		      cmd_aer, 1, 4),
+#endif
 	SHELL_CMD(debug, &pcie_debug_cmds, "Controller specific bring-up and test commands",
 		  NULL),
 	SHELL_SUBCMD_SET_END);

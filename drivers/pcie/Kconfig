@@ -40,6 +40,45 @@ source "drivers/pcie/host/Kconfig"
 source "drivers/pcie/endpoint/Kconfig"
 source "drivers/pcie/controller/Kconfig"
 
+config PCIE_AER
+	bool "Advanced Error Reporting below a root port"
+	depends on PCIE_CONTROLLER
+	help
+	  Controller neutral helpers: walk the tree under a root port, enable
+	  error reporting and forwarding on every function, service the root
+	  port's received error messages and count them per source. Used by
+	  root complex drivers after the enumeration; "pcie aer" in the
+	  shell.
+
+config PCIE_AER_SOURCES
+	int "Error sources counted"
+	default 16
+	depends on PCIE_AER
+
+config PCIE_AER_UR_EP
+	bool "Unsupported Request reporting on endpoints"
+	default y
+	depends on PCIE_AER
+
+config PCIE_AER_UR_BRIDGE
+	bool "Unsupported Request reporting on ports and bridges"
+	depends on PCIE_AER
+	help
+	  Off by default: config reads of absent functions below a port end
+	  with UR, every rescan would report.
+
+config PCIE_AER_ECRC
+	bool "ECRC generation and check where capable"
+	depends on PCIE_AER
+	help
+	  End-to-end CRC (TLP digest). Switches pass it through; both ends
+	  have to be capable for a check to mean anything.
+
+config PCIE_AER_LOG_LIMIT
+	int "Messages logged per source (then counted only)"
+	default 16
+	depends on PCIE_AER
+
 config PCIE_CTRL_SHELL
 	bool "Controller-neutral pcie shell"
 	default y

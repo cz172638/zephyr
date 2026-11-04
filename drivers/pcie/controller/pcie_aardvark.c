@@ -34,6 +34,7 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pcie/aardvark.h>
+#include <zephyr/drivers/pcie/aer.h>
 #include <zephyr/drivers/pcie/controller.h>
 #include <zephyr/drivers/pcie/pcie.h>
 #include <zephyr/drivers/pcie/pcie_shell.h>
@@ -231,6 +232,11 @@ struct advk_rc_data {
 	uint32_t irq_count, msi_spurious, err_cor, err_nfat, err_fat, intx[4];
 	uint32_t last_isr0, last_payload;
 	int64_t link_up_ms;
+#if defined(CONFIG_PCIE_AARDVARK_AER)
+	const struct device *self;
+	struct k_work aer_work;
+	uint32_t aer_events;
+#endif
 };
 
 #define REG(dev) (((struct advk_rc_data *)(dev)->data)->reg)
@@ -537,6 +543,12 @@ static void advk_rc_isr(const struct device *dev)
 	if ((isr0 & ISR0_FAT_ERR) != 0) {
 		data->err_fat++;
 	}
+#if defined(CONFIG_PCIE_AARDVARK_AER)
+	/* source and status take config requests: from a thread */
+	if ((isr0 & ISR0_ERR_MASK) != 0 && data->self != NULL) {
+		k_work_submit(&data->aer_work);
+	}
+#endif
 	for (int i = 0; i < 4; i++) {
 		if ((isr0 & ISR0_INTX_ASSERT(i)) != 0) {
 			data->intx[i]++;
@@ -548,12 +560,91 @@ static void advk_rc_isr(const struct device *dev)
 	wr(dev, HOST_INT_STATUS, host);
 }
 
+#if defined(CONFIG_PCIE_AARDVARK_AER)
+static void aer_report(const struct device *dev, const struct pcie_aer_event *ev)
+{
+	static const char *const sev[] = {"correctable", "non-fatal", "fatal"};
+	const struct pcie_aer_stat *st = NULL;
+	uint32_t n = 0;
+	char bits[96];
+
+	for (int i = 0; (st = pcie_aer_stat_get(i)) != NULL; i++) {
+		if (st->bdf == ev->bdf) {
+			n = st->cnt[0] + st->cnt[1] + st->cnt[2];
+			break;
+		}
+	}
+	if (n > CONFIG_PCIE_AER_LOG_LIMIT) {
+		return; /* counted only, see pcie aer */
+	}
+	if (ev->sev == PCIE_AER_COR) {
+		pcie_aer_bits_str(bits, sizeof(bits), ev->ce, pcie_aer_ce_name);
+	} else {
+		pcie_aer_bits_str(bits, sizeof(bits), ev->ue, pcie_aer_ue_name);
+	}
+	if (ev->bdf == PCIE_BDF_NONE) {
+		LOG_WRN("%s: AER %s error, source unknown", dev->name, sev[ev->sev]);
+	} else {
+		LOG_WRN("%s: AER %s error from %02x:%02x.%x%s: %s", dev->name, sev[ev->sev],
+			PCIE_BDF_TO_BUS(ev->bdf), PCIE_BDF_TO_DEV(ev->bdf),
+			PCIE_BDF_TO_FUNC(ev->bdf), ev->multiple ? " (and more)" : "",
+			bits[0] != '\0' ? bits : "(no AER status)");
+	}
+	if (ev->hdr_valid) {
+		LOG_WRN("  TLP header %08x %08x %08x %08x", ev->hdr[0], ev->hdr[1], ev->hdr[2],
+			ev->hdr[3]);
+	}
+	if (n == CONFIG_PCIE_AER_LOG_LIMIT) {
+		LOG_WRN("  further errors of this source only counted (pcie aer)");
+	}
+}
+
+static void aer_work_fn(struct k_work *w)
+{
+	struct advk_rc_data *data = CONTAINER_OF(w, struct advk_rc_data, aer_work);
+	int n;
+
+	if (!data->active) {
+		return;
+	}
+	n = pcie_aer_root_service(data->self, PCIE_BDF(0, 0, 0), aer_report);
+	if (n > 0) {
+		data->aer_events += n;
+	}
+}
+
+static void aer_setup(const struct device *dev)
+{
+	struct advk_rc_data *data = dev->data;
+	uint32_t flags = (IS_ENABLED(CONFIG_PCIE_AER_UR_EP) ? PCIE_AER_UR_EP : 0) |
+			 (IS_ENABLED(CONFIG_PCIE_AER_UR_BRIDGE) ? PCIE_AER_UR_BRIDGE : 0) |
+			 (IS_ENABLED(CONFIG_PCIE_AER_ECRC) ? PCIE_AER_ECRC : 0);
+	int n;
+
+	if (!data->active) {
+		return;
+	}
+	n = pcie_aer_setup(dev, PCIE_BDF(0, 0, 0), flags);
+	/* anything latched meanwhile went with the setup's clear */
+	wr(dev, ISR0, ISR0_ERR_MASK);
+	LOG_INF("%s: AER on %d function(s)%s%s", dev->name, n,
+		(flags & PCIE_AER_ECRC) ? ", ECRC" : "",
+		(flags & PCIE_AER_UR_EP) ? ", UR on endpoints" : "");
+}
+#endif
+
 static void irq_setup(const struct device *dev)
 {
 	const struct advk_rc_config *cfg = dev->config;
 	struct advk_rc_data *data = dev->data;
 	uint64_t db = k_mem_phys_addr(&data->msi_doorbell);
 
+#if defined(CONFIG_PCIE_AARDVARK_AER)
+	if (data->self == NULL) {
+		k_work_init(&data->aer_work, aer_work_fn);
+		data->self = dev;
+	}
+#endif
 	wr(dev, MSI_ADDR_LO, (uint32_t)db);
 	wr(dev, MSI_ADDR_HI, (uint32_t)(db >> 32));
 	wr(dev, MSI_MASK, ~data->msi_used);
@@ -1114,6 +1205,9 @@ static void advk_rc_scan(const struct device *dev)
 	pcie_generic_ctrl_enumerate(dev, PCIE_BDF(0, 0, 0));
 	/* devicetree PCIe devices (e.g. nvme-controller) found only now */
 	(void)pcie_dev_scan();
+#if defined(CONFIG_PCIE_AARDVARK_AER)
+	aer_setup(dev);
+#endif
 }
 
 static long comphy_power_on(const struct device *dev)
@@ -1335,6 +1429,9 @@ static void sh_irq(const struct device *dev, const struct shell *sh)
 	shell_print(sh, "error messages: cor %u nonfatal %u fatal %u; INTx a %u b %u c %u d %u",
 		    data->err_cor, data->err_nfat, data->err_fat, data->intx[0], data->intx[1],
 		    data->intx[2], data->intx[3]);
+#if defined(CONFIG_PCIE_AARDVARK_AER)
+	shell_print(sh, "AER events serviced: %u (pcie aer)", data->aer_events);
+#endif
 }
 
 static int sh_link(const struct device *dev, const struct shell *sh, bool retrain)
