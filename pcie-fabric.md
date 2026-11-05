@@ -85,6 +85,26 @@ pcie fabric poll 0          # busy polling: lower latency of the echo answers
 - **Hot reset, link down, BME off** on an EP mean it drops its peers. The manager then has to call `up` again (a new epoch).
 - **Security:** none. Every node may write into any other region (no IOMMU on A3720, and ACS redirect is deliberately off).
 
+## Linux endpoint (out-of-tree module)
+
+`pci-epf-fabric` is a separate repository (bundle `pcie-fabric-linux.bundle`, DKMS, Linux 6.13+). It uses the same wire format and does what the Zephyr EP function does:
+
+- a kernel thread takes the card and maps the peers with `pci_epc_mem_map()`, then handles the echo service and the receive queue;
+- configfs attributes: `region_size`, `roles`, `dsn` (random by default; set it so the node ID stays the same), `poll_us`, `need_bme`;
+- debugfs files: `node`, `send`, `recv`, `ping`, `put`, `rma`.
+
+It is meant for the BeagleY-AI (J722S) as an EP. It builds against 7.3-rc7 (arm64, W=1 clean) but has not been tested on hardware yet.
+
+## Resizable BAR
+
+The A3720 EP has no Resizable BAR capability. Its extended chain is AER → DSN → L1SS → LTR → SecPCIe. Emulating one is impossible: host writes to config space never reach the EP's CPU, and there are no free writable words to hold a capability.
+
+- **What it has instead:** the BAR size is set locally in LMI `0x6240` before link-up (`region-size`). That is the same model as `BAR_RESIZABLE` in the Linux EP framework, where the size is chosen once by the EP.
+- **Possible later (non-standard):**
+  - resize through a BAR0 mailbox followed by `remove` + `rescan`;
+  - a separate large RMA BAR (BAR4, 64-bit, up to 2 GiB).
+- **As a root complex** the A3720 has a PCIe CPU window of only 128 MiB, so large BARs do not fit anyway.
+
 ## Next steps
 
 1. Hardware: RC ESPRESSObin plus EP ESPRESSObin: `ping` RC↔EP (node 0 ↔ 1).
