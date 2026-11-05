@@ -1,0 +1,23 @@
+/*
+ * ESPRESSObin: PCIe fabric endpoint function on the Aardvark controller.
+ * Applied on top of espressobin-pcie-ep (BAR carveout, link setup).
+ *
+ * The IDs only name the device for lspci (lab use); the root complex
+ * finds the node by the PFAB magic at BAR0 + 0.
+ */
+
+&pcie_ep {
+	fabric0: fabric@0 {
+		compatible = "zephyr,pcie-epf-fabric";
+		reg = <0>;
+		vendor-id = <0x11ab>;
+		device-id = <0xfab1>;
+		subsystem-vendor-id = <0x11ab>;
+		subsystem-id = <0x0100>;
+		/* 64 KiB at the start of the 32 MiB carveout (uncached) */
+		memory-region = <&pcie_bar_mem>;
+		region-size = <0x10000>;
+		/* compute or storage (SATA behind it) */
+		roles = <0x0c>;
+	};
+};

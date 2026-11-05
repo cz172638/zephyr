@@ -35,6 +35,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pcie/aardvark.h>
 #include <zephyr/drivers/pcie/aer.h>
+#include <zephyr/drivers/pcie/fabric.h>
 #include <zephyr/drivers/pcie/controller.h>
 #include <zephyr/drivers/pcie/pcie.h>
 #include <zephyr/drivers/pcie/pcie_shell.h>
@@ -1304,6 +1305,9 @@ static void advk_rc_scan(const struct device *dev)
 	(void)pcie_dev_scan();
 #if defined(CONFIG_PCIE_AARDVARK_AER)
 	aer_setup(dev);
+#endif
+#if defined(CONFIG_PCIE_FABRIC_MGR)
+	pfab_mgr_rescanned(dev);
 #endif
 }
 

@@ -775,6 +775,9 @@ static int cmd_ctrl_dsn(const struct shell *sh, size_t argc, char **argv)
 /* ------------------------------------------------------------------------ */
 
 SHELL_SUBCMD_SET_CREATE(pcie_debug_cmds, (pcie_debug));
+#if defined(CONFIG_PCIE_FABRIC_SHELL)
+SHELL_SUBCMD_SET_CREATE(pcie_fabric_cmds, (pcie_fabric));
+#endif
 
 #if defined(CONFIG_PCIE_AER)
 #include <zephyr/drivers/pcie/aer.h>
@@ -1087,6 +1090,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cmds,
 #endif
 	SHELL_CMD(debug, &pcie_debug_cmds, "Controller specific bring-up and test commands",
 		  NULL),
+#if defined(CONFIG_PCIE_FABRIC_SHELL)
+	SHELL_CMD(fabric, &pcie_fabric_cmds,
+		  "Fabric: node, ping, send, recv, put, rma, poll; manager: ls, scan, up, down, "
+		  "role", NULL),
+#endif
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(pcie, &pcie_cmds, "PCI Express", NULL);

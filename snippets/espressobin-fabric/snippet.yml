@@ -1,0 +1,13 @@
+name: espressobin-fabric
+description: |
+  ESPRESSObin as a PCIe fabric node: as an endpoint the fabric function
+  (BAR0 = the node's region), as a root complex the fabric manager and
+  node 0. Give it after espressobin-pcie-ep:
+  -S espressobin-pcie-ep -S espressobin-fabric
+  The endpoint runs it when "pcie controller ep function fabric" is
+  saved.
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: espressobin-fabric.overlay
+      EXTRA_CONF_FILE: espressobin-fabric.conf
