@@ -1,0 +1,92 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig PCIE_FABRIC
+	bool "PCIe fabric: nodes talking over PCIe writes"
+	help
+	  Nodes behind one root complex (endpoints and the root complex
+	  itself) exchange messages and one-sided writes directly, peer to
+	  peer through the switches. The root complex hands out node IDs,
+	  roles and the peer tables ("cards"); see
+	  include/zephyr/drivers/pcie/fabric.h for the wire format.
+
+if PCIE_FABRIC
+
+module = PCIE_FABRIC
+module-str = pcie_fabric
+source "subsys/logging/Kconfig.template.log_config"
+
+config PCIE_FABRIC_MAX_NODES
+	int "Nodes in a fabric (receive rings per region)"
+	range 2 16
+	default 8
+
+config PCIE_FABRIC_SLOTS
+	int "Slots per receive ring"
+	range 2 256
+	default 16
+
+config PCIE_FABRIC_SLOT_SIZE
+	int "Slot size, bytes (16 of them header)"
+	range 32 4096
+	default 256
+
+config PCIE_FABRIC_RXQ_DEPTH
+	int "Messages queued for pfab_recv()"
+	default 8
+
+config PCIE_FABRIC_POLL_US
+	int "Service thread poll interval, us (0: busy, yields only)"
+	default 50
+
+config PCIE_FABRIC_THREAD_PRIORITY
+	int "Service thread priority"
+	default 10
+
+config PCIE_FABRIC_STACK_SIZE
+	int "Service thread stack"
+	default 2048
+
+config PCIE_FABRIC_MGR
+	bool "Fabric manager (root complex)"
+	default y
+	depends on PCIE_CONTROLLER
+	select PCIE_AER
+	help
+	  Finds the fabric endpoints after the enumeration (BAR0 with the
+	  PFAB magic), assigns node IDs and roles, sets the switch ports for
+	  direct P2P and writes the cards.
+
+config PCIE_FABRIC_RC_NODE
+	bool "The root complex is node 0"
+	default y
+	depends on PCIE_FABRIC_MGR
+	help
+	  A region in RAM the endpoints write into (inbound DMA): the root
+	  complex takes part in the fabric like any endpoint.
+
+config PCIE_FABRIC_RC_REGION_SIZE
+	hex "Root complex node region, bytes"
+	default 0x10000
+	depends on PCIE_FABRIC_RC_NODE
+
+config PCIE_FABRIC_RC_INBOUND_OFFSET
+	hex "Root complex RAM: bus address minus physical address"
+	default 0x0
+	depends on PCIE_FABRIC_RC_NODE
+	help
+	  What the endpoints write to reach the root complex's node region:
+	  its physical address plus this. 0 for an identity inbound window
+	  (Armada 3700: TF-A maps all of DRAM 1:1).
+
+config PCIE_FABRIC_MGR_AUTO
+	bool "Bring the fabric up after every enumeration"
+	default y
+	depends on PCIE_FABRIC_MGR
+
+config PCIE_FABRIC_SHELL
+	bool "pcie fabric shell commands"
+	default y
+	depends on PCIE_CTRL_SHELL
+
+endif

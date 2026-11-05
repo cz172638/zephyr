@@ -39,6 +39,7 @@ endif # PCIE_AARDVARK_MODE
 source "drivers/pcie/host/Kconfig"
 source "drivers/pcie/endpoint/Kconfig"
 source "drivers/pcie/controller/Kconfig"
+source "drivers/pcie/fabric/Kconfig"
 
 config PCIE_AER
 	bool "Advanced Error Reporting below a root port"
