@@ -185,4 +185,19 @@ config PCIE_EPF_VNTB_SHELL
 
 endif # PCIE_EPF_VNTB
 
+config PCIE_EPF_FABRIC
+	bool "PCIe fabric endpoint function"
+	default y
+	depends on DT_HAS_ZEPHYR_PCIE_EPF_FABRIC_ENABLED
+	select PCIE_FABRIC
+	help
+	  This endpoint becomes a node of the PCIe fabric the root complex
+	  runs: BAR0 is its region (info, card, rings, RMA window), the
+	  peers are reached through the outbound window.
+
+config PCIE_EPF_FABRIC_STATIC_MEM
+	hex "BAR0 memory without memory-region"
+	default 0x10000
+	depends on PCIE_EPF_FABRIC
+
 endif # PCIE_EPC

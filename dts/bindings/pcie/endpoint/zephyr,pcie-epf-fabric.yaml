@@ -1,0 +1,49 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  PCIe fabric endpoint function: this endpoint is a node of a fabric
+  run by the root complex (zephyr/drivers/pcie/fabric.h). BAR0 is the
+  node's region: info block, the card the root complex writes (node ID,
+  role, peers), credits, receive rings and an RMA window. The other
+  nodes write into it directly, peer to peer through the switches; the
+  function writes into theirs through the outbound window.
+
+  The root complex finds the node by the PFAB magic at BAR0 + 0, the IDs
+  are only for lspci. Child of a PCIe endpoint controller.
+
+    fabric0: fabric@0 {
+            compatible = "zephyr,pcie-epf-fabric";
+            reg = <0>;
+            vendor-id = <0x11ab>;
+            device-id = <0xfab1>;
+            memory-region = <&pcie_bar_mem>;
+            roles = <0x4>;            /* compute */
+    };
+
+compatible: "zephyr,pcie-epf-fabric"
+
+include: pcie-epf.yaml
+
+properties:
+  class-code:
+    default: 0x0b4000
+    description: 24-bit class code; default processor, co-processor.
+
+  memory-region:
+    type: phandle
+    description: |
+      Memory backing BAR0, reachable by the PCIe controller, uncached.
+      Without it a static buffer (CONFIG_PCIE_EPF_FABRIC_STATIC_MEM).
+
+  region-size:
+    type: int
+    default: 0x10000
+    description: BAR0 size in bytes, a power of two (rings + RMA window).
+
+  roles:
+    type: int
+    default: 0x4
+    description: |
+      Roles this node can take, bit n = role n (1 manager, 2 compute,
+      3 storage, 4 io, others free). The root complex picks one.
