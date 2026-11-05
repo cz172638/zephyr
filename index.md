@@ -10,3 +10,4 @@
 - [ESPRESSObin (Armada 3720): NVMe endpoint, SATA disks as NVMe namespaces](espressobin-nvme-target.md)
 - [ESPRESSObin (Armada 3720): vNTB endpoint, NTB between the host and Zephyr](espressobin-vntb.md)
 - [PCIe AER below the root port: switches, setup, servicing](pcie-aer.md)
+- [PCIe fabric: nodes behind one root complex, P2P writes, ID cards](pcie-fabric.md)
