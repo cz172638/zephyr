@@ -58,6 +58,25 @@ Každý uzel v info bloku nabídne síťové schopnosti. Manager k nim přidá s
 | PTM root | časová doména pro PHC |
 | DMA engine na RC | většinou žádný pro PCIe → RC tlačí CPU zápisy (WC), nebo za něj pracuje DMA EP |
 
+### SpacemiT K1 (OrangePi RV2, BPI-F3) podle datasheetu
+
+| Vlastnost | K1 | Pro fabric |
+|---|---|---|
+| Porty | 3× dual-mode RC/EP (A x1 sdílený s USB3, B a C x2), Gen2 | každý port může být EP: K1 jako 1–3 uzly, nebo RC s EP vedle |
+| DMA | **eDMA, 4 write + 4 read kanály**, HW flow control | push i pull z EP; pull nahradí chybějící DMA na RC |
+| iATU | 8 outbound + 8 inbound položek | inbound podrozsahy BARu → **zero-copy RX i na EP** (RX buffery mapované dynamicky); 8 outbound = až 8 peerů namapovaných naráz |
+| BARy (EP) | 6, velikost programovatelná, jen funkce 0 | region + samostatné RMA nebo RX okno |
+| MPS | 256 B | min. po cestě (A3720 128) |
+| ECRC | generace i kontrola | end-to-end integrita → vypnout checksum v netdevu |
+| SRIS | ano | **oddělené reference bez SSC i se SSC**: kabely bez REFCLK (jako u ESPRESSObinu) |
+| Přerušení | MSI v EP, MSI příjem v RC; **MSI-X není** | notifikace k RC jen MSI (max. 32 vektorů) |
+| VC | jen VC0 | QoS přes TC/VC na K1 ne, jen pořadí front |
+| PTM, SR-IOV, ATS, ReBAR | v datasheetu nejsou | PTP jen softwarově (dvoucestně po fabricu) |
+| CPU | 8× X60 (RV64GCVB), 2 clustery; RCPU se sdílenou SRAM | Linux na clusteru, Zephyr na RCPU nebo na jádrech (AMP) |
+| GMAC | 2× 1 GbE RGMII, SG DMA; TSN/1588 v datasheetu nejsou | router fabric ↔ Ethernet |
+
+K1 je tak nejlepší kandidát na EP i RC: DWC eDMA plus iATU dává zero-copy v obou směrech. Dřívější odhad „EP je u K1 neznámá“ neplatí, hardware EP podporuje a v Linuxu chybí jen EP glue (`dw_pcie_ep`) pro K1.
+
 ## 4. Transport `pfab-net` (jen zápisy, každý čte jen svou paměť)
 
 Pro každou dvojici a směr A→B dvě fronty, obě v paměti toho, kdo je čte:
@@ -138,7 +157,7 @@ Společné jádro protokolu (ringy, kredity, karty) by mělo být jedno C (`pfab
 
 ## Otevřené otázky
 
-- Má DWC eDMA na LS1012A/K1? (určí, jestli DWC EP bude push i pull).
+- Má DWC eDMA na LS1012A? (K1: ano, 4+4 kanály, iATU 8+8).
 - Inbound okna A3720 `0x5a00…` v EP módu: podrozsahy BARu → dynamické mapování RX bufferů i na A3720?
 - ITS doorbell na A3720 EP: jaké DeviceID vidí ITS u inbound zápisu z PCIe?
-- PTM a VC na J722S, K1, LS1012A, ASM1806 (`pcie cap ls`).
+- PTM a VC na J722S, LS1012A, ASM1806 (`pcie cap ls`); K1: jen VC0, PTM v datasheetu není.
