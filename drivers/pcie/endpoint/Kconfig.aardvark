@@ -22,6 +22,16 @@ config PCIE_EPC_AARDVARK_DMA
 	  pcie_epc_xfer_dma() with the Armada 3700 XOR engine. The DMA
 	  unit's IO decode window 1 is pointed at the outbound region.
 
+config PCIE_EPC_AARDVARK_XOR_IRQ
+	bool "XOR engine completion by interrupt"
+	default y
+	depends on PCIE_EPC_AARDVARK_DMA
+	help
+	  End of chain and errors of both XOR channels by interrupt (GIC
+	  SPI 47, 48); without it the cause register is polled. Polling is
+	  also the fallback when an interrupt does not come within the
+	  timeout.
+
 config PCIE_EPC_AARDVARK_DMA_ATTR
 	hex "Attribute of the DMA unit's IO decode window toward PCIe"
 	default 0x0
