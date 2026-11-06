@@ -70,6 +70,14 @@ particular SPL build insists on an fdt image in the config, pass ``BL31_FDT``
 (any valid dtb, e.g. the built ``zephyr.dtb`` -- Zephyr ignores the runtime
 dtb).
 
+Build TF-A so BL31 enters Zephyr directly, independent of the handoff, with
+``PRELOADED_BL33_BASE=0x02000000``: the rk3308 platform then fixes the
+non-secure EL2 entry at that address and ignores the BL33 entry in the SPL
+handoff. Zephyr needs no change for this -- it is already linked at
+``0x02000000`` and boots non-secure (``CONFIG_ARMV8_A_NS``)::
+
+  make -C trusted-firmware-a PLAT=rk3308 PRELOADED_BL33_BASE=0x02000000 bl31
+
 Write it where SPL looks for ``u-boot.itb`` (sector 16384 = 8 MiB, after
 ``idbloader.img`` at sector 64)::
 
