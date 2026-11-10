@@ -36,4 +36,7 @@ void lab_file_clear(void);
 /* client side: one request, replies into rbuf; returns reply count */
 int lab_hello(const char *addr, char *out, size_t len, uint32_t timeout_ms);
 
+struct shell;
+void lab_mod_list(const struct shell *sh);
+
 #endif

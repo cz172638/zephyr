@@ -20,4 +20,7 @@ zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_AARDVARK
 zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_AARDVARK_IRQTEST
   pcie_epc_aardvark_a3700_irqtest.c
   )
+zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_AARDVARK_XORTEST
+  pcie_epc_aardvark_a3700_xortest.c
+  )
 add_subdirectory_ifdef(CONFIG_PCIE_EPC functions)

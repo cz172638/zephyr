@@ -71,6 +71,14 @@ config PCIE_EPC_AARDVARK_SHELL
 	  Register dumps, writable bit probing, LTSSM tracing, INTx/MSI
 	  and host memory access through an outbound window.
 
+config PCIE_EPC_AARDVARK_XORTEST
+	bool "pcie debug xortest: XOR engine self-test"
+	default y
+	depends on PCIE_EPC_AARDVARK_SHELL
+	help
+	  Built in; off in lab builds, where it is a debug module
+	  (NNN-xortest.llext, lab mod load).
+
 config PCIE_EPC_AARDVARK_IRQTEST
 	bool "pcie debug irqtest: central interrupt register test"
 	default y

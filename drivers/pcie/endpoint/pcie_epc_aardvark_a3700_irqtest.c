@@ -37,7 +37,9 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/pcie/aardvark.h>
 #include <zephyr/irq.h>
+#include <zephyr/sw_isr_table.h>
 #include <zephyr/kernel.h>
+#include <zephyr/lab/mod.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/util.h>
@@ -726,7 +728,20 @@ SHELL_STATIC_SUBCMD_SET_CREATE(irqtest_cmds,
 		      1, 0),
 	SHELL_SUBCMD_SET_END);
 
-SHELL_SUBCMD_ADD((pcie_debug), irqtest, &irqtest_cmds,
+/* module unload: nothing of ours may stay armed or connected */
+static void irqt_fini(void)
+{
+	irqt_stop();
+#if defined(IRQT_LINE_DYNAMIC)
+	if (irqt.connected) {
+		/* the ISR is in module memory that is about to go */
+		(void)irq_connect_dynamic(EP_IRQ, EP_IRQ_PRIO, z_irq_spurious, NULL, EP_IRQ_FLAGS);
+		irqt.connected = false;
+	}
+#endif
+}
+
+LAB_DBG_CMD((pcie_debug), "pcie", irqtest, &irqtest_cmds,
 		 "Central interrupt 0x1b000 (RC_DBELL_DET, DIR_WR_DDR_DET, ...): which host "
 		 "action sets which bit, does it reach the GIC",
-		 cmd_show, 1, 0);
+	    cmd_show, 1, 0, NULL, irqt_fini);

@@ -3,4 +3,4 @@
 
 zephyr_library()
 zephyr_library_sources(lab_agent.c lab_client.c lab_shell.c)
-zephyr_library_sources_ifdef(CONFIG_LAB_EXT lab_llext.c)
+zephyr_library_sources_ifdef(CONFIG_LAB_EXT lab_llext.c lab_mod.c lab_exports.c)

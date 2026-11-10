@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include <zephyr/lab/lab.h>
+#include <zephyr/lab/mod.h>
 #include <zephyr/llext/symbol.h>
 #include <zephyr/sys/printk.h>
 
@@ -114,3 +115,4 @@ int lab_ext_main(const struct lab_ext_api *api, int argc, char **argv)
 	return fail;
 }
 EXPORT_SYMBOL(lab_ext_main);
+LAB_IMAGE_TAG();

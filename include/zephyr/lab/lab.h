@@ -101,11 +101,14 @@ typedef int (*lab_ext_main_t)(const struct lab_ext_api *api, int argc, char **ar
 
 /**
  * Load an extension from memory, run lab_ext_main (or, missing that,
- * the void(void) function  fn), unload. Returns its result or a
+ * the void(void) function @p fn), unload. Returns its result or a
  * negative loader error.
  */
-int lab_ext_run(const char *name, const void *elf, size_t len, const char *fn, int argc,
-		char **argv);
+struct shell;
+
+/* @p sh: where the extension's printf goes (NULL: printk) */
+int lab_ext_run(const struct shell *sh, const char *name, const void *elf, size_t len,
+		const char *fn, int argc, char **argv, bool force);
 
 #ifdef __cplusplus
 }

@@ -8,20 +8,38 @@
  */
 
 #include <errno.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include <zephyr/cache.h>
 #include <zephyr/kernel.h>
 #include <zephyr/kernel/internal/mm.h>
 #include <zephyr/lab/lab.h>
+#include <zephyr/lab/mod.h>
 #include <zephyr/llext/buf_loader.h>
 #include <zephyr/llext/llext.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/sys/printk.h>
 
 #include "lab_internal.h"
 
 LOG_MODULE_DECLARE(lab, CONFIG_LAB_LOG_LEVEL);
+
+static const struct shell *cur_sh;
+
+static void api_printf(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	if (cur_sh != NULL) {
+		shell_vfprintf(cur_sh, SHELL_NORMAL, fmt, ap);
+	} else {
+		vprintk(fmt, ap);
+	}
+	va_end(ap);
+}
 
 static void api_busy_wait(uint32_t us)
 {
@@ -64,7 +82,7 @@ static void *api_alloc(size_t size, size_t align)
 static const struct lab_ext_api api = {
 	.version = LAB_EXT_API_VERSION,
 	.size = sizeof(struct lab_ext_api),
-	.printf = printk,
+	.printf = api_printf,
 	.now_ns = lab_now_ns,
 	.busy_wait_us = api_busy_wait,
 	.sleep_ms = api_sleep,
@@ -79,8 +97,8 @@ static const struct lab_ext_api api = {
 	.free = k_free,
 };
 
-int lab_ext_run(const char *name, const void *elf, size_t len, const char *fn, int argc,
-		char **argv)
+int lab_ext_run(const struct shell *sh, const char *name, const void *elf, size_t len,
+		const char *fn, int argc, char **argv, bool force)
 {
 	struct llext_buf_loader buf_loader = LLEXT_TEMPORARY_BUF_LOADER(elf, len);
 	struct llext_load_param ldr_parm = LLEXT_LOAD_PARAM_DEFAULT;
@@ -99,10 +117,15 @@ int lab_ext_run(const char *name, const void *elf, size_t len, const char *fn, i
 		return ret;
 	}
 	LOG_INF("llext %s loaded in %lld ms", lname, k_uptime_get() - t0);
+	ret = lab_image_check(sh, ext, name, force);
+	if (ret != 0) {
+		goto out;
+	}
 	ret = llext_bringup(ext);
 	if (ret != 0) {
 		goto out;
 	}
+	cur_sh = sh;
 	entry = (lab_ext_main_t)llext_find_sym(&ext->exp_tab, fn ? fn : LAB_EXT_MAIN);
 	if (entry != NULL) {
 		ret = entry(&api, argc, argv);
@@ -112,6 +135,7 @@ int lab_ext_run(const char *name, const void *elf, size_t len, const char *fn, i
 		/* a plain hello: void test_entry(void) */
 		ret = llext_call_fn(ext, "test_entry");
 	}
+	cur_sh = NULL;
 	(void)llext_teardown(ext);
 out:
 	llext_unload(&ext);

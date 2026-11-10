@@ -21,8 +21,8 @@ static int cmd_selftest(const struct shell *sh, size_t argc, char **argv)
 	char *xargv[] = {"lab_hello", NULL};
 
 	for (int i = 0; i < runs; i++) {
-		int ret = lab_ext_run("lab_hello", lab_hello_llext, sizeof(lab_hello_llext), NULL,
-				      1, xargv);
+		int ret = lab_ext_run(sh, "lab_hello", lab_hello_llext, sizeof(lab_hello_llext), NULL,
+				      1, xargv, false);
 
 		if (ret != 0) {
 			shell_error(sh, "selftest run %d: FAIL %d", i, ret);

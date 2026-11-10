@@ -344,8 +344,8 @@ static void handle(const struct sockaddr *src, socklen_t slen, char *msg, size_t
 		char ident[16];
 
 		lab_identity(ident, sizeof(ident));
-		snprintf(hdr, sizeof(hdr), MAGIC " HELLO %u role=%s id=%s fw=%s board=%s t=%llu", id,
-			 lab_role(), ident, FW_STRING, CONFIG_BOARD,
+		snprintf(hdr, sizeof(hdr), MAGIC " HELLO %u role=%s id=%s img=%d fw=%s board=%s t=%llu",
+			 id, lab_role(), ident, CONFIG_LAB_IMAGE, FW_STRING, CONFIG_BOARD,
 			 (unsigned long long)lab_now_ns());
 		reply(src, slen, hdr, NULL, 0);
 	} else if (strcmp(op, "TIME") == 0) {

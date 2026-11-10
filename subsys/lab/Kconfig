@@ -15,6 +15,15 @@ menuconfig LAB_AGENT
 
 if LAB_AGENT
 
+config LAB_IMAGE
+	int "Image number of this firmware"
+	default 0
+	help
+	  The number of the firmware image (NNN-name-spi.bin). Modules are
+	  built with the same number; lab mod load / lab ext refuse a module
+	  built for another image unless forced (-f). Bump it with every
+	  change outside the debug modules.
+
 config LAB_PORT
 	int "UDP port"
 	default 7777
@@ -43,6 +52,11 @@ config LAB_EXT
 	bool "Run test extensions (LLEXT) received by PUT"
 	default y if LLEXT
 	depends on LLEXT
+
+config LAB_MODS
+	int "Debug modules loaded at once (lab mod load)"
+	default 8
+	depends on LAB_EXT
 
 module = LAB
 module-str = lab

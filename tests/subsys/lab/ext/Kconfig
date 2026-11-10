@@ -1,9 +1,17 @@
 # Copyright (c) 2026 Jiri Kastner
 # SPDX-License-Identifier: Apache-2.0
 
-# lab_llext.c alone, without CONFIG_LAB_AGENT (needs networking)
+# the loader parts of subsys/lab without CONFIG_LAB_AGENT (networking)
 config LAB_LOG_LEVEL
 	int
 	default 3
+
+config LAB_IMAGE
+	int
+	default 7
+
+config LAB_MODS
+	int
+	default 4
 
 source "Kconfig.zephyr"

@@ -10,6 +10,7 @@
 #   LAB_TOKEN=secret lab.pl <board-ip> time [n]
 #   LAB_TOKEN=secret lab.pl <board-ip> put <local file> [<slot>|/SD:/path]
 #   LAB_TOKEN=secret lab.pl <board-ip> run <file.llext> [args...]   (put + lab ext)
+#   LAB_TOKEN=secret lab.pl <board-ip> mod <NNN-name.llext>...   (put + lab mod load)
 #
 # Exit status of exec/run is the remote command's (0 = pass). The board
 # must accept this host: "lab peer <host ip>" there, or no peer set.
@@ -35,7 +36,7 @@ my $sel = IO::Select->new($sock);
 
 sub usage
 {
-	print STDERR "usage: lab.pl <ip> hello|exec <cmd...>|time [n]|put <file> [dst]|run <file.llext> [args]\n";
+	print STDERR "usage: lab.pl <ip> hello|exec <cmd...>|time [n]|put <file> [dst]|run <file.llext> [args]|mod <file.llext>...\n";
 	exit 2;
 }
 
@@ -143,6 +144,16 @@ if ($op eq 'exec') {
 } elsif ($op eq 'put') {
 	my $file = shift // usage();
 	put($file, shift // basename($file));
+} elsif ($op eq 'mod') {
+	usage() unless @ARGV;
+	my @slots;
+	for my $f (@ARGV) {
+		my $slot = substr(basename($f), 0, 23);
+		put($f, $slot);
+		push @slots, $slot;
+	}
+	my $rc = remote_exec(join(' ', 'lab mod load', @slots));
+	exit($rc == 0 ? 0 : 1);
 } elsif ($op eq 'run') {
 	my $file = shift // usage();
 	my $slot = substr(basename($file), 0, 23);

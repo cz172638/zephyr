@@ -11,6 +11,9 @@
 #include <string.h>
 
 #include <zephyr/drivers/pcie/pcie_shell.h>
+#if defined(CONFIG_LAB_EXT)
+#include <zephyr/lab/mod.h>
+#endif
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/util.h>
 
@@ -775,6 +778,33 @@ static int cmd_ctrl_dsn(const struct shell *sh, size_t argc, char **argv)
 /* ------------------------------------------------------------------------ */
 
 SHELL_SUBCMD_SET_CREATE(pcie_debug_cmds, (pcie_debug));
+
+#if defined(CONFIG_LAB_EXT)
+/*
+ * pcie debug = the built-in subcommands (section set) followed by the
+ * debug modules loaded with mount "pcie" (lab mod load).
+ */
+static void pcie_debug_get(size_t idx, struct shell_static_entry *entry)
+{
+	/* a section set starts with an empty element and ends at the next one */
+	const struct shell_static_entry *st = (const struct shell_static_entry *)&pcie_debug_cmds;
+	size_t n = 0;
+
+	while (st[n + 1].syntax != NULL) {
+		n++;
+	}
+	if (idx < n) {
+		*entry = st[idx + 1];
+	} else if (!lab_mod_get("pcie", idx - n, entry)) {
+		entry->syntax = NULL;
+	}
+}
+
+SHELL_DYNAMIC_CMD_CREATE(pcie_debug_dyn, pcie_debug_get);
+#define PCIE_DEBUG_SUBCMDS (&pcie_debug_dyn)
+#else
+#define PCIE_DEBUG_SUBCMDS (&pcie_debug_cmds)
+#endif
 #if defined(CONFIG_PCIE_FABRIC_SHELL)
 SHELL_SUBCMD_SET_CREATE(pcie_fabric_cmds, (pcie_fabric));
 #endif
@@ -1088,7 +1118,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cmds,
 		      "tree summary, one function, set up again, clear, service by hand",
 		      cmd_aer, 1, 4),
 #endif
-	SHELL_CMD(debug, &pcie_debug_cmds, "Controller specific bring-up and test commands",
+	SHELL_CMD(debug, PCIE_DEBUG_SUBCMDS, "Controller specific bring-up and test commands",
 		  NULL),
 #if defined(CONFIG_PCIE_FABRIC_SHELL)
 	SHELL_CMD(fabric, &pcie_fabric_cmds,

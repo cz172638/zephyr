@@ -13,6 +13,7 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/kernel.h>
 #include <zephyr/lab/lab.h>
+#include <zephyr/lab/mod.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/shell/shell.h>
 
@@ -43,7 +44,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 
 		zsock_inet_ntop(AF_INET, &a, last, sizeof(last));
 	}
-	shell_print(sh, "role %s, id %s, UDP %d", lab_role(), ident, CONFIG_LAB_PORT);
+	shell_print(sh, "role %s, id %s, image %d, UDP %d", lab_role(), ident, CONFIG_LAB_IMAGE,
+		    CONFIG_LAB_PORT);
 	shell_print(sh, "token %s, peer %s", lab.token[0] ? "set" : "NONE (agent deaf)",
 		    lab.peer[0] ? lab.peer : "any");
 	shell_print(sh, "served %u, dropped %u, execs %u, last client %s", lab.served,
@@ -235,19 +237,24 @@ static int cmd_rm(const struct shell *sh, size_t argc, char **argv)
 #ifdef CONFIG_LAB_EXT
 static int cmd_ext(const struct shell *sh, size_t argc, char **argv)
 {
+	bool force = argc > 2 && strcmp(argv[1], "-f") == 0;
 	const char *base;
 	const void *d;
 	void *heap;
 	size_t len;
 	int ret;
 
+	if (force) {
+		argc--;
+		argv++;
+	}
 	d = source(sh, argv[1], &len, &heap);
 	if (d == NULL) {
 		return -ENOENT;
 	}
 	base = strrchr(argv[1], '/') ? strrchr(argv[1], '/') + 1 : argv[1];
 	/* argv[1] stays as the extension's argv[0] */
-	ret = lab_ext_run(base, d, len, NULL, (int)argc - 1, &argv[1]);
+	ret = lab_ext_run(sh, base, d, len, NULL, (int)argc - 1, &argv[1], force);
 	k_free(heap);
 	if (ret == 0) {
 		shell_print(sh, "%s: PASS", base);
@@ -256,6 +263,51 @@ static int cmd_ext(const struct shell *sh, size_t argc, char **argv)
 	}
 	return ret;
 }
+
+static int cmd_mod_load(const struct shell *sh, size_t argc, char **argv)
+{
+	int fails = 0;
+	bool force = strcmp(argv[1], "-f") == 0;
+
+	for (size_t i = force ? 2 : 1; i < argc; i++) {
+		const char *base = strrchr(argv[i], '/') ? strrchr(argv[i], '/') + 1 : argv[i];
+		const void *d;
+		void *heap;
+		size_t len;
+
+		d = source(sh, argv[i], &len, &heap);
+		if (d == NULL || lab_mod_load(sh, d, len, base, force) != 0) {
+			fails++;
+		}
+		k_free(heap);
+	}
+	return fails ? -EIO : 0;
+}
+
+static int cmd_mod_unload(const struct shell *sh, size_t argc, char **argv)
+{
+	int ret = 0;
+
+	for (size_t i = 1; i < argc; i++) {
+		ret |= lab_mod_unload(sh, argv[i]);
+	}
+	return ret;
+}
+
+static int cmd_mod_ls(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	lab_mod_list(sh);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(lab_mod_cmds,
+	SHELL_CMD_ARG(load, NULL, "[-f] <slot|/path>...  Load debug modules (reload by name; -f: other image)",
+		      cmd_mod_load, 2, 8),
+	SHELL_CMD_ARG(unload, NULL, "<command|all>...  Unload", cmd_mod_unload, 2, 8),
+	SHELL_CMD_ARG(ls, NULL, "Loaded modules", cmd_mod_ls, 1, 0),
+	SHELL_SUBCMD_SET_END);
 #endif
 
 SHELL_SUBCMD_SET_CREATE(lab_cmds, (lab));
@@ -273,8 +325,9 @@ SHELL_SUBCMD_ADD((lab), put, NULL,
 SHELL_SUBCMD_ADD((lab), files, NULL, "Received RAM slots", cmd_files, 1, 0);
 SHELL_SUBCMD_ADD((lab), rm, NULL, "Drop all RAM slots", cmd_rm, 1, 0);
 #ifdef CONFIG_LAB_EXT
-SHELL_SUBCMD_ADD((lab), ext, NULL, "ext <slot|/path> [args...]: run a test extension", cmd_ext,
+SHELL_SUBCMD_ADD((lab), ext, NULL, "ext [-f] <slot|/path> [args...]: run a test extension", cmd_ext,
 		 2, 16);
+SHELL_SUBCMD_ADD((lab), mod, &lab_mod_cmds, "Debug modules: load, unload, ls", cmd_mod_ls, 1, 0);
 #endif
 
 SHELL_CMD_REGISTER(lab, &lab_cmds, "Lab agent: drive the peer board for tests", NULL);
