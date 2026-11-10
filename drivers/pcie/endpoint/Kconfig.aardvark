@@ -71,4 +71,16 @@ config PCIE_EPC_AARDVARK_SHELL
 	  Register dumps, writable bit probing, LTSSM tracing, INTx/MSI
 	  and host memory access through an outbound window.
 
+config PCIE_EPC_AARDVARK_IRQTEST
+	bool "pcie debug irqtest: central interrupt register test"
+	default y
+	depends on PCIE_EPC_AARDVARK_SHELL
+	help
+	  Which host actions set which bit of HOST_CTRL_INT_STATUS
+	  (0x1b000), RC_DBELL_DET and DIR_WR_DDR_DET above all, and
+	  whether they reach the GIC (SPI 29). Without the root complex
+	  driver the GIC line is connected statically; with it the line
+	  needs DYNAMIC_INTERRUPTS (taken over in endpoint mode), else the
+	  test samples the status by a timer only.
+
 endif # PCIE_EPC_AARDVARK
