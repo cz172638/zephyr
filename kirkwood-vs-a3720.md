@@ -113,3 +113,20 @@ Pro náš fabric a `pfab-net`:
 - **Kruhy s indexy jsou pro PCIe lepší než spojový seznam.** Spojový seznam znamená čtení pointerů přes linku. Kruh v paměti konzumenta a index zapsaný producentem znamenají jen zápisy, což je náš model.
 - **Completion s ID a timestampem** (jako CRPB) se hodí pro PTP a měření latence v `pfab-net`.
 - **Moderace přerušení** podle počtu a času (GbE coalescing, EDMA threshold) odpovídá `ethtool -C`.
+
+## 6. DFT (loopbacky, PRBS): co Kirkwood dokumentuje a co hledat na A3720
+
+Kirkwood spec, kap. 6.19 a registry:
+
+| Blok | Kirkwood | A3720: stav / kde hledat |
+|---|---|---|
+| PCIe master loopback | `ConfMstrLb` (PCIe Control `0x41A00` bit 26), jen RC | Aardvark má stavy LTSSM `0x21–0x26`, ovládací bit neznámý → `pcie debug loopback scan` |
+| PCIe slave loopback | řídí protějšek, `PexSlvLb` | EP by měl ukázat LTSSM `0x25`, když RC loopback zapne |
+| PCIe interní loopback | PHY `0x0` bit 0 (shallow) / bit 1 (deep), `0x44[9:8]=3`, `0x81[11:10]=2` | COMPHY lane 1; Linux zná `0x23` jako `DIG_LOOPBACK_EN` (bez popisu bitů) → `dbg comphy` |
+| PRBS | PHY `0x40` bit 2, chyby `0x50/0x51`, reset `0x40` bit 3 | hypotéza na COMPHY → `dbg comphy kw <lane> prbs` |
+| PCIe Debug Control `0x41A60` | maskování resetů, soft reset jednotky | v Aardvarku nenalezeno |
+| SATA | near-end PHY loopback, vzor BIST-DW1/2, `LBPass`, BIST FIS | AHCI: BIST Activate FIS (typ `0x58`) z command listu; PHY loopback přes COMPHY lane 2 (`0x223` = U-Boot `vphy_loopback_reg0`) |
+| GbE | `PcsLB` (PSC1 bit 1) | NETA GMAC `0x2c04` bit 5 GMII / bit 6 PCS (podle `mvpp2`) → `dbg netlb` |
+| UART, audio, TS | MCR loopback, playback → record, TS0↔TS1 | nezkoumáno |
+
+Nástroje jsou LLEXT moduly obrazu 150, postup v [lab-debug-modules.md](lab-debug-modules.md).
