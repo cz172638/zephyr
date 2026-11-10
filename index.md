@@ -13,3 +13,4 @@
 - [PCIe fabric: nodes behind one root complex, P2P writes, ID cards](pcie-fabric.md)
 - [Networking přes PCIe fabric – brainstorming](pcie-net-brainstorm.md)
 - [Kirkwood 88F6281 vs. Armada 3720, hledání PCIe DMA (command mode Aardvarku)](kirkwood-vs-a3720.md)
+- [ESPRESSObin (Armada 3720): `pcie debug irqtest`, RC_DBELL_DET a DIR_WR_DDR_DET v EP módu](pcie-irqtest.md)

@@ -91,7 +91,7 @@ Používáme jen abort-safe čtení (`regs`, `a3700_probe_read32`), zápisy jen 
    - enumerace hostitelem: kde se uloží bus/device number EP (Kirkwood ho má v `PCI Express Status Register 0x41A04` `PexBusNum/PexDevNum`, u Aardvarku je to otevřené TODO);
    - zápis hostitele do BARu: změní se `0x1b000` bit 13/14 `DIR_*_DDR_DET`?;
    - MSI z EP, XOR přenos k hostiteli.
-6. **Doorbell:** v EP módu odmaskovat `RC_DBELL_DET` a nechat hostitele zapisovat do různých offsetů BAR0/BAR4 a konfiguračního prostoru. Hledáme, který zápis bit nastaví (možná zvláštní offset v `0x19000` nebo v LMI).
+6. **Doorbell:** v EP módu odmaskovat `RC_DBELL_DET` a nechat hostitele zapisovat do různých offsetů BAR0/BAR4 a konfiguračního prostoru. Hledáme, který zápis bit nastaví (možná zvláštní offset v `0x19000` nebo v LMI). Nástroj: [`pcie debug irqtest`](pcie-irqtest.md).
 7. Kdyby command mode existoval a fungoval: EP ovladač dostane **vlastní PCIe DMA** (bez okna DMA jednotky, bez XOR write-back problému s pořadím) a doorbell. Jinak zůstává XOR (případně 4 kanály) a polling.
 
 ## 5. Ethernet vs. SATA: podobnost
