@@ -25,3 +25,17 @@ elseif(CONFIG_NETSHELL_PASSWORD STREQUAL "")
   message(FATAL_ERROR "netshell: give an authorized key (authorized_key.pem or "
                       "-DNETSHELL_AUTHORIZED_KEY=...) or CONFIG_NETSHELL_PASSWORD")
 endif()
+
+# Lab agent: built-in LLEXT self test (lab selftest, source in
+# subsys/lab/ext), and the same
+# extension as a file for lab put / lab ext
+if(CONFIG_LAB_EXT)
+  set(lab_ext_bin ${PROJECT_BINARY_DIR}/llext/lab_hello.llext)
+  add_llext_target(lab_hello_ext
+    OUTPUT  ${lab_ext_bin}
+    SOURCES ${ZEPHYR_BASE}/subsys/lab/ext/lab_hello.c
+  )
+  generate_inc_file_for_target(app ${lab_ext_bin}
+    ${ZEPHYR_BINARY_DIR}/include/generated/lab_hello.inc)
+  target_sources(app PRIVATE src/lab_selftest.c)
+endif()

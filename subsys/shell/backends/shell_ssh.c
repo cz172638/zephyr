@@ -522,6 +522,7 @@ static int ex_shell(struct shell_ssh_exec *ex)
 	size_t len;
 	int ret;
 
+	shell_backend_dummy_lock();
 	shell_backend_dummy_clear_output(sh);
 	ret = shell_execute_cmd(sh, ex->cmd);
 	out = shell_backend_dummy_get_output(sh, &len);
@@ -535,6 +536,7 @@ static int ex_shell(struct shell_ssh_exec *ex)
 		ex_printf(ex, true, "[output truncated at %d bytes]\n",
 			  CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE - 1);
 	}
+	shell_backend_dummy_unlock();
 	if (ret == 0) {
 		return 0;
 	}

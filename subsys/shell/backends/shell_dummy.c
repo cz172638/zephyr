@@ -8,6 +8,7 @@
 
 #include <zephyr/shell/shell_dummy.h>
 #include <zephyr/init.h>
+#include <zephyr/kernel.h>
 
 SHELL_DUMMY_DEFINE(shell_transport_dummy);
 SHELL_DEFINE(shell_dummy, CONFIG_SHELL_PROMPT_DUMMY, &shell_transport_dummy, 256,
@@ -174,4 +175,16 @@ void shell_backend_dummy_clear_input(const struct shell *sh)
 
 	sh_dummy->input_len = 0;
 	sh_dummy->input_pos = 0;
+}
+
+static K_MUTEX_DEFINE(shell_dummy_users);
+
+void shell_backend_dummy_lock(void)
+{
+	(void)k_mutex_lock(&shell_dummy_users, K_FOREVER);
+}
+
+void shell_backend_dummy_unlock(void)
+{
+	(void)k_mutex_unlock(&shell_dummy_users);
 }

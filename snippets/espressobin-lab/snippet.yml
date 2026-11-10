@@ -1,0 +1,9 @@
+name: espressobin-lab
+description: |
+  ESPRESSObin lab build (debug): the lab agent (UDP 7777, "lab" shell
+  commands to drive the peer board) and LLEXT for test extensions
+  ("lab selftest", "lab ext").
+boards:
+  /espressobin(\/.*)?/:
+    append:
+      EXTRA_CONF_FILE: espressobin-lab.conf

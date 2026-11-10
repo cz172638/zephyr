@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config LAB_TEST_SERVE_S
+	int "Keep serving this many seconds after the tests (scripts/lab/lab.pl)"
+	default 0
+
+source "Kconfig.zephyr"

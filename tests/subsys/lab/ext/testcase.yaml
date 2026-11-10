@@ -1,0 +1,10 @@
+common:
+  tags:
+    - llext
+    - lab
+  arch_allow: arm64
+  integration_platforms:
+    - qemu_cortex_a53
+tests:
+  lab.ext.loader:
+    filter: CONFIG_MMU

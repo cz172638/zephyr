@@ -114,7 +114,7 @@ static int llext_shell_list_cb(struct llext *ext, void *arg)
 {
 	struct llext_shell_list *sl = arg;
 
-	shell_print(sl->sh, "| %16s | %12d |", ext->name, ext->alloc_size);
+	shell_print(sl->sh, "| %16s | %12zu |", ext->name, ext->alloc_size);
 	return 0;
 }
 
@@ -170,7 +170,7 @@ static int cmd_llext_load_hex(const struct shell *sh, size_t argc, char *argv[])
 	}
 
 	if (hex_len > CONFIG_LLEXT_SHELL_MAX_SIZE*2) {
-		shell_print(sh, "Extension %d bytes too large to load, max %d bytes\n", hex_len/2,
+		shell_print(sh, "Extension %zu bytes too large to load, max %d bytes\n", hex_len/2,
 			    CONFIG_LLEXT_SHELL_MAX_SIZE);
 		return -ENOMEM;
 	}
@@ -206,7 +206,7 @@ static int cmd_llext_load_hex(const struct shell *sh, size_t argc, char *argv[])
 	struct llext_buf_loader buf_loader = LLEXT_BUF_LOADER(llext_buf, llext_buf_len);
 	struct llext_loader *ldr = &buf_loader.loader;
 
-	LOG_DBG("hex2bin hex len %d, llext buf sz %d, read %d",
+	LOG_DBG("hex2bin hex len %zu, llext buf sz %d, read %zu",
 		hex_len, CONFIG_LLEXT_SHELL_MAX_SIZE, llext_buf_len);
 	LOG_HEXDUMP_DBG(llext_buf, 4, "4 byte MAGIC");
 

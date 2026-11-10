@@ -1,0 +1,51 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig LAB_AGENT
+	bool "Lab agent (test automation between boards, debug builds)"
+	depends on NETWORKING && NET_SOCKETS && NET_UDP && NET_IPV4
+	depends on SHELL && SHELL_BACKEND_DUMMY
+	select SETTINGS
+	help
+	  A UDP service that lets a peer board run shell commands here,
+	  measure the clock offset and send files, plus "lab" shell
+	  commands to do the same to the peer. Protected only by a shared
+	  token and the peer's address: for a lab segment, not for a
+	  network anyone else is on.
+
+if LAB_AGENT
+
+config LAB_PORT
+	int "UDP port"
+	default 7777
+
+config LAB_PRIORITY
+	int "Server thread priority"
+	default 10
+
+config LAB_STACK_SIZE
+	int "Server thread stack size"
+	default 8192
+
+config LAB_EXEC_TIMEOUT
+	int "lab exec: seconds to wait for the peer command"
+	default 30
+
+config LAB_FILES
+	int "RAM file slots"
+	default 8
+
+config LAB_FILE_POOL_SIZE
+	int "RAM file pool, bytes"
+	default 1048576
+
+config LAB_EXT
+	bool "Run test extensions (LLEXT) received by PUT"
+	default y if LLEXT
+	depends on LLEXT
+
+module = LAB
+module-str = lab
+source "subsys/logging/Kconfig.template.log_config"
+
+endif

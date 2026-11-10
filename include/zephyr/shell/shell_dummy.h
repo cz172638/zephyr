@@ -119,6 +119,17 @@ int shell_backend_dummy_push_input(const struct shell *sh, const char *data, siz
  */
 void shell_backend_dummy_clear_input(const struct shell *sh);
 
+/**
+ * @brief Serialize users of the dummy backend instance.
+ *
+ * Several services (ssh exec, the lab agent, tests) run commands on the one
+ * dummy instance; take the lock around clear/execute/get_output. Recursive.
+ */
+void shell_backend_dummy_lock(void);
+
+/** @brief Release the lock taken by shell_backend_dummy_lock(). */
+void shell_backend_dummy_unlock(void);
+
 /** @} */
 
 #ifdef __cplusplus
