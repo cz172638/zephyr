@@ -15,6 +15,14 @@
  * host the reads go through the lab agent (devmem on the peer);
  * otherwise read on the host by hand and "decode" the values.
  *
+ * Kirkwood (functional spec 2.3, PCIe interface registers 0x41820...)
+ * decodes inbound in two steps: a BAR hit is sub-decoded by six windows,
+ * each 0x10 apart: control (+0: en, BarMap bit 1, target [7:4], attr
+ * [15:8], size [31:16] as 64K ones), base (+4: PCI address [31:16]),
+ * remap (+0xc: en bit 0, AXI [31:16]), windows 4/5 remap high (+0x10);
+ * misses go to a default window, the ROM has its own. "kwwin" writes
+ * that format into a candidate block, "kwhunt" tries it block by block.
+ *
  * Only sprintf: image 150 exports no snprintf (that would need a new image).
  *
  * Keep the tagged area inside the PCIe IO decode window (carveout):
@@ -344,6 +352,100 @@ static int cmd_hunt(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* Kirkwood sub-decode window format at reg (see the top) */
+static void kw_write(uint32_t reg, int bar, uint64_t pci, uint64_t size, uint64_t axi)
+{
+	uint32_t ctrl = BIT(0) | ((bar == 4 ? 1U : 0U) << 1) | (0U << 4) | (0x3dU << 8) |
+			(uint32_t)((size >> 16) - 1) << 16;
+
+	wr(reg + 0x4, (uint32_t)pci & 0xffff0000U);
+	wr(reg + 0xc, ((uint32_t)axi & 0xffff0000U) | BIT(0));
+	wr(reg, ctrl);
+}
+
+/* kwwin <reg> <bar> <bar off> <size> <axi>: one window, Kirkwood style */
+static int cmd_kwwin(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long long reg, bar, off, size, axi;
+
+	if (num(sh, argv[1], &reg) != 0 || num(sh, argv[2], &bar) != 0 ||
+	    num(sh, argv[3], &off) != 0 || num(sh, argv[4], &size) != 0 ||
+	    num(sh, argv[5], &axi) != 0 || reg < IB_FIRST || reg > IB_LAST - 0xc || (reg & 0xf) ||
+	    (bar != 0 && bar != 2 && bar != 4) || size < 0x10000 || (size & (size - 1)) ||
+	    (off & (size - 1)) || (axi & 0xffff)) {
+		shell_error(sh, "reg 16-aligned in 0x5800-0x5ff0, size 2^n >= 64K, off and axi "
+			    "aligned");
+		return -EINVAL;
+	}
+	kw_write((uint32_t)reg, (int)bar, bar_bus((int)bar) + off, size, axi);
+	for (int i = 0; i < 4; i++) {
+		uint32_t v = 0;
+
+		(void)rd(reg + 4 * i, &v);
+		shell_print(sh, "  %05llx: %08x", reg + 4 * i, v);
+	}
+	shell_print(sh, "BAR%llu+0x%llx (+0x%llx) -> AXI 0x%llx, Kirkwood format; check with "
+		    "host %llu 0x%llx", bar, off, size, axi, bar, off);
+	return 0;
+}
+
+/*
+ * kwhunt <from> <to> <stride> <bar> <bar off>: at every block start
+ * write a Kirkwood window BAR+off (64K) -> tag zone, host reads BAR+off
+ * and BAR+off+0x1000, restore the four words
+ */
+static int cmd_kwhunt(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long long from, to, stride, bar, off;
+	int64_t ref0, ref1;
+
+	if (num(sh, argv[1], &from) != 0 || num(sh, argv[2], &to) != 0 ||
+	    num(sh, argv[3], &stride) != 0 || num(sh, argv[4], &bar) != 0 ||
+	    num(sh, argv[5], &off) != 0 || from < IB_FIRST || to > IB_LAST - 0xc ||
+	    (from & 0xf) || (stride != 0x10 && stride != 0x20) ||
+	    (bar != 0 && bar != 2 && bar != 4) || (off & 0xffff)) {
+		return -EINVAL;
+	}
+	if (zone_size < 0x10000 || (zone & 0xffff)) {
+		shell_error(sh, "tag a 64K-aligned zone of at least 64K first");
+		return -ENOENT;
+	}
+	ref0 = host_read((int)bar, off);
+	ref1 = host_read((int)bar, off + 0x1000);
+	if (ref0 < 0 || ref1 < 0) {
+		shell_error(sh, "host read failed (lab peer? devmem?)");
+		return -EIO;
+	}
+	for (uint32_t r = from; r <= to; r += stride) {
+		uint32_t save[4];
+		int64_t v0, v1;
+		bool ok = true;
+
+		for (int i = 0; i < 4; i++) {
+			ok &= rd(r + 4 * i, &save[i]) == 0;
+		}
+		if (!ok || (r >= IB_FIRST && r < IB_FIRST + 0x18)) {
+			continue; /* aborts, or the known BAR pairs */
+		}
+		kw_write(r, (int)bar, bar_bus((int)bar) + off, 0x10000, zone);
+		v0 = host_read((int)bar, off);
+		v1 = host_read((int)bar, off + 0x1000);
+		for (int i = 3; i >= 0; i--) {
+			wr(r + 4 * i, save[i]);
+		}
+		if (v0 != ref0 || v1 != ref1) {
+			char what[32];
+
+			sprintf(what, "%05x kw +0", r);
+			decode(sh, what, (uint32_t)v0);
+			sprintf(what, "%05x kw +0x1000", r);
+			decode(sh, what, (uint32_t)v1);
+		}
+	}
+	shell_print(sh, "kwhunt done (only changes are printed)");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(ibmap_cmds,
 	SHELL_CMD_ARG(show, NULL, "[from to]  Inbound block 0x5800-0x5fff, IO decode, BAR bus "
 		      "addresses", cmd_show, 1, 2),
@@ -357,6 +459,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(ibmap_cmds,
 	SHELL_CMD_ARG(decode, NULL, "<value>...  Where did a host read land", cmd_decode, 2, 7),
 	SHELL_CMD_ARG(hunt, NULL, "<from> <to> <bar> [off...]  Try every pair against the tags",
 		      cmd_hunt, 4, 7),
+	SHELL_CMD_ARG(kwwin, NULL, "<reg> <bar> <bar off> <size> <axi>  Kirkwood-style window",
+		      cmd_kwwin, 6, 0),
+	SHELL_CMD_ARG(kwhunt, NULL, "<from> <to> 0x10|0x20 <bar> <bar off>  Kirkwood format "
+		      "at every block", cmd_kwhunt, 6, 0),
 	SHELL_SUBCMD_SET_END);
 
 static int ibmap_init(void)
