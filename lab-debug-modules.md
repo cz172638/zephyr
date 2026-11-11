@@ -43,6 +43,7 @@ lab exec lab mod load 150-loopback.llext
 | `150-loopback.llext` | `pcie debug loopback …` | LTSSM trace, hledání ovládání loopbacku Aardvarku |
 | `150-comphy.llext` | `dbg comphy …` | registry lanů COMPHY: dump, snímek, rozdíl, pohyblivé bity, zápis |
 | `150-netlb.llext` | `dbg netlb …` | MAC loopback NETA (GMII/PCS), MIB čítače |
+| `150-ibmap.llext` | `pcie debug ibmap …` | inbound blok `0x5800–0x5fff`: „iATU“ Aardvarku (jen EP), kap. 5 |
 | `150-lab_hello.llext` | `lab ext 150-lab_hello.llext` | self-test loaderu (je i zabudovaný: `lab selftest`) |
 
 Moduly jsou na ARM64 přeložené bez optimalizace (`-Os` LLEXT build pro ARM64 odebírá). Pro tyhle účely to nevadí.
@@ -128,7 +129,38 @@ dbg netlb on 0 pcs 10000       # zapnout, samo se vypne za 10 s
 
 Na UARTu je během pulsu vidět, jestli chodí rámce zpátky. `rx ≥ tx` během pulsu je příznak, že bit opravdu dělá loopback.
 
-## 5. Vlastní modul
+## 5. Inbound okna Aardvarku („iATU“): `pcie debug ibmap`
+
+Známé je jen `0x5800/0x5804` BAR0, `0x5808/0x580c` BAR2 a `0x5810/0x5814` BAR4: 64bitová AXI báze každého BARu. Položky na `+0x20`, `+0x40`, `+0x80`, `+0xa0` a bloky `0x5a00/0x5c00/0x5e00` vypadají stejně. Můžou to být další okna uvnitř BARu (jako iATU v address match módu), jiné funkce nebo ROM.
+
+Postup:
+
+1. EP označí DDR značkami: každých 4 KiB slovo `0x1ba0xxxx`, kde `xxxx` je pořadí.
+2. Kandidátní registr se nasměruje na označenou oblast.
+3. RC přes lab agenta (`devmem` na protější desce) čte BAR EP na několika offsetech.
+4. Modul přečtené hodnoty dekóduje: kam v DDR čtení dopadlo.
+
+Modul je jen pro EP (v RC módu se nenahraje). Hostem je ESPRESSObin v RC módu (CPU adresa = bus adresa, okno `0xe8000000`).
+
+| Krok | EP (`ibmap`) | RC |
+|---|---|---|
+| 1 | `lab mod load 150-ibmap.llext` | link nahoře, EP vyjmenovaný (`pcie ls`) |
+| 2 | `pcie debug ibmap` → nenulové registry bloku, IO decode okno, bus adresy BARů | |
+| 3 | `pcie debug ibmap tag 0x11000000 0x100000` (uvnitř carveoutu 0x10000000+32M a IO decode okna!) | |
+| 4 | `pcie debug ibmap host 4 0 0x1000 0x10000` → co RC teď čte z BAR4 | (devmem přes agenta) |
+| 5 | `pcie debug ibmap hunt 0x5818 0x5ffc 4 0 0x1000 0x10000 0x100000` | (devmem přes agenta) |
+| 6 | registr s výsledkem: ruční pokusy `set <reg> <axi>` + `host 4 <off>…` | |
+
+- `hunt` zkusí každý pár lo/hi v rozsahu (krok 8, vlastní pár BARu přeskočí). Nastaví ho na značky, nechá RC přečíst BAR na zadaných offsetech, vrátí původní hodnotu. Vypisuje jen změny: `05a00 -> BAR4+0x10000: 1ba00010 = tag, AXI 0x11010000`, nebo `no effect`.
+- Z toho plyne:
+  - které registry překládají,
+  - od jakého offsetu BARu platí (porovnáním offsetů 0/4K/64K/1M),
+  - jestli mají masku nebo velikost (sousední slovo, další pokus se `set`).
+- **Riziko:** registr, který pošle čtení mimo IO decode okno, skončí na RC completer abortem. Na Zephyr RC to může být SError a pád RC. Proto značky jen uvnitř okna (`tag` varuje) a RC s `lab` připravený na restart.
+- S Linuxem jako hostem: `set` na EP, ruční čtení na hostu (`pcitest -P`, `devmem`) a `pcie debug ibmap decode <hodnota>…` na EP. `hostoff` nastaví posun CPU adresy hostu proti bus adrese (J722S: `0x600000000`).
+- Image 150 neexportuje `snprintf` (jen `sprintf`), modul s tím počítá. Přidat export = nový obraz.
+
+## 6. Vlastní modul
 
 Konec souboru místo `SHELL_SUBCMD_ADD`:
 
@@ -145,7 +177,7 @@ LAB_DBG_CMD((pcie_debug), "pcie", mujtest, &mujtest_cmds, "nápověda",
 - Modul může volat syscally, libc, `shell_*`, `k_timer_*`, `k_work_*`, `k_mem_map_phys_bare`, dynamická IRQ, cache a ESPRESSObin funkce z `src/dbg_exports.c`. Ostatní nahlásí `-t lab_mods`.
 - Zařízení z DT jdou přes `DEVICE_DT_GET` (`CONFIG_LLEXT_EXPORT_DEVICES`).
 
-## 6. Testy
+## 7. Testy
 
 - `tests/subsys/lab/ext` (qemu_cortex_a53, MMU): 7/7. Pokrývá nahrání, mount pod `dbg`, podpříkaz, náhradu stejného jména s čistými daty, `fini` při uvolnění, odmítnutí jiného obrazu a `-f`, opakované nahrávání bez vyčerpání slotů.
 - `tests/subsys/lab/agent` (native_sim/64): 8/8.
