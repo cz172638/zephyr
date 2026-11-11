@@ -130,3 +130,12 @@ Kirkwood spec, kap. 6.19 a registry:
 | UART, audio, TS | MCR loopback, playback → record, TS0↔TS1 | nezkoumáno |
 
 Nástroje jsou LLEXT moduly obrazu 150, postup v [lab-debug-modules.md](lab-debug-modules.md).
+
+## 7. PCIe remapování adres
+
+| Směr | Kirkwood | A3720 |
+|---|---|---|
+| CPU → PCIe | CPU okna `0x20000…` s Remap Low/High (spec 2.1.1, horní bity adresy nahradí remap podle velikosti okna) | CPU decode okno PCIe `0xe8000000` (TF-A `dram_win.c`, `CPU_DEC_REMAP_LOW`), hlavně **OB okna Aardvarku `0x4c00`** (match, remap, maska, akce). Ověřeno |
+| PCIe → paměť | BAR1/BAR2 (velikost a enable v `0x41804/08`), pod nimi **6 podoken** `0x41820 + 0x10·n` (control: en, BarMap, target, attr, velikost; base = PCI adresa; remap + en; okna 4–5 remap high), default window `0x418B0` pro netrefené, ROM okno `0x418C0/C4` (spec 2.3.1, 2.3.2) | velikost BARů v LMI `0x6240/44`, **AXI báze celého BARu `0x5800–0x5814`** (ověřeno), za tím MBus IO decode `0xd000c500` (TF-A: bez remapu). Podokna nenalezena; kandidáti `0x5820…`, `0x5a00/0x5c00/0x5e00` → `pcie debug ibmap kwhunt` |
+
+Na Kirkwoodu jde nesedící přístup do default window, jinak je to UR plus přerušení. Na A3720 jsme zatím viděli jen UR/abort za IO decode oknem.

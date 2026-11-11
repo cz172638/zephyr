@@ -158,6 +158,17 @@ Modul je jen pro EP (v RC módu se nenahraje). Hostem je ESPRESSObin v RC módu 
   - jestli mají masku nebo velikost (sousední slovo, další pokus se `set`).
 - **Riziko:** registr, který pošle čtení mimo IO decode okno, skončí na RC completer abortem. Na Zephyr RC to může být SError a pád RC. Proto značky jen uvnitř okna (`tag` varuje) a RC s `lab` připravený na restart.
 - S Linuxem jako hostem: `set` na EP, ruční čtení na hostu (`pcitest -P`, `devmem`) a `pcie debug ibmap decode <hodnota>…` na EP. `hostoff` nastaví posun CPU adresy hostu proti bus adrese (J722S: `0x600000000`).
+- **Formát podle Kirkwoodu (spec 2.3, registry `0x41820…`):**
+  - Kirkwood dekóduje inbound ve dvou krocích. Zásah do BAR1/BAR2 se dál rozdělí šesti okny po `0x10`:
+    - `+0` control: en, BarMap (bit 1), target [7:4], attr [15:8], velikost [31:16] jako jedničky po 64 KiB;
+    - `+4` báze: PCI adresa [31:16];
+    - `+0xc` remap: en (bit 0), AXI [31:16];
+    - okna 4 a 5 mají navíc remap high na `+0x10`.
+  - Co do žádného okna nepadne, jde do „default window“ (`0x418B0`). ROM má vlastní okno s remapem (`0x418C0/C4`).
+  - `kwwin <reg> <bar> <off> <size> <axi>` zapíše jedno takové okno do kandidátního bloku (target DRAM, attr `0x3d` jako IO decode A3720; BarMap = 1 pro BAR4 je odhad).
+  - `kwhunt <from> <to> 0x10|0x20 <bar> <off>` to zkusí blok po bloku: 64K okno BAR+off → značky, RC čte BAR+off a +0x1000, původní hodnoty vrátí.
+  - Pořadí pokusů: `kwhunt 0x5a00 0x5ff0 0x10 4 0x10000`, pak se stride `0x20`, pak bloky `0x5820…0x58bc`.
+  - Známý pár `0x5810/0x5814` (AXI báze BAR4) odpovídá spíš kirkwoodímu remapu celého BARu nebo default window.
 - Image 150 neexportuje `snprintf` (jen `sprintf`), modul s tím počítá. Přidat export = nový obraz.
 
 ## 6. Vlastní modul
