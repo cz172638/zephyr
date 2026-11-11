@@ -139,3 +139,25 @@ Nástroje jsou LLEXT moduly obrazu 150, postup v [lab-debug-modules.md](lab-debu
 | PCIe → paměť | BAR1/BAR2 (velikost a enable v `0x41804/08`), pod nimi **6 podoken** `0x41820 + 0x10·n` (control: en, BarMap, target, attr, velikost; base = PCI adresa; remap + en; okna 4–5 remap high), default window `0x418B0` pro netrefené, ROM okno `0x418C0/C4` (spec 2.3.1, 2.3.2) | velikost BARů v LMI `0x6240/44`, **AXI báze celého BARu `0x5800–0x5814`** (ověřeno), za tím MBus IO decode `0xd000c500` (TF-A: bez remapu). Podokna nenalezena; kandidáti `0x5820…`, `0x5a00/0x5c00/0x5e00` → `pcie debug ibmap kwhunt` |
 
 Na Kirkwoodu jde nesedící přístup do default window, jinak je to UR plus přerušení. Na A3720 jsme zatím viděli jen UR/abort za IO decode oknem.
+
+## 8. Registry PCIe (Kirkwood příloha A.6) proti Aardvarku
+
+Kirkwood má PCIe jednotku Marvell PEX (stejnou jako Armada 370/XP/38x, Linux `pci-mvebu`). Aardvark v A3720 je jiné IP: liší se offsety i rozložení bitů přerušení. Funkce si ale odpovídají a A.6 říká, co hledat.
+
+| Kirkwood (A.6) | Co dělá | Aardvark |
+|---|---|---|
+| `0x40000–0x4012c` config header, PM, MSI, PCIe cap, AER | config space jako registry jednotky (`CfgMapToMemEn`) | stejný princip: config space = `ctrl+0x000–0xfff` (ověřeno) |
+| `0x41804/08/0C` BAR1/BAR2/ROM control (enable, velikost 64K–4G) | velikosti BARů | LMI `0x6240/0x6244` (ověřeno, 7 bitů na BAR) |
+| `0x41820…0x41890` 6 podoken (control, base, remap) | sub-decode BARu | jen AXI báze celého BARu `0x5800–0x5814`; podokna hledá `ibmap kwhunt` |
+| `0x418B0` default window, `0x418C0/C4` ROM window | netrefené přístupy, ROM | ? (ROM: přes `0x5808` abort) |
+| `0x418F8/FC` config address/data | RC config cykly | PIO blok `0x4000` (Linux RC) |
+| `0x41A00` Control: `ConfRootComplex`, `ConfMstrHotReset` 24, `ConfMstrLb` 26, `ConfMstrDisScrmb` 27, `Conf_Training_Disable` 30, **`Crs_Enable` 31** | role, hot reset, loopback, scrambling, training, CRS | `CTRL0 0x4800` (IS_RC bit 2, training bit 6), hot reset `CTRL1 0x4804` bit 0; loopback/scrambling/CRS neznámé → `pcie debug loopback scan` |
+| `0x41A04` Status: `DLDown`, **`PexBusNum` [15:8], `PexDevNum` [20:16]** (EP: aktualizuje každý CfgWr), `PexSlvHotReset/DisLink/Lb/DisScrmb` [27:24] | vlastní Requester ID, co protějšek nařídil | **neznámé**: Requester ID je na TODO; najít rozdílem registrů před a po CfgWr z hostu |
+| `0x41A08` Boot Address | boot přes PCIe (EP čeká na adresu od RC) | — (BootROM A3720 PCIe boot neumí) |
+| `0x41A10` completion timeout, `0x41A20` flow control, `0x41A40` ack timery | časování | ? |
+| `0x41A60` Debug Control: maskování soft resetu, link disable/fail, hot reset; **„disable register file reset upon“ soft reset 13, link disable 14, link fail 19, hot reset 21**; `SoftReset` 20 | co se při resetech maže | Aardvark po hot resetu / link down zapomíná registry (driver je programuje znovu, `reprogrammed`). Podobný bit by to vyřešil → hledat |
+| `0x41AB0` TL Control: Rx/Tx completion a non-posted smí předběhnout posted | pořadí TLP | ? (důležité pro pořadí MSI za DMA zápisy, TODO kap. 6) |
+| `0x41B00` PHY indirect | PHY registry | COMPHY lane 1 přímo (`0xd001f000`) |
+| `0x41900/0x41910` Interrupt cause/mask: `HitDfltWinErr` 4, `CorErr/NFErr/FErr` 8–10, `DstateChange` 11 (EP), `FlowCtrlProtocol` 14, `RcvUrCaErr` 15, `RcvErr*` 16–18, `RcvCRS` 19, `PexSlvHotReset/DisLink/Lb` 20–22, `PexLinkFail` 23, `RcvIntA–D` 24–27 | události | `ISR0 0x4840` (PME 7, chyby 11–13, INTx assert 16–19 / deassert 20–23, MSI 24), `ISR1 0x4848` (power state change 4, flush 5), centrální `0x1b000` (EP_STATUS 23) |
+
+Oprava k dřívějšímu srovnání s DWC iATU: **OB okna Aardvarku TLP atributy mají.** Akce okna (`+0x18`) obsahuje typ (MEM/IO/CFG0/CFG1/MSG), TC, relaxed ordering, no-snoop, poison, IDO, kód zprávy a číslo funkce (Linux `OB_WIN_*`).
