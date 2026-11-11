@@ -43,6 +43,8 @@ lab exec lab mod load 150-loopback.llext
 | `150-loopback.llext` | `pcie debug loopback …` | LTSSM trace, hledání ovládání loopbacku Aardvarku |
 | `150-comphy.llext` | `dbg comphy …` | registry lanů COMPHY: dump, snímek, rozdíl, pohyblivé bity, zápis |
 | `150-netlb.llext` | `dbg netlb …` | MAC loopback NETA (GMII/PCS), MIB čítače |
+| `150-regdiff.llext` | `dbg regdiff …` | snímky registrů, diff, událost na protější desce, hlídání (kap. 6) |
+| `150-mbusx.llext` | `dbg mbusx …` | MBus okna (IO decode, CPU, OB), SATA DMA přímo do paměti hostu (kap. 7) |
 | `150-ibmap.llext` | `pcie debug ibmap …` | inbound blok `0x5800–0x5fff`: „iATU“ Aardvarku (jen EP), kap. 5 |
 | `150-lab_hello.llext` | `lab ext 150-lab_hello.llext` | self-test loaderu (je i zabudovaný: `lab selftest`) |
 
@@ -171,7 +173,47 @@ Modul je jen pro EP (v RC módu se nenahraje). Hostem je ESPRESSObin v RC módu 
   - Známý pár `0x5810/0x5814` (AXI báze BAR4) odpovídá spíš kirkwoodímu remapu celého BARu nebo default window.
 - Image 150 neexportuje `snprintf` (jen `sprintf`), modul s tím počítá. Přidat export = nový obraz.
 
-## 6. Vlastní modul
+## 6. Snímky registrů: `dbg regdiff`
+
+K nápovědám z Kirkwoodu (příloha A.6): kde má EP bus/device číslo, které mu dal host (Kirkwood `0x41A04`, mění se s každým CfgWr), indikace z protějšku (hot reset, loopback) a co smaže hot reset. Všechna čtení jdou přes probe, takže díry a vypnuté bloky se ukážou jako `abort` a deska nespadne. Slova, která se mění sama (čítače, stav), se najdou při snímku (`settle`) a z diffu se vynechají.
+
+| Krok | EP | RC |
+|---|---|---|
+| 1 | `lab mod load 150-regdiff.llext` | |
+| 2 | `dbg regdiff snap ctrl 0xd0074000 0x4000` (Aardvark `0x4000–0x7fff`: ctrl, OB, inbound, LMI) | |
+| 3 | `dbg regdiff event ctrl pcie cfg set 1:0.0 0x3c 0x1ff` | (příkaz běží na RC přes agenta: CfgWr na EP) |
+| 4 | `dbg regdiff find ctrl 0x100 0xff00` (bus 1 v [15:8]) a `find ctrl 0x1 0xff` | |
+| 5 | `dbg regdiff event ctrl pcie debug hotreset` | hot reset z RC |
+
+- `event` vezme těsně před událostí čerstvý stav a po ní vypíše jen změny.
+- V kroku 5 jde hlavně o registry, které se vynulují (to by vysvětlilo nutnost driver přeprogramovat) a o indikace „slave hot reset“.
+- Bus/device číslo se pozná nejlépe tak, že EP leží za switchem (bus ≠ 1) a `find` hledá to číslo.
+- `watch ctrl 5000` po 5 s vypíše, která slova se hýbala a kolikrát; mezitím se dělá událost ručně (restart hostu, `rescan`).
+- Snímky: max 4, každý do 64 KiB. `diff -u` vezme nové hodnoty jako základ, `-a` ukáže i volatilní bity.
+
+## 7. MBus okna a DMA periferií přímo do hostu: `dbg mbusx`
+
+Kirkwood spec 6.20: jednotka PCIe není transparentní most, ale funguje jako NTB (okna s remapem). Kap. 2.4: SATA DMA smí cílit do SDRAM *i* do PCIe. Na A3720 to znamená, že periferie (SATA, NETA, USB3) může přes své okno IO decode s targetem 2 (PCIe) a přes OB okno Aardvarku číst a zapisovat přímo paměť hostu. Pro NVMe target a pfab-net by to byl zero-copy.
+
+- `dbg mbusx` vypíše okna IO decode všech masterů podle TF-A (usb, usb3, dma, neta0/1, pcie, sata, sd, emmc, eip97), CPU decode okna `0xd000cf00` a OB okna Aardvarku.
+- `set <master> <win> <target> <attr> <base> <size>`, `off`, `ob <win|free> <axi> <host> <size>` mění okna.
+- `restore` vrátí všechno původní, při `lab mod unload` se to stane samo.
+
+**`sata2host`: AHCI čte sektory rovnou do paměti hostu** (EP; host = ESPRESSObin v RC módu, bus adresa = fyzická adresa RC):
+
+| Krok | EP | RC |
+|---|---|---|
+| 1 | `lab mod load 150-mbusx.llext`, disk běží (`ata` / FAT připojený) | link nahoře, volná oblast DDR, např. `0x1f000000` |
+| 2 | `dbg mbusx sata` (volné okno SATA?) a `dbg mbusx` (volné OB okno?) | |
+| 3 | `dbg mbusx sata2host 0x1f000000 0 8` | (devmem přes agenta) |
+
+- Modul nejdřív přečte sektor do lokální DDR (pro srovnání). Pak dočasně nastaví volné okno SATA: AXI `0xef000000` + 1 MiB → target 2 (PCIe, attr 0 jako okno XOR) a volné OB okno `0xef000000` → bus adresa hostu.
+- Příkaz jde do slotu 1 AHCI, vedle slotu 0 driveru, a jen když je driver v klidu (`CI`/`SACT` = 0, jinak `-EBUSY`). Pak modul okna vrátí a přes agenta přečte na RC první 4 slova: `= local` znamená, že SATA zapsala přímo do paměti hostu.
+- Disk za port multiplierem: 4. argument je PMP. Jiné AXI okno: 5. argument.
+- **Riziko:** špatná bus adresa přepíše paměť hostu. Proto oblast, kterou RC nepoužívá.
+- Pokus s okny IO decode na jiný target, například okno PCIe masteru (`pcie`) na target 1 (interní registry, jako BAR0 na Kirkwoodu): `set pcie 0 1 <attr> …` a čtení BARu z hostu. Attr pro registry zatím neznáme.
+
+## 8. Vlastní modul
 
 Konec souboru místo `SHELL_SUBCMD_ADD`:
 
@@ -188,7 +230,7 @@ LAB_DBG_CMD((pcie_debug), "pcie", mujtest, &mujtest_cmds, "nápověda",
 - Modul může volat syscally, libc, `shell_*`, `k_timer_*`, `k_work_*`, `k_mem_map_phys_bare`, dynamická IRQ, cache a ESPRESSObin funkce z `src/dbg_exports.c`. Ostatní nahlásí `-t lab_mods`.
 - Zařízení z DT jdou přes `DEVICE_DT_GET` (`CONFIG_LLEXT_EXPORT_DEVICES`).
 
-## 7. Testy
+## 9. Testy
 
 - `tests/subsys/lab/ext` (qemu_cortex_a53, MMU): 7/7. Pokrývá nahrání, mount pod `dbg`, podpříkaz, náhradu stejného jména s čistými daty, `fini` při uvolnění, odmítnutí jiného obrazu a `-f`, opakované nahrávání bez vyčerpání slotů.
 - `tests/subsys/lab/agent` (native_sim/64): 8/8.
