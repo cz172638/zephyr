@@ -62,6 +62,8 @@ if(CONFIG_LAB_EXT)
   lab_dbg_module(comphy ${CMAKE_CURRENT_SOURCE_DIR}/dbg/comphy.c)
   lab_dbg_module(netlb ${CMAKE_CURRENT_SOURCE_DIR}/dbg/netlb.c)
   lab_dbg_module(ibmap ${CMAKE_CURRENT_SOURCE_DIR}/dbg/ibmap.c)
+  lab_dbg_module(regdiff ${CMAKE_CURRENT_SOURCE_DIR}/dbg/regdiff.c)
+  lab_dbg_module(mbusx ${CMAKE_CURRENT_SOURCE_DIR}/dbg/mbusx.c)
 
   # with the firmware: build and name the modules
   add_custom_target(lab_mods_build ALL
