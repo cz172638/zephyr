@@ -1,0 +1,36 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Both roles of the one controller; CONFIG_PCIE_ROLE picks at boot.
+ */
+
+/ {
+	chosen {
+		zephyr,pcie-controller = &pcie0;
+	};
+};
+
+&pcie0 {
+	status = "okay";
+};
+
+&pcie0_ep {
+	vendor-id = <0x1d87>;
+	device-id = <0x3399>;
+	class-code = <0xff0000>;
+	msi-vectors = <16>;
+	status = "okay";
+
+	epf_test0: function@0 {
+		compatible = "zephyr,pcie-epf-test";
+		reg = <0>;
+		vendor-id = <0x1d87>;
+		device-id = <0x3399>;
+		class-code = <0xff0000>;
+		memory-region = <&pcie_ep_mem>;
+		/* BAR0 registers, 64-bit BARs need even numbers: 32-bit here */
+		bar-sizes = <8192 65536 0 0 0x100000 0>;
+		msi-interrupts = <16>;
+	};
+};

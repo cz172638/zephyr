@@ -47,9 +47,7 @@
 #include <zephyr/drivers/ntb.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epf.h>
-#ifdef CONFIG_PCIE_AARDVARK_MODE
-#include <zephyr/drivers/pcie/aardvark.h>
-#endif
+#include <zephyr/drivers/pcie/role.h>
 #ifdef CONFIG_MMU
 #include <zephyr/kernel/internal/mm.h>
 #endif
@@ -941,12 +939,10 @@ static int epf_vntb_init(const struct device *dev)
 	}
 
 	if (!device_is_ready(cfg->epc)) {
-#if defined(CONFIG_PCIE_AARDVARK_MODE)
-		if (advk_mode_get() == ADVK_MODE_RC) {
+		if (pcie_ctrl_is_rc()) {
 			LOG_INF("%s: root complex mode, function off", dev->name);
 			return -ENODEV;
 		}
-#endif
 		LOG_ERR("controller %s not ready", cfg->epc->name);
 		return -ENODEV;
 	}

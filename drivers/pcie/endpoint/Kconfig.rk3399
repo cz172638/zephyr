@@ -7,20 +7,17 @@ config PCIE_EP_CDNS
 	  Register level support for the Cadence PCIe controller in endpoint
 	  mode, used by SoC specific glue drivers.
 
-config PCIE_EP_RK3399
+config PCIE_EPC_RK3399
 	bool "Rockchip RK3399 PCIe endpoint controller"
 	default y
 	depends on DT_HAS_ROCKCHIP_RK3399_PCIE_EP_ENABLED
-	depends on SYSCON && RESET && CLOCK_CONTROL
+	depends on SYSCON && RESET && CLOCK_CONTROL && GPIO
+	select PCIE_EPC
 	select PCIE_EP_CDNS
+	select PCIE_RK3399_PORT
 	help
-	  Driver for the Cadence based PCIe controller of the RK3399 in
-	  endpoint mode.
-
-config PCIE_EP_RK3399_INIT_PRIORITY
-	int "RK3399 PCIe endpoint init priority"
-	default 80
-	depends on PCIE_EP_RK3399
-	help
-	  Must be lower priority (higher number) than the clock, reset, GRF
-	  syscon and GPIO drivers.
+	  The Cadence based PCIe controller of the RK3399 in endpoint mode,
+	  on the EPC API: header, BARs, outbound windows (32 x 1 MiB, region
+	  0 for MSI), MSI and INTx, PERST# and link events. MSI-X is hidden
+	  (not functional on this silicon). With PCIE_ROLE the same
+	  controller is the root complex when that role is saved.

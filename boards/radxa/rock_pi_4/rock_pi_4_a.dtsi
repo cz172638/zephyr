@@ -37,6 +37,10 @@
 	status = "okay";
 };
 
+&gpio2 {
+	status = "okay";
+};
+
 &gpio4 {
 	status = "okay";
 };
@@ -49,6 +53,15 @@
  */
 &pcie0_ep {
 	perst-gpios = <&gpio4 27 GPIO_ACTIVE_LOW>;
+	slot-power-gpios = <&gpio2 26 GPIO_ACTIVE_HIGH>;
+	num-lanes = <4>;
+	max-link-speed = <2>;
+};
+
+/* Root complex role: PERST# and the slot 3.3 V are ours to drive */
+&pcie0 {
+	perst-gpios = <&gpio4 27 GPIO_ACTIVE_LOW>;
+	slot-power-gpios = <&gpio2 26 GPIO_ACTIVE_HIGH>;
 	num-lanes = <4>;
 	max-link-speed = <2>;
 };

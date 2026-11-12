@@ -9,6 +9,7 @@ if PCIE_CONTROLLER
 source "drivers/pcie/controller/Kconfig.aardvark"
 source "drivers/pcie/controller/Kconfig.brcmstb"
 source "drivers/pcie/controller/Kconfig.ecam"
+source "drivers/pcie/controller/Kconfig.rk3399"
 # zephyr-keep-sorted-stop
 
 endif # PCIE_CONTROLLER

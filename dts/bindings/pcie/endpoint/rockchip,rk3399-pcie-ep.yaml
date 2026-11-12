@@ -14,7 +14,7 @@ description: |
 
 compatible: "rockchip,rk3399-pcie-ep"
 
-include: [base.yaml, reset-device.yaml]
+include: [pcie-ep-controller.yaml, reset-device.yaml]
 
 properties:
   reg:
@@ -57,16 +57,17 @@ properties:
     enum: [1, 2]
     description: 1 = 2.5 GT/s, 2 = 5 GT/s.
 
-  max-functions:
-    type: int
-    default: 1
-    description: Number of physical functions (1..8).
-
   perst-gpios:
     type: phandle-array
     description: |
       PERST# input from the host. Without it, link training starts as soon
-      as pcie_ep_cdns_start() is called.
+      as pcie_epc_start() is called.
+
+  slot-power-gpios:
+    type: phandle-array
+    description: |
+      Switch of the slot's 3.3 V; driven off in the endpoint role (the
+      host powers the link partner, not us).
 
   vendor-id:
     type: int

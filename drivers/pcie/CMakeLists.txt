@@ -4,5 +4,7 @@ add_subdirectory_ifdef(CONFIG_PCIE_CONTROLLER controller)
 add_subdirectory_ifdef(CONFIG_PCIE_FABRIC fabric)
 
 zephyr_sources_ifdef(CONFIG_PCIE_AARDVARK_MODE aardvark_mode.c)
+zephyr_sources_ifdef(CONFIG_PCIE_ROLE pcie_role.c)
+zephyr_sources_ifdef(CONFIG_PCIE_RK3399_PORT pcie_rk3399_port.c)
 zephyr_sources_ifdef(CONFIG_PCIE_CTRL_SHELL pcie_shell.c)
 zephyr_sources_ifdef(CONFIG_PCIE_AER pcie_aer.c)

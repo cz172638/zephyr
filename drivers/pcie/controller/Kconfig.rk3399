@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config PCIE_RK3399
+	bool "Rockchip RK3399 PCIe root complex"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_PCIE_ENABLED
+	depends on SYSCON && RESET && CLOCK_CONTROL && GPIO
+	select PCIE_RK3399_PORT
+	help
+	  The RK3399 PCIe controller as root complex: hardware root port,
+	  configuration requests through outbound region 0, memory and I/O
+	  in 1 MiB outbound regions from "ranges", generic enumeration.
+	  No interrupts yet (polled devices only).
+
+config PCIE_RK3399_INIT_PRIORITY
+	int "POST_KERNEL init priority"
+	default 84
+	depends on PCIE_RK3399
+	help
+	  After GPIO, clocks, resets, the GRF and (PCIE_ROLE) the role.

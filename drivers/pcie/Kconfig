@@ -36,6 +36,51 @@ configdefault PCIE_EPF_INIT_PRIORITY
 
 endif # PCIE_AARDVARK_MODE
 
+config PCIE_ROLE
+	bool "Dual-mode PCIe controller: root complex or endpoint at boot"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_PCIE_ENABLED && DT_HAS_ROCKCHIP_RK3399_PCIE_EP_ENABLED
+	help
+	  With both the root complex and the endpoint driver of a dual-mode
+	  controller built in, pick the role at boot (see
+	  zephyr/drivers/pcie/role.h); "pcie controller mode rc|ep" stores
+	  it for the next boot.
+
+if PCIE_ROLE
+
+config PCIE_ROLE_DEFAULT_RC
+	bool "Root complex when nothing is saved"
+
+config PCIE_ROLE_SETTINGS
+	bool "Keep the role in settings"
+	depends on SETTINGS
+
+config PCIE_ROLE_RETENTION_REG
+	hex "Keep the role in this register (survives warm reset), 0 = nowhere"
+	default 0xff320304 if SOC_RK3399
+	default 0
+	help
+	  RK3399: PMUGRF_OS_REG1 (OS_REG0 is the boot mode register, OS_REG2/3
+	  hold the DRAM configuration). Used when not in settings.
+
+config PCIE_ROLE_INIT_PRIORITY
+	int "POST_KERNEL priority of the role lookup"
+	default 81
+
+configdefault PCIE_EPC_INIT_PRIORITY
+	default 82
+
+configdefault PCIE_EPF_INIT_PRIORITY
+	default 83
+
+endif # PCIE_ROLE
+
+config PCIE_RK3399_PORT
+	bool
+	help
+	  RK3399 PCIe bring-up shared by the root complex and the endpoint
+	  driver: clocks, resets, client wrapper, PHY.
+
 source "drivers/pcie/host/Kconfig"
 source "drivers/pcie/endpoint/Kconfig"
 source "drivers/pcie/controller/Kconfig"

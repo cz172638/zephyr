@@ -1,0 +1,67 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK3399 PCIe controller as root complex (Cadence core behind
+  the Rockchip client wrapper, PHY in the GRF).
+
+  The same controller as rockchip,rk3399-pcie-ep; with both nodes
+  enabled the role is picked at boot (CONFIG_PCIE_ROLE).
+
+  "apb" (16 MiB): client registers at 0, the Cadence core at 0x800000.
+  "cfg" (32 MiB at 0xf8000000): configuration requests through
+  outbound region 0, ECAM-like (bus << 20 | dev << 15 | fn << 12), so
+  buses 0..31. The 32 MiB above it (0xfa000000) is decoded by outbound
+  regions 1..32 of 1 MiB each: "ranges" must lie there.
+
+compatible: "rockchip,rk3399-pcie"
+
+include: [pcie-controller.yaml, reset-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: Must be "apb", "cfg".
+
+  ranges:
+    required: true
+
+  clocks:
+    required: true
+
+  clock-names:
+    required: true
+    description: Must be "aclk", "aclk-perf", "hclk", "pm".
+
+  resets:
+    required: true
+
+  reset-names:
+    required: true
+    description: |
+      "core", "mgmt", "mgmt-sticky", "pipe", "pm", "pclk", "aclk", "phy".
+
+  rockchip,grf:
+    type: phandle
+    required: true
+
+  num-lanes:
+    type: int
+    default: 4
+    enum: [1, 2, 4]
+
+  max-link-speed:
+    type: int
+    default: 2
+    enum: [1, 2]
+
+  perst-gpios:
+    type: phandle-array
+    description: PERST# to the slot.
+
+  slot-power-gpios:
+    type: phandle-array
+    description: Switch of the slot's 3.3 V (ROCK Pi 4 vcc3v3_pcie).

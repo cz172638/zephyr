@@ -94,6 +94,34 @@
 		status = "okay";
 	};
 
+	/* The same controller as endpoint, see pcie0_ep; CONFIG_PCIE_ROLE picks */
+	pcie0: pcie@f8000000 {
+		compatible = "rockchip,rk3399-pcie";
+		reg = <0xfd000000 DT_SIZE_M(16)>,
+		      <0xf8000000 DT_SIZE_M(32)>;
+		reg-names = "apb", "cfg";
+		interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_SPI 50 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_SPI 51 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		interrupt-names = "sys", "legacy", "client";
+		clocks = <&cru_clk ACLK_PCIE>, <&cru_clk ACLK_PERF_PCIE>,
+			 <&cru_clk PCLK_PCIE>, <&cru_clk SCLK_PCIE_PM>;
+		clock-names = "aclk", "aclk-perf", "hclk", "pm";
+		resets = <&cru_rst SRST_PCIE_CORE>, <&cru_rst SRST_PCIE_MGMT>,
+			 <&cru_rst SRST_PCIE_MGMT_STICKY>, <&cru_rst SRST_PCIE_PIPE>,
+			 <&cru_rst SRST_PCIE_PM>, <&cru_rst SRST_P_PCIE>,
+			 <&cru_rst SRST_A_PCIE>, <&cru_rst SRST_PCIEPHY>;
+		reset-names = "core", "mgmt", "mgmt-sticky", "pipe",
+			      "pm", "pclk", "aclk", "phy";
+		rockchip,grf = <&grf>;
+		device_type = "pci";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges = <0x82000000 0x0 0xfa000000 0xfa000000 0x0 0x1e00000>,
+			 <0x81000000 0x0 0xfbe00000 0xfbe00000 0x0 0x100000>;
+		status = "disabled";
+	};
+
 	pcie0_ep: pcie-ep@fd000000 {
 		compatible = "rockchip,rk3399-pcie-ep";
 		reg = <0xfd000000 DT_SIZE_M(16)>,
@@ -114,6 +142,8 @@
 			      "pm", "pclk", "aclk", "phy";
 		rockchip,grf = <&grf>;
 		max-functions = <8>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 		status = "disabled";
 	};
 

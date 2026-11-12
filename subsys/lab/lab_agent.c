@@ -31,9 +31,7 @@
 #include <zephyr/shell/shell_dummy.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/version.h>
-#ifdef CONFIG_PCIE_AARDVARK_MODE
-#include <zephyr/drivers/pcie/aardvark.h>
-#endif
+#include <zephyr/drivers/pcie/role.h>
 
 #include "lab_internal.h"
 
@@ -74,8 +72,8 @@ uint64_t lab_now_ns(void)
 
 const char *lab_role(void)
 {
-#ifdef CONFIG_PCIE_AARDVARK_MODE
-	return advk_mode_get() == ADVK_MODE_RC ? "rc" : "ep";
+#if defined(CONFIG_PCIE_AARDVARK_MODE) || defined(CONFIG_PCIE_ROLE)
+	return pcie_ctrl_is_rc() ? "rc" : "ep";
 #else
 	return "node";
 #endif
