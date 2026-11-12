@@ -14,8 +14,11 @@
 #
 # Outputs, written from offset 0 of the medium:
 #   <out>-spi.bin  idbloader-spi.img at 0, FIT at --spi-offset (0xe0000)
-#   <out>-sd.bin   idbloader.img at sector 64, FIT at sector 16384;
-#                  sectors 0..63 are zero (no partition table)
+#   <out>-sd.bin   MBR, idbloader.img at sector 64, FIT at sector 16384,
+#                  FAT partition 1 from sector 32768 (16 MiB; --fat-mb
+#                  big, FAT16 below 512 MiB) holding <out>-spi.bin and the --fat-add files, so
+#                  the Zephyr shell can put the SPI image into the flash:
+#                  "spiflash update /SD:/<out>-spi.bin" (mkfs.vfat, mcopy)
 #
 # Example:
 #   rk3399-image.pl --bl31 tfa/build/rk3399/release/bl31/bl31.elf \
@@ -36,6 +39,9 @@ my $spi_off = 0xe0000;
 my $sd_idb = 64;
 my $sd_fit = 16384;
 my $fdt_load = 0x07f00000;
+my $fat_mb = 32;
+my $fat_start = 32768;
+my @fat_add;
 
 GetOptions(
 	'bl31=s' => \$bl31,
@@ -44,10 +50,13 @@ GetOptions(
 	'mkimage=s' => \$mkimage,
 	'spi-offset=o' => \$spi_off,
 	'fdt-load=o' => \$fdt_load,
+	'fat-mb=i' => \$fat_mb,
+	'fat-add=s' => \@fat_add,
 	'o|output=s' => \$out,
 ) && $bl31 && $zephyr && $ub && $out
 	or die "usage: $0 --bl31 bl31.elf --zephyr zephyr.elf --uboot <u-boot build dir> "
-	     . "-o <prefix> [--mkimage path] [--spi-offset 0xe0000] [--fdt-load 0x07f00000]\n";
+	     . "-o <prefix> [--mkimage path] [--spi-offset 0xe0000] [--fdt-load 0x07f00000]\n"
+	     . "  [--fat-mb 32 (0: no partition)] [--fat-add file]...\n";
 
 $mkimage //= "$ub/tools/mkimage";
 for my $f ($bl31, $zephyr, "$ub/idbloader.img", "$ub/idbloader-spi.img", "$ub/u-boot.dtb",
@@ -162,12 +171,37 @@ my $idb = slurp("$ub/idbloader.img");
 $sd_idb * 512 + length($idb) <= $sd_fit * 512 or die "idbloader.img overlaps the FIT\n";
 my $sd = ("\0" x ($sd_idb * 512)) . $idb;
 $sd .= "\0" x ($sd_fit * 512 - length($sd));
-spew("$out-sd.bin", $sd . $fit);
+$sd .= $fit;
+if ($fat_mb > 0) {
+	my $sectors = $fat_mb * 2048;
+	my $fatimg = "$work/fat.img";
+
+	length($sd) <= $fat_start * 512 or die "FIT runs into the FAT partition\n";
+	unlink $fatimg;
+	my $fat32 = $fat_mb >= 512;
+
+	system('mkfs.vfat', '-F', $fat32 ? '32' : '16', '-n', 'ROCKPI4', '-C', $fatimg, $fat_mb * 1024) == 0
+		or die "mkfs.vfat failed (dosfstools)\n";
+	for my $f ("$out-spi.bin", @fat_add) {
+		system('mcopy', '-o', '-i', $fatimg, $f, '::/' . basename($f)) == 0
+			or die "mcopy $f failed (mtools)\n";
+	}
+	# MBR: disk signature, one FAT16/32 LBA partition, CHS fields "beyond 8 GB"
+	my $mbr = "\0" x 512;
+	substr($mbr, 440, 4) = pack('V', 0x52503439);
+	substr($mbr, 446, 16) = pack('C C3 C C3 V V', 0x00, 0xfe, 0xff, 0xff, $fat32 ? 0x0c : 0x0e,
+				      0xfe, 0xff, 0xff, $fat_start, $sectors);
+	substr($mbr, 510, 2) = "\x55\xaa";
+	substr($sd, 0, 512) = $mbr;
+	$sd .= "\0" x ($fat_start * 512 - length($sd));
+	$sd .= slurp($fatimg);
+}
+spew("$out-sd.bin", $sd);
 
 for my $i (@images) {
 	printf "  %-7s load 0x%08x%s %8d B\n", $i->{name}, $i->{load},
 		defined $i->{entry} ? sprintf(' entry 0x%08x', $i->{entry}) : ' ' x 17, -s $i->{file};
 }
-printf "%s-spi.bin %d B (FIT at 0x%x), %s-sd.bin %d B (idbloader sector %d, FIT sector %d)\n",
-	$out, length($idb_spi) + ($spi_off - length($idb_spi)) + length($fit), $spi_off,
-	$out, length($sd) + length($fit), $sd_idb, $sd_fit;
+printf "%s-spi.bin %d B (FIT at 0x%x)\n%s-sd.bin %d B (idbloader sector %d, FIT sector %d%s)\n",
+	$out, $spi_off + length($fit), $spi_off, $out, length($sd), $sd_idb, $sd_fit,
+	$fat_mb ? ", FAT $fat_mb MiB from sector $fat_start" : "";

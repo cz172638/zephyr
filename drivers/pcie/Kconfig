@@ -61,7 +61,8 @@ config PCIE_ROLE_RETENTION_REG
 	default 0
 	help
 	  RK3399: PMUGRF_OS_REG1 (OS_REG0 is the boot mode register, OS_REG2/3
-	  hold the DRAM configuration). Used when not in settings.
+	  hold the DRAM configuration). Written on every save; read when
+	  settings have no role or are unavailable.
 
 config PCIE_ROLE_INIT_PRIORITY
 	int "POST_KERNEL priority of the role lookup"

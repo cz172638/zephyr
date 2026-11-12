@@ -27,6 +27,7 @@ LOG_MODULE_REGISTER(pcie_role, LOG_LEVEL_INF);
 static enum pcie_role role = IS_ENABLED(CONFIG_PCIE_ROLE_DEFAULT_RC) ? PCIE_ROLE_RC
 								    : PCIE_ROLE_EP;
 static bool saved_valid;
+static bool in_settings; /* settings backend came up */
 static enum pcie_role saved;
 
 #if defined(CONFIG_PCIE_ROLE_SETTINGS)
@@ -49,7 +50,9 @@ static int load_cb(const char *key, size_t len, settings_read_cb read_cb, void *
 	}
 	return 0;
 }
-#elif CONFIG_PCIE_ROLE_RETENTION_REG != 0
+#endif
+
+#if CONFIG_PCIE_ROLE_RETENTION_REG != 0
 static mm_reg_t ret_reg(void)
 {
 	static mm_reg_t va;
@@ -69,9 +72,10 @@ enum pcie_role pcie_role_get(void)
 
 const char *pcie_role_storage(void)
 {
-#if defined(CONFIG_PCIE_ROLE_SETTINGS)
-	return "settings";
-#elif CONFIG_PCIE_ROLE_RETENTION_REG != 0
+	if (in_settings) {
+		return "settings";
+	}
+#if CONFIG_PCIE_ROLE_RETENTION_REG != 0
 	return "retention register (warm reset only)";
 #else
 	return "none (build default)";
@@ -81,15 +85,20 @@ const char *pcie_role_storage(void)
 static int pcie_role_init(void)
 {
 #if defined(CONFIG_PCIE_ROLE_SETTINGS)
+	/* settings storage may be missing (ROCK Pi 4 without SPI flash) */
 	if (settings_subsys_init() == 0) {
+		in_settings = true;
 		(void)settings_load_subtree_direct(ROLE_KEY, load_cb, NULL);
 	}
-#elif CONFIG_PCIE_ROLE_RETENTION_REG != 0
-	uint32_t v = sys_read32(ret_reg());
+#endif
+#if CONFIG_PCIE_ROLE_RETENTION_REG != 0
+	if (!saved_valid) {
+		uint32_t v = sys_read32(ret_reg());
 
-	if ((v & 0xffff0000U) == ROLE_MAGIC) {
-		saved = (v & 1U) ? PCIE_ROLE_RC : PCIE_ROLE_EP;
-		saved_valid = true;
+		if ((v & 0xffff0000U) == ROLE_MAGIC) {
+			saved = (v & 1U) ? PCIE_ROLE_RC : PCIE_ROLE_EP;
+			saved_valid = true;
+		}
 	}
 #endif
 	if (saved_valid) {
@@ -104,19 +113,23 @@ SYS_INIT(pcie_role_init, POST_KERNEL, CONFIG_PCIE_ROLE_INIT_PRIORITY);
 
 int pcie_role_save(enum pcie_role r)
 {
-#if defined(CONFIG_PCIE_ROLE_SETTINGS)
-	const char *v = r == PCIE_ROLE_RC ? "rc" : "ep";
-	int ret = settings_save_one(ROLE_KEY, v, strlen(v));
+	int ret = -ENOTSUP;
 
+#if defined(CONFIG_PCIE_ROLE_SETTINGS)
+	if (in_settings) {
+		const char *v = r == PCIE_ROLE_RC ? "rc" : "ep";
+
+		ret = settings_save_one(ROLE_KEY, v, strlen(v));
+	}
+#endif
+#if CONFIG_PCIE_ROLE_RETENTION_REG != 0
+	/* always mirrored: also covers a failed settings write */
+	sys_write32(ROLE_MAGIC | (r == PCIE_ROLE_RC ? 1U : 0U), ret_reg());
+	ret = 0;
+#endif
 	if (ret != 0) {
 		return ret;
 	}
-#elif CONFIG_PCIE_ROLE_RETENTION_REG != 0
-	sys_write32(ROLE_MAGIC | (r == PCIE_ROLE_RC ? 1U : 0U), ret_reg());
-#else
-	ARG_UNUSED(r);
-	return -ENOTSUP;
-#endif
 	saved = r;
 	saved_valid = true;
 	return 0;
