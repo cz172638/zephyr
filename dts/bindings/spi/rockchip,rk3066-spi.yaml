@@ -1,0 +1,30 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: Rockchip SPI controller (RK3066 and later)
+
+compatible: "rockchip,rk3066-spi"
+
+include: [spi-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+
+  clock-names:
+    required: true
+    description: Must be "spiclk", "apb_pclk".
+
+  clock-frequency:
+    type: int
+    description: |
+      Rate set on spiclk at init (SCK is at most half of it). Without it
+      the boot loader's setting stays.
+
+  rx-sample-delay:
+    type: int
+    default: 0
+    description: RX sample delay in spiclk cycles (CTRLR0.RSD, 0..3).

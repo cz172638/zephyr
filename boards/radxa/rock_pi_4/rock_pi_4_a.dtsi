@@ -65,3 +65,57 @@
 	num-lanes = <4>;
 	max-link-speed = <2>;
 };
+
+/*
+ * SPI flash on SPI1 (4A+/4B+/4C, v1.4+; absent on older boards, then the
+ * flash device just fails to come up). SPI1 shares GPIO1_A7/B0 with UART4.
+ * Layout as rk3399-image.pl writes it; 4 MiB parts at least.
+ */
+&spi1 {
+	pinctrl-0 = <&spi1_pins>;
+	pinctrl-names = "default";
+	clock-frequency = <DT_FREQ_K(99000)>;
+	status = "okay";
+
+	spi_flash: flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_K(24750)>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			idbloader_partition: partition@0 {
+				label = "idbloader";
+				reg = <0x0 0xe0000>;
+				read-only;
+			};
+
+			fit_partition: partition@e0000 {
+				label = "fit";
+				reg = <0xe0000 0x220000>;
+			};
+
+			storage_partition: partition@300000 {
+				label = "storage";
+				reg = <0x300000 0x100000>;
+			};
+		};
+	};
+};
+
+/* micro SD, 3.3 V, up to high speed */
+&sdmmc {
+	pinctrl-0 = <&sdmmc_pins>;
+	pinctrl-names = "default";
+	bus-width = <4>;
+	status = "okay";
+
+	sdmmc_disk: sdmmc {
+		compatible = "zephyr,sdmmc-disk";
+		disk-name = "SD";
+		status = "okay";
+	};
+};

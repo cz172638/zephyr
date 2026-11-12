@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SDHC_DW_MSHC
+	bool "DesignWare MSHC (dw_mmc), Rockchip RK3399"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_DW_MSHC_ENABLED
+	select SDHC_SUPPORTS_NATIVE_MODE
+	select PINCTRL
+	depends on CLOCK_CONTROL
+	help
+	  Synopsys DesignWare Mobile Storage Host in the RK3399 SDMMC slot:
+	  polled FIFO PIO, 3.3 V, up to high speed (50 MHz), 1/4-bit.

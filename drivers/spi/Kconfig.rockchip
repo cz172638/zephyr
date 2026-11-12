@@ -1,0 +1,11 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SPI_ROCKCHIP
+	bool "Rockchip SPI controller"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3066_SPI_ENABLED
+	select PINCTRL
+	depends on CLOCK_CONTROL
+	help
+	  Rockchip SPI (RK3066 and later), master, 8-bit frames, polled.

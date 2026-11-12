@@ -12,6 +12,7 @@
 #include <mem.h>
 #include <zephyr/dt-bindings/clock/rk3399-cru.h>
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <zephyr/dt-bindings/pinctrl/rk3399-pinctrl.h>
 #include <zephyr/dt-bindings/reset/rk3399-cru-reset.h>
 
 / {
@@ -147,6 +148,107 @@
 		status = "disabled";
 	};
 
+	pinctrl: pinctrl {
+		compatible = "rockchip,rk3399-pinctrl";
+		status = "okay";
+
+		/omit-if-no-ref/ spi1_pins: spi1-pins {
+			group {
+				pinmux = <RK_PINMUX(1, RK_PA7, 2, RK_PULL_UP)>,	/* rx */
+					 <RK_PINMUX(1, RK_PB0, 2, RK_PULL_UP)>,	/* tx */
+					 <RK_PINMUX(1, RK_PB1, 2, RK_PULL_UP)>,	/* clk */
+					 <RK_PINMUX(1, RK_PB2, 2, RK_PULL_UP)>;	/* cs0 */
+			};
+		};
+
+		/omit-if-no-ref/ spi2_pins: spi2-pins {
+			group {
+				pinmux = <RK_PINMUX(2, RK_PB1, 1, RK_PULL_UP)>,
+					 <RK_PINMUX(2, RK_PB2, 1, RK_PULL_UP)>,
+					 <RK_PINMUX(2, RK_PB3, 1, RK_PULL_UP)>,
+					 <RK_PINMUX(2, RK_PB4, 1, RK_PULL_UP)>;
+			};
+		};
+
+		/omit-if-no-ref/ sdmmc_pins: sdmmc-pins {
+			group {
+				pinmux = <RK_PINMUX(4, RK_PB0, 1, RK_PULL_UP)>,	/* d0 */
+					 <RK_PINMUX(4, RK_PB1, 1, RK_PULL_UP)>,	/* d1 */
+					 <RK_PINMUX(4, RK_PB2, 1, RK_PULL_UP)>,	/* d2 */
+					 <RK_PINMUX(4, RK_PB3, 1, RK_PULL_UP)>,	/* d3 */
+					 <RK_PINMUX(4, RK_PB4, 1, RK_PULL_NONE)>,	/* clk */
+					 <RK_PINMUX(4, RK_PB5, 1, RK_PULL_UP)>,	/* cmd */
+					 <RK_PINMUX(0, RK_PA7, 1, RK_PULL_UP)>;	/* cd */
+			};
+		};
+	};
+
+	sdmmc: mmc@fe320000 {
+		compatible = "rockchip,rk3399-dw-mshc";
+		reg = <0xfe320000 0x4000>;
+		interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk HCLK_SDMMC>, <&cru_clk SCLK_SDMMC>;
+		clock-names = "biu", "ciu";
+		rockchip,grf = <&grf>;
+		min-bus-freq = <400000>;
+		max-bus-freq = <50000000>;
+		status = "disabled";
+	};
+
+	spi0: spi@ff1c0000 {
+		compatible = "rockchip,rk3399-spi", "rockchip,rk3066-spi";
+		reg = <0xff1c0000 0x1000>;
+		interrupts = <GIC_SPI 68 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk SCLK_SPI0>, <&cru_clk PCLK_SPI0>;
+		clock-names = "spiclk", "apb_pclk";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	spi1: spi@ff1d0000 {
+		compatible = "rockchip,rk3399-spi", "rockchip,rk3066-spi";
+		reg = <0xff1d0000 0x1000>;
+		interrupts = <GIC_SPI 53 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk SCLK_SPI1>, <&cru_clk PCLK_SPI1>;
+		clock-names = "spiclk", "apb_pclk";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	spi2: spi@ff1e0000 {
+		compatible = "rockchip,rk3399-spi", "rockchip,rk3066-spi";
+		reg = <0xff1e0000 0x1000>;
+		interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk SCLK_SPI2>, <&cru_clk PCLK_SPI2>;
+		clock-names = "spiclk", "apb_pclk";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	spi4: spi@ff1f0000 {
+		compatible = "rockchip,rk3399-spi", "rockchip,rk3066-spi";
+		reg = <0xff1f0000 0x1000>;
+		interrupts = <GIC_SPI 67 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk SCLK_SPI4>, <&cru_clk PCLK_SPI4>;
+		clock-names = "spiclk", "apb_pclk";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	spi5: spi@ff200000 {
+		compatible = "rockchip,rk3399-spi", "rockchip,rk3066-spi";
+		reg = <0xff200000 0x1000>;
+		interrupts = <GIC_SPI 132 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk SCLK_SPI5>, <&cru_clk PCLK_SPI5>;
+		clock-names = "spiclk", "apb_pclk";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
 	uart0: serial@ff180000 {
 		compatible = "rockchip,rk3399-uart", "ns16550";
 		reg = <0xff180000 0x100>;
