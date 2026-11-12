@@ -16,3 +16,4 @@
 - [ESPRESSObin (Armada 3720): `pcie debug irqtest`, RC_DBELL_DET a DIR_WR_DDR_DET v EP módu](pcie-irqtest.md)
 - [Lab agent: desky si testy řídí samy, LLEXT na A3720](lab-agent.md)
 - [Debug příkazy jako LLEXT moduly, hledání DFT (loopback, PRBS)](lab-debug-modules.md)
+- [pcivsec.pl: VSEC PCIe switchů (ASM1184e)](pcivsec.md)
