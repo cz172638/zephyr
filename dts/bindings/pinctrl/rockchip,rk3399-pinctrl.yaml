@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK3399 pin controller (iomux and pull in GRF/PMUGRF).
+
+  Each child node is a pin state referenced from pinctrl-N; its children
+  are groups:
+
+    spi1_pins: spi1-pins {
+      group {
+        pinmux = <RK_PINMUX(1, RK_PA7, 2, RK_PULL_UP)>, ...;
+      };
+    };
+
+compatible: "rockchip,rk3399-pinctrl"
+
+include: base.yaml
+
+child-binding:
+  description: Pin state
+  child-binding:
+    description: Pin group
+    properties:
+      pinmux:
+        type: array
+        required: true
+        description: RK_PINMUX(bank, pin, function, pull) cells

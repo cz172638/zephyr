@@ -1,0 +1,9 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config PINCTRL_RK3399
+	bool "Rockchip RK3399 pin controller"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_PINCTRL_ENABLED
+	help
+	  Iomux and pulls in the GRF (banks 2-4) and PMUGRF (banks 0-1).

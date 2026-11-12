@@ -2,7 +2,9 @@
  * Copyright The Zephyr Project Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Rockchip RK3399 CRU/PMUCRU clock gate controller.
+ * Rockchip RK3399 CRU/PMUCRU clock gate controller, plus rates of the few
+ * composite clocks drivers need (SPI, SDMMC). PLLs are left as the boot
+ * loader set them (U-Boot SPL: GPLL 594 MHz, CPLL 384 MHz).
  */
 
 #define DT_DRV_COMPAT rockchip_rk3399_cru_clk
@@ -13,6 +15,7 @@
 #include <zephyr/arch/cpu.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/dt-bindings/clock/rk3399-cru.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 
@@ -72,6 +75,139 @@ static enum clock_control_status clock_control_rk3399_get_status(const struct de
 	return ((val & BIT(id % 16U)) != 0U) ? CLOCK_CONTROL_STATUS_OFF : CLOCK_CONTROL_STATUS_ON;
 }
 
+#define OSC_HZ        24000000U
+#define CRU_CLKSEL(n) (0x100U + (n) * 4U)
+#define CRU_CPLL      0x60U
+#define CRU_GPLL      0x80U
+#define CRU_NPLL      0xa0U
+
+enum rk_src {
+	SRC_CPLL,
+	SRC_GPLL,
+	SRC_NPLL,
+	SRC_NONE, /* PPLL: PMUCRU, not handled here */
+	SRC_UPLL,
+	SRC_24M,
+};
+
+struct rk_comp {
+	uint16_t id;
+	uint8_t sel;
+	uint8_t mux_shift;
+	uint8_t mux_width;
+	uint8_t div_shift;
+	uint8_t div_width;
+	bool sdmmc_parents; /* cpll gpll npll ppll upll 24m, else cpll gpll */
+};
+
+static const struct rk_comp rk_comps[] = {
+	{SCLK_SPI0, 59, 7, 1, 0, 7, false},  {SCLK_SPI1, 59, 15, 1, 8, 7, false},
+	{SCLK_SPI2, 60, 7, 1, 0, 7, false},  {SCLK_SPI4, 60, 15, 1, 8, 7, false},
+	{SCLK_SPI5, 58, 15, 1, 8, 7, false}, {SCLK_SDMMC, 16, 8, 3, 0, 7, true},
+};
+
+static const struct rk_comp *rk_comp_find(const struct device *dev, uint32_t id)
+{
+	const struct clock_control_rk3399_config *cfg = dev->config;
+
+	if (cfg->gate_offset != 0x300U) {
+		return NULL; /* PMUCRU */
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(rk_comps); i++) {
+		if (rk_comps[i].id == id) {
+			return &rk_comps[i];
+		}
+	}
+	return NULL;
+}
+
+static uint32_t rk_pll_rate(const struct device *dev, uint32_t off)
+{
+	mm_reg_t b = DEVICE_MMIO_GET(dev) + off;
+	uint32_t c0 = sys_read32(b), c1 = sys_read32(b + 4), c2 = sys_read32(b + 8);
+	uint32_t c3 = sys_read32(b + 12);
+	uint64_t fb = c0 & 0xfffU, ref = c1 & 0x3fU;
+	uint64_t pd = ((c1 >> 8) & 0x7U) * ((c1 >> 12) & 0x7U);
+	uint64_t hz;
+
+	if (((c3 >> 8) & 0x3U) != 1U) {
+		return OSC_HZ; /* slow mode */
+	}
+	if (ref == 0 || pd == 0) {
+		return 0;
+	}
+	hz = (uint64_t)OSC_HZ * fb;
+	if ((c3 & BIT(3)) == 0U) {
+		hz += ((uint64_t)OSC_HZ * (c2 & 0xffffffU)) >> 24;
+	}
+	return (uint32_t)(hz / ref / pd);
+}
+
+static uint32_t rk_src_rate(const struct device *dev, uint32_t s)
+{
+	switch (s) {
+	case SRC_CPLL:
+		return rk_pll_rate(dev, CRU_CPLL);
+	case SRC_GPLL:
+		return rk_pll_rate(dev, CRU_GPLL);
+	case SRC_NPLL:
+		return rk_pll_rate(dev, CRU_NPLL);
+	case SRC_UPLL:
+		return 480000000U;
+	case SRC_24M:
+		return OSC_HZ;
+	default:
+		return 0;
+	}
+}
+
+static int clock_control_rk3399_get_rate(const struct device *dev, clock_control_subsys_t sys,
+					 uint32_t *rate)
+{
+	const struct rk_comp *c = rk_comp_find(dev, (uint32_t)(uintptr_t)sys);
+	uint32_t v;
+
+	if (c == NULL) {
+		return -ENOTSUP;
+	}
+	v = sys_read32(DEVICE_MMIO_GET(dev) + CRU_CLKSEL(c->sel));
+	*rate = rk_src_rate(dev, (v >> c->mux_shift) & BIT_MASK(c->mux_width)) /
+		(((v >> c->div_shift) & BIT_MASK(c->div_width)) + 1U);
+	return 0;
+}
+
+/* highest rate not above the request: GPLL, or 24 MHz when GPLL can't divide that low */
+static int clock_control_rk3399_set_rate(const struct device *dev, clock_control_subsys_t sys,
+					 clock_control_subsys_rate_t rate)
+{
+	const struct rk_comp *c = rk_comp_find(dev, (uint32_t)(uintptr_t)sys);
+	uint32_t want = (uint32_t)(uintptr_t)rate;
+	uint32_t src, div, mask, max;
+	uint32_t s = SRC_GPLL;
+
+	if (c == NULL) {
+		return -ENOTSUP;
+	}
+	if (want == 0U) {
+		return -EINVAL;
+	}
+	max = BIT(c->div_width);
+	src = rk_src_rate(dev, s);
+	div = DIV_ROUND_UP(src, want);
+	if (div > max && c->sdmmc_parents) {
+		s = SRC_24M;
+		src = OSC_HZ;
+		div = DIV_ROUND_UP(src, want);
+	}
+	if (div > max || src == 0U) {
+		return -ERANGE;
+	}
+	mask = (BIT_MASK(c->mux_width) << c->mux_shift) | (BIT_MASK(c->div_width) << c->div_shift);
+	sys_write32((mask << 16) | (s << c->mux_shift) | ((div - 1U) << c->div_shift),
+		    DEVICE_MMIO_GET(dev) + CRU_CLKSEL(c->sel));
+	return 0;
+}
+
 static int clock_control_rk3399_init(const struct device *dev)
 {
 	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
@@ -83,6 +219,8 @@ static DEVICE_API(clock_control, clock_control_rk3399_api) = {
 	.on = clock_control_rk3399_on,
 	.off = clock_control_rk3399_off,
 	.get_status = clock_control_rk3399_get_status,
+	.get_rate = clock_control_rk3399_get_rate,
+	.set_rate = clock_control_rk3399_set_rate,
 };
 
 #define RK3399_CRU_CLK_INIT(n)                                                                     \
