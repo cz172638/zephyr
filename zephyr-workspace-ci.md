@@ -100,7 +100,7 @@ Proměnné (všechny volitelné):
 | `NETSHELL_AUTHORIZED_KEY` | povinné pro ESPRESSObin | PEM text nebo cesta |
 | `TFA_URL`/`TFA_SHA`, `WTP_URL`/`WTP_SHA`, `MV_DDR_*`, `CRYPTOPP_*`, `UBOOT_URL`/`UBOOT_SHA` | forky `cz172638/…` a SHA z tabulky výše | firmware; jde i `file:///cesta/k/repu` |
 
-**Číslo image:** `IMG` předává `-DCONFIG_LAB_IMAGE` a podle něj se pojmenují `.bin` i `.llext` a kontroluje verze při `lab mod load`. U nového obsahu zvyš číslo: `IMG=153 … espressobin.sh`, případně uprav snippet `espressobin-lab`.
+**Číslo image:** `IMG` předává `-DCONFIG_LAB_IMAGE` a podle něj se pojmenují `.bin` i `.llext` a kontroluje verze při `lab mod load`. U nového obsahu zvyš číslo: `IMG=154 … espressobin.sh` (čísla jsou společná pro všechny desky, 153 je ROCK Pi 4), případně uprav snippet `espressobin-lab`.
 
 Ruční build bez skriptu (stejné příkazy, jaké používá skript):
 
@@ -220,4 +220,4 @@ Oba skripty jsem pustil z čistého workspace na hostiteli s SDK 1.0.1: nový kl
 
 Kontejner ani Actions jsem nespouštěl, protože tady není Docker. Rozdíl proti hostiteli je jen v balíčcích (skript je doinstaluje) a v cestě k SDK/venv.
 
-ESPRESSObin z větve `rk3399` nese číslo 150 ze snippetu, ale obsahuje novější kód než 150 na deskách (`pcie_ctrl_is_rc()` v EPF a lab agentu). Pro nasazení ho postav s `IMG=153`, jinak se `.llext` načtou do jiného firmwaru, než pro který byly přeložené.
+ESPRESSObin z větve `rk3399` nese číslo 150 ze snippetu, ale obsahuje novější kód než 150 na deskách (`pcie_ctrl_is_rc()` v EPF a lab agentu). Pro nasazení ho postav s `IMG=154` (153 už je ROCK Pi 4), jinak se `.llext` načtou do jiného firmwaru, než pro který byly přeložené.
