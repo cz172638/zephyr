@@ -41,8 +41,8 @@ on:
   workflow_dispatch:
     inputs:
       boards:
-        description: 'boards (space separated)'
-        default: 'espressobin rock_pi_4'
+        description: 'boards (space separated; empty: all scripts/ci/lab/*.sh)'
+        default: ''
       release:
         description: 'publish as release lab-build-<n> (push always does)'
         type: boolean
@@ -61,11 +61,27 @@ permissions:
   contents: read
 
 jobs:
+  # image number and the boards: every scripts/ci/lab/<board>.sh of the
+  # commit being built, so a pull request that adds a board builds it too
   number:
     runs-on: ubuntu-24.04
     outputs:
       img: ${{ steps.n.outputs.img }}
+      boards: ${{ steps.b.outputs.boards }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/ci/lab
+      - id: b
+        env:
+          ONLY: ${{ github.event.inputs.boards }}
+        run: |
+          all=$(ls scripts/ci/lab/*.sh | xargs -n1 basename | sed 's/\.sh$//' | grep -vx common)
+          sel=$all
+          [ -n "$ONLY" ] && sel=$(printf '%s\n' $all | grep -xF -f <(printf '%s\n' $ONLY) || true)
+          echo "boards: $(echo $sel)"
+          [ -n "$sel" ] || { echo "no board selected"; exit 1; }
+          echo "boards=$(printf '%s\n' $sel | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
       - id: n
         env:
           IMG_IN: ${{ github.event.inputs.img }}
@@ -91,29 +107,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        board: [espressobin, rock_pi_4]
+        board: ${{ fromJSON(needs.number.outputs.boards) }}
     env:
       WS: ${{ github.workspace }}/ws
       OUT: ${{ github.workspace }}/out
       NETSHELL_AUTHORIZED_KEY: ${{ vars.NETSHELL_AUTHORIZED_KEY }}
       IMG: ${{ needs.number.outputs.img }}
     steps:
-      - name: selected
-        id: sel
-        shell: bash
-        run: |
-          b=" ${{ github.event.inputs.boards || 'espressobin rock_pi_4' }} "
-          [[ $b == *" ${{ matrix.board }} "* ]] && echo run=1 >> "$GITHUB_OUTPUT" || true
-
       - name: checkout
-        if: steps.sel.outputs.run
         uses: actions/checkout@v4
         with:
           path: ws/zephyr
           fetch-depth: 1
 
       - name: cache modules and firmware trees
-        if: steps.sel.outputs.run
         uses: actions/cache@v4
         with:
           path: |
@@ -122,12 +129,10 @@ jobs:
           key: lab-${{ matrix.board }}-${{ hashFiles('ws/zephyr/west.yml', format('ws/zephyr/scripts/ci/lab/{0}.sh', matrix.board), 'ws/zephyr/scripts/ci/lab/common.sh') }}
 
       - name: build
-        if: steps.sel.outputs.run
         shell: bash
         run: bash -eu ws/zephyr/scripts/ci/lab/${{ matrix.board }}.sh
 
       - name: upload
-        if: steps.sel.outputs.run
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.board }}-images
