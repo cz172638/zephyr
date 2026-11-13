@@ -63,19 +63,27 @@ bool pcie_epf_selected(const char *name)
 {
 	const char *sel = pcie_epf_selection();
 	bool yes;
+	size_t i;
 
-	if (n_names < MAX_NAMES) {
+	for (i = 0; i < n_names && strcmp(names[i], name) != 0; i++) {
+	}
+	if (i == n_names && n_names < MAX_NAMES) {
 		names[n_names++] = name;
 	}
 	if (sel != NULL) {
 		yes = strcmp(sel, name) == 0;
 	} else {
-		yes = bound == NULL; /* nothing chosen: the first one */
+		/* nothing chosen: the first one */
+		yes = bound == NULL || strcmp(bound, name) == 0;
 	}
+	/*
+	 * One function type per controller, but all its instances: a PF and
+	 * its SR-IOV VFs may each run the same function.
+	 */
 	if (yes && bound == NULL) {
 		bound = name;
-	} else if (yes) {
-		yes = false; /* one function per controller function number */
+	} else if (yes && strcmp(bound, name) != 0) {
+		yes = false;
 	}
 	if (!yes) {
 		LOG_INF("function \"%s\" not selected (%s)", name,
