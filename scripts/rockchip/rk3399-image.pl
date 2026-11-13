@@ -13,11 +13,13 @@
 #   }
 #
 # Outputs, written from offset 0 of the medium:
-#   <out>-emmc.bin   the image: MBR, idbloader.img at sector 64, FIT at sector
-#                    16384, FAT partition 1 from sector 32768 (16 MiB; --fat-mb
+#   <out>-emmc.bin   the image: MBR, idbloader.img at sector 64, FIT at the
+#                    sector of the U-Boot build (SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR,
+#                    2048 in CI, 16384 by default), FAT partition 1 from sector 32768 (16 MiB; --fat-mb
 #                    big, FAT16 below 512 MiB) with the --fat-add files. The
 #                    BootROM and SPL read eMMC and micro SD the same way, so
 #                    this also boots from a card.
+#   <out>-boot.bin   its start up to the end of the FIT, for "fwupdate ymodem"
 #   <out>-sd-install.bin  (--installer) the same, with <out>-emmc.bin on a
 #                    FAT big enough for it: boot from the card, then in the
 #                    Zephyr shell "emmc update /SD:/<out>-emmc.bin"
@@ -69,6 +71,14 @@ $mkimage //= "$ub/tools/mkimage";
 for my $f ($bl31, $zephyr, "$ub/idbloader.img", "$ub/u-boot.dtb", $mkimage,
 	   $want_spi ? "$ub/idbloader-spi.img" : ()) {
 	-e $f or die "missing $f\n";
+}
+
+# SPL looks for the FIT where its build says (rk3399 default sector 0x4000)
+if (open(my $cfg, "<", "$ub/.config")) {
+	while (<$cfg>) {
+		$sd_fit = oct($1) if /^CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=(\S+)/;
+	}
+	close($cfg);
 }
 
 sub slurp {
@@ -220,6 +230,9 @@ for my $i (@images) {
 		defined $i->{entry} ? sprintf(' entry 0x%08x', $i->{entry}) : ' ' x 17, -s $i->{file};
 }
 disk("$out-emmc.bin", $fat_mb, @fat_add);
+# the boot area up to the end of the FIT, for "fwupdate ymodem" (FAT untouched)
+spew("$out-boot.bin", substr(slurp("$out-emmc.bin"), 0, $sd_fit * 512 + length($fit)));
+printf "%s-boot.bin %d B (boot area: MBR, idbloader, FIT)\n", $out, -s "$out-boot.bin";
 if ($installer) {
 	# room for the eMMC image plus FAT overhead, whole MiB
 	my $mb = int((-s "$out-emmc.bin") / (1 << 20)) + 16;

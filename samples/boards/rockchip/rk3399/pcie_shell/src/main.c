@@ -45,7 +45,7 @@ static uint8_t buf[CHUNK] __aligned(64);
 static uint8_t chk[CHUNK] __aligned(64);
 
 /*
- * Boot area of a raw image (MBR, idbloader at 64, FIT at 16384) from a file
+ * Boot area of a raw image (MBR, idbloader at 64, FIT at 2048) from a file
  * to the eMMC from sector 0. The FAT from BOOT_AREA on, where the file may
  * live, is left alone: a full -emmc.bin is cut there.
  */

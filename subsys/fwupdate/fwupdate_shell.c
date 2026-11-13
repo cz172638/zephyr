@@ -83,6 +83,7 @@ static struct fwupdate {
 	bool log_was_on;
 	bool dry;
 	bool xmodem;
+	bool cut;        /* boot disk: data past FW_SIZE dropped */
 	char name[64];
 	size_t size;     /* announced by the sender, 0 = unknown */
 	size_t received; /* actual file length */
@@ -148,7 +149,12 @@ static int fw_open(void *ctx, const char *name, size_t size)
 		return -E2BIG;
 	}
 	if (size > FW_SIZE) {
-		return -EFBIG;
+		if (!IS_ENABLED(CONFIG_FWUPDATE_BOOT_DISK)) {
+			return -EFBIG;
+		}
+		/* a whole disk image: only its boot area is kept */
+		fw.cut = true;
+		size = FW_SIZE;
 	}
 	strncpy(fw.name, name, sizeof(fw.name) - 1);
 	fw.name[sizeof(fw.name) - 1] = '\0';
@@ -160,6 +166,16 @@ static int fw_data(void *ctx, size_t offset, const uint8_t *buf, size_t len)
 {
 	ARG_UNUSED(ctx);
 
+	if (IS_ENABLED(CONFIG_FWUPDATE_BOOT_DISK)) {
+		if (offset >= FW_SIZE) {
+			fw.cut = true;
+			return 0;
+		}
+		if (offset + len > FW_SIZE) {
+			fw.cut = true;
+			len = FW_SIZE - offset;
+		}
+	}
 	if (offset + len > FW_SIZE) {
 		return -EFBIG;
 	}
@@ -171,7 +187,7 @@ static int fw_close(void *ctx, size_t size)
 {
 	ARG_UNUSED(ctx);
 
-	fw.received = size;
+	fw.received = MIN(size, (size_t)FW_SIZE);
 	return 0;
 }
 
@@ -704,6 +720,7 @@ static void fw_worker(void *p1, void *p2, void *p3)
 		shell_error(sh, "%s: %s (%d)", fw.xmodem ? "xmodem" : "ymodem",
 			    ret == -ECANCELED   ? "cancelled"
 			    : ret == -ETIMEDOUT ? "timeout"
+			    : ret == -EFBIG     ? "file larger than the " FW_NAME
 			    : ret == 0          ? "no file"
 						: "error",
 			    ret);
@@ -712,6 +729,10 @@ static void fw_worker(void *p1, void *p2, void *p3)
 
 	shell_print(sh, "received \"%s\", %zu bytes, crc32 %08x", fw.name, fw.received,
 		    crc32_ieee(fw_buf, fw.received));
+	if (fw.cut) {
+		shell_print(sh, "only the first %u KiB (the boot area) kept, the rest dropped",
+			    (unsigned int)(FW_SIZE / 1024));
+	}
 	if (fw.xmodem) {
 		shell_print(sh, "(XMODEM: padded by the sender to whole blocks, "
 				"the padding is written too)");
@@ -905,6 +926,7 @@ static int fw_serial_start(const struct shell *sh, size_t argc, char **argv, boo
 	fw.sh = sh;
 	fw.dry = (argc > 1 && strcmp(argv[1], "dry") == 0);
 	fw.xmodem = xmodem;
+	fw.cut = false;
 	fw.size = 0;
 	fw.received = 0;
 	fw.name[0] = '\0';
