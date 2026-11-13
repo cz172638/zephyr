@@ -6,12 +6,17 @@
 #
 # Repository variable (not secret): NETSHELL_AUTHORIZED_KEY, PEM public key
 # for the ESPRESSObin netshell (ssh-keygen -e -m PKCS8 -f ~/.ssh/id_rsa.pub).
+#
+# Every build is one image number for all boards (the LLEXT prefix too):
+# the highest lab-build-<n> tag + 1 (at least 154), or the "img" input.
+# The release is tagged lab-build-<n> and kept, so each number stays
+# downloadable.
 
 name: lab-images
 
 on:
   push:
-    branches: [rk3399, espressobin]
+    branches: [espressobin]
     paths:
       - 'arch/**'
       - 'boards/**'
@@ -34,11 +39,11 @@ on:
         description: 'boards (space separated)'
         default: 'espressobin rock_pi_4'
       release:
-        description: 'publish as release lab-images-<branch> (push always does)'
+        description: 'publish as release lab-build-<n> (push always does)'
         type: boolean
         default: true
-      espressobin_img:
-        description: 'ESPRESSObin image number / LLEXT prefix (empty: snippet)'
+      img:
+        description: 'image number (empty: last lab-build tag + 1)'
         default: ''
 
 concurrency:
@@ -49,7 +54,28 @@ permissions:
   contents: read
 
 jobs:
+  number:
+    runs-on: ubuntu-24.04
+    outputs:
+      img: ${{ steps.n.outputs.img }}
+    steps:
+      - id: n
+        env:
+          IMG_IN: ${{ github.event.inputs.img }}
+        run: |
+          if [ -n "$IMG_IN" ]; then
+            n=$IMG_IN
+          else
+            last=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY" 'lab-build-*' |
+                   sed -n 's|.*refs/tags/lab-build-\([0-9]*\)$|\1|p' | sort -n | tail -1)
+            n=$(( ${last:-153} + 1 ))
+            [ "$n" -ge 154 ] || n=154
+          fi
+          echo "image number $n"
+          echo "img=$n" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: number
     runs-on: ubuntu-24.04
     container:
       # matches the ci-repo-cache tag of .github/workflows/twister.yaml (SDK 1.0.1)
@@ -62,7 +88,7 @@ jobs:
       WS: ${{ github.workspace }}/ws
       OUT: ${{ github.workspace }}/out
       NETSHELL_AUTHORIZED_KEY: ${{ vars.NETSHELL_AUTHORIZED_KEY }}
-      IMG: ${{ matrix.board == 'espressobin' && github.event.inputs.espressobin_img || '' }}
+      IMG: ${{ needs.number.outputs.img }}
     steps:
       - name: selected
         id: sel
@@ -100,10 +126,9 @@ jobs:
           path: out/
           retention-days: 30
 
-  # every push replaces the branch's release; dispatch only with release=true
   release:
-    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.inputs.release == 'true') }}
-    needs: build
+    if: ${{ !cancelled() && needs.number.result == 'success' && (github.event_name == 'push' || github.event.inputs.release == 'true') }}
+    needs: [number, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -111,12 +136,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dl
-      - name: release lab-images-${{ github.ref_name }}
+      - name: release lab-build-${{ needs.number.outputs.img }}
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: lab-images-${{ github.ref_name }}
+          TAG: lab-build-${{ needs.number.outputs.img }}
         run: |
-          gh release delete "$TAG" -R "$GITHUB_REPOSITORY" -y --cleanup-tag || true
           for d in dl/*-images; do
             b=$(basename "$d" -images)
             mv "$d/README.md" "$d/README-$b.md"
@@ -124,4 +148,8 @@ jobs:
           done
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
             --target "$GITHUB_SHA" --title "$TAG" \
-            --notes "Lab images from ${GITHUB_SHA::12}" dl/*/*
+            --notes "Lab build ${TAG#lab-build-} from ${GITHUB_REF_NAME} ${GITHUB_SHA::12}" dl/*/*
+          # the per-branch scheme before numbered builds
+          for t in $(gh release list -R "$GITHUB_REPOSITORY" --json tagName -q '.[].tagName' | grep '^lab-images-' || true); do
+            gh release delete "$t" -R "$GITHUB_REPOSITORY" -y --cleanup-tag
+          done
