@@ -5,3 +5,4 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(rk3399_pcie_shell)
 
 target_sources(app PRIVATE src/main.c)
+target_sources_ifdef(CONFIG_SAMPLE_INIT_TRACE app PRIVATE src/inittrace.c)

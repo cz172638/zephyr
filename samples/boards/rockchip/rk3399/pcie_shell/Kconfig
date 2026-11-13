@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config SAMPLE_INIT_TRACE
+	bool "Print a marker between init priority bands"
+	help
+	  printk "init: <level> <priority>" at PRE_KERNEL_2 0 and at a row of
+	  POST_KERNEL priorities, so the last marker on the console tells
+	  between which driver priorities a boot hangs. Use with
+	  -DEXTRA_CONF_FILE=debug.conf (immediate logging).
+
+source "Kconfig.zephyr"
