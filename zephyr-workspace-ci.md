@@ -95,7 +95,7 @@ Proměnné (všechny volitelné):
 | `OUT` | `$WS/out` | výstupy |
 | `ZEPHYR_SDK_INSTALL_DIR` | hledá `/opt/toolchains`, `~/zephyr-sdk-*`, `~/sdk/zephyr-sdk-*` | SDK |
 | `WEST_MODULES` | `cmsis,cmsis_6,fatfs,mbedtls,tf-psa-crypto` | west project filter |
-| `IMG`, `NAME` | ESPRESSObin: `CONFIG_LAB_IMAGE` ze snippetu (150) a `lab-mods`; ROCK Pi 4: `153` a `rp4` | jména souborů a prefix LLEXT |
+| `IMG`, `NAME` | ESPRESSObin: `CONFIG_LAB_IMAGE` ze snippetu (150); ROCK Pi 4: `153`; `NAME` = jméno skriptu (`espressobin`, `rock_pi_4`) | soubory `<IMG>-<NAME>-<co>`, číslo v LLEXT |
 | `CLOCKS`, `DDR_TOPOLOGY` | `CPU_800_DDR_800`, `2` | ESPRESSObin (C100 čip: `CPU_1000_DDR_800`) |
 | `NETSHELL_AUTHORIZED_KEY` | povinné pro ESPRESSObin | PEM text nebo cesta |
 | `TFA_URL`/`TFA_SHA`, `WTP_URL`/`WTP_SHA`, `MV_DDR_*`, `CRYPTOPP_*`, `UBOOT_URL`/`UBOOT_SHA` | forky `cz172638/…` a SHA z tabulky výše | firmware; jde i `file:///cesta/k/repu` |
@@ -108,7 +108,7 @@ Ruční build bez skriptu (stejné příkazy, jaké používá skript):
 # ROCK Pi 4
 west build -b rock_pi_4/rk3399/a53 zephyr/samples/boards/rockchip/rk3399/pcie_shell
 zephyr/scripts/rockchip/rk3399-image.pl --bl31 fw/tfa-rk3399/build/rk3399/release/bl31/bl31.elf \
-  --zephyr build/zephyr/zephyr.elf --uboot build/u-boot-rock-pi-4 -o 153-rp4
+  --zephyr build/zephyr/zephyr.elf --uboot build/u-boot-rock-pi-4 --installer -o 153-rock_pi_4
 
 # ESPRESSObin
 west build -b espressobin/armada3720 zephyr/samples/boards/globalscale/espressobin/netshell \
@@ -179,7 +179,8 @@ Tag `v0.29.4` odpovídá `ci-repo-cache:v0.29.4.*` v `.github/workflows/twister.
 
 4. **Spouštění a čísla buildů.** Push do `epc`, který mění zdrojáky (seznam `paths` ve workflow), spustí obě desky.
    - Každý build dostane jedno číslo image pro všechny desky: nejvyšší tag `lab-build-<n>` + 1, poprvé 154. Ručnímu spuštění ho jde vnutit vstupem `img`.
-   - Podle čísla se jmenují soubory (`154-lab-mods-spi.bin`, `154-rp4-emmc.bin`) i prefix LLEXT modulů.
+   - Soubory se jmenují `<n>-<deska>-<co>`, kde deska je jméno skriptu: `156-espressobin-spi.bin`, `-sata.bin`, `-uart.tgz`, `156-espressobin-<modul>.llext`, `156-rock_pi_4-emmc.bin`, `-sd-install.bin`. Buildy 154 a 155 mají ještě starší jména (`-lab-mods-`, `-rp4-`).
+   - `lab mod load` kontroluje číslo zabudované v modulu, ne jméno souboru.
    - Běhy jdou jeden po druhém (jedna concurrency skupina pro všechny větve), protože další číslo se čte z tagů.
    - **Změny chodí jako pull requesty do `epc`:** pushuju větve `claude/<téma>`, ty uděláš review a merge. PR spustí build všech desek jen s artefakty (číslo je jen náhled, tag ani release nevznikne). Release `lab-build-<n>` vznikne až po merge do `epc`.
    - Release `lab-build-<n>` (prerelease) zůstává, takže každé číslo jde stáhnout i později. Zrušený nebo celý neúspěšný běh tag nevytvoří a číslo se použije znovu.
