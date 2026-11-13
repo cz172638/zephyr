@@ -10,6 +10,9 @@
  * "fwupdate xmodem [dry]": the same with XMODEM / XMODEM-1K (e.g. sx);
  * the image arrives padded to whole blocks and is written with the padding.
  *
+ * With CONFIG_FWUPDATE_BOOT_DISK the target is the boot area at the start
+ * of a disk (e.g. the eMMC of a Rockchip board) instead of the partition.
+ *
  * "fwupdate tcp [port] [dry]": the same over one TCP connection, e.g.
  * "nc -N <board> 6969 < flash-image.bin"; the result is sent back on the
  * connection.
@@ -47,7 +50,12 @@ int fwupdate_program_external(const void *img, size_t len, uint32_t *crc);
 #include <zephyr/net/socket.h>
 #endif
 
-#if PARTITION_EXISTS(fwupdate_partition)
+#if defined(CONFIG_FWUPDATE_BOOT_DISK)
+#include <zephyr/storage/disk_access.h>
+#define FW_BDISK CONFIG_FWUPDATE_BOOT_DISK_NAME
+#define FW_NAME  CONFIG_FWUPDATE_BOOT_DISK_NAME " boot area"
+#define FW_SIZE  CONFIG_FWUPDATE_BOOT_DISK_SIZE
+#elif PARTITION_EXISTS(fwupdate_partition)
 #define FW_LABEL fwupdate_partition
 #elif PARTITION_EXISTS(boot_partition)
 #define FW_LABEL boot_partition
@@ -55,8 +63,11 @@ int fwupdate_program_external(const void *img, size_t len, uint32_t *crc);
 #error "fwupdate needs a fwupdate_partition or boot_partition node label"
 #endif
 
+#if !defined(CONFIG_FWUPDATE_BOOT_DISK)
 #define FW_ID   PARTITION_ID(FW_LABEL)
 #define FW_SIZE PARTITION_SIZE(FW_LABEL)
+#define FW_NAME "partition " STRINGIFY(FW_LABEL)
+#endif
 
 /* Marvell TIM header: version, then "TIMH" (little endian) */
 #define TIM_MAGIC_OFFSET 4
@@ -213,7 +224,9 @@ static int fw_check(const struct shell *sh, size_t len)
 	return 0;
 }
 
-#if defined(CONFIG_FWUPDATE_PROGRAM_EXTERNAL)
+#if defined(CONFIG_FWUPDATE_BOOT_DISK)
+/* the flash partition path is not built */
+#elif defined(CONFIG_FWUPDATE_PROGRAM_EXTERNAL)
 static int fw_program_flash(const struct shell *sh, size_t len)
 {
 	uint32_t crc = 0;
@@ -437,8 +450,83 @@ static int fw_program_disk(const struct shell *sh, size_t len)
 }
 #endif /* CONFIG_FWUPDATE_DISK */
 
+#if defined(CONFIG_FWUPDATE_BOOT_DISK)
+static uint8_t fw_bsec[4096] __aligned(64);
+
+/*
+ * Raw boot area from sector 0. The header sector the boot ROM checks is
+ * zeroed first and written last, so an interrupted update leaves no
+ * half-written image the ROM would start; it falls back to the next boot
+ * medium instead.
+ */
+static int fw_program_bootdisk(const struct shell *sh, size_t len)
+{
+	const uint32_t hdr = CONFIG_FWUPDATE_BOOT_DISK_HEADER;
+	uint32_t ss = 0, count = 0, nsec;
+	int ret;
+
+	ret = disk_access_init(FW_BDISK);
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_BDISK, DISK_IOCTL_GET_SECTOR_SIZE, &ss);
+	}
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_BDISK, DISK_IOCTL_GET_SECTOR_COUNT, &count);
+	}
+	if (ret != 0 || ss == 0 || ss > sizeof(fw_bsec)) {
+		FW_ERR(sh, "%s: disk not ready (%d, sector %u B)", FW_BDISK, ret, ss);
+		return ret != 0 ? ret : -EIO;
+	}
+	nsec = DIV_ROUND_UP(len, ss);
+	if (nsec > count) {
+		FW_ERR(sh, "%s: image %u sectors > disk %u", FW_BDISK, nsec, count);
+		return -EFBIG;
+	}
+	/* whole sectors: the tail of the buffer up to the next sector is zeroed */
+	if ((size_t)nsec * ss > len) {
+		memset(&fw_buf[len], 0, (size_t)nsec * ss - len);
+	}
+	FW_PRINT(sh, "%s: writing %u sectors from 0 (header sector %u last)...", FW_BDISK, nsec,
+		 hdr);
+
+	memset(fw_bsec, 0, ss);
+	ret = hdr < nsec ? disk_access_write(FW_BDISK, fw_bsec, hdr, 1) : 0;
+	if (ret == 0 && hdr > 0) {
+		ret = disk_access_write(FW_BDISK, fw_buf, 0, MIN(hdr, nsec));
+	}
+	if (ret == 0 && nsec > hdr + 1) {
+		ret = disk_access_write(FW_BDISK, &fw_buf[(size_t)(hdr + 1) * ss], hdr + 1,
+					nsec - hdr - 1);
+	}
+	if (ret == 0 && hdr < nsec) {
+		ret = disk_access_write(FW_BDISK, &fw_buf[(size_t)hdr * ss], hdr, 1);
+	}
+	if (ret == 0) {
+		ret = disk_access_ioctl(FW_BDISK, DISK_IOCTL_CTRL_SYNC, NULL);
+	}
+	if (ret != 0) {
+		FW_ERR(sh, "%s: write: %d", FW_BDISK, ret);
+		return ret;
+	}
+
+	FW_PRINT(sh, "verifying...");
+	for (uint32_t s = 0; s < nsec; s += sizeof(fw_bsec) / ss) {
+		uint32_t n = MIN((uint32_t)(sizeof(fw_bsec) / ss), nsec - s);
+
+		ret = disk_access_read(FW_BDISK, fw_bsec, s, n);
+		if (ret != 0 || memcmp(fw_bsec, &fw_buf[(size_t)s * ss], (size_t)n * ss) != 0) {
+			FW_ERR(sh, "verify failed in sectors %u..%u", s, s + n - 1);
+			return ret != 0 ? ret : -EIO;
+		}
+	}
+	return 0;
+}
+#endif /* CONFIG_FWUPDATE_BOOT_DISK */
+
 static int fw_program(const struct shell *sh, size_t len)
 {
+#if defined(CONFIG_FWUPDATE_BOOT_DISK)
+	return fw_program_bootdisk(sh, len);
+#else
 	if (fw_is_sata(len)) {
 #if defined(CONFIG_FWUPDATE_DISK)
 		return fw_program_disk(sh, len);
@@ -449,10 +537,14 @@ static int fw_program(const struct shell *sh, size_t len)
 #endif
 	}
 	return fw_program_flash(sh, len);
+#endif
 }
 
 static const char *fw_where(void)
 {
+	if (IS_ENABLED(CONFIG_FWUPDATE_BOOT_DISK)) {
+		return FW_NAME;
+	}
 	return fw_is_sata(fw.received) ? "SATA boot partition (boot jumpers on SATA)" : "flash";
 }
 
@@ -788,8 +880,8 @@ static int cmd_tcp(const struct shell *sh, size_t argc, char **argv)
 		}
 	}
 
-	shell_print(sh, "partition %s: %u KiB. Waiting %d s on TCP port %u, e.g.",
-		    STRINGIFY(FW_LABEL), (unsigned int)(FW_SIZE / 1024),
+	shell_print(sh, "%s: %u KiB. Waiting %d s on TCP port %u, e.g.",
+		    FW_NAME, (unsigned int)(FW_SIZE / 1024),
 		    CONFIG_FWUPDATE_TCP_ACCEPT_TIMEOUT, (unsigned int)port);
 	shell_print(sh, "  nc -N <board> %u < flash-image.bin%s", (unsigned int)port,
 		    fw.dry ? "  (dry run)" : "");
@@ -819,8 +911,8 @@ static int fw_serial_start(const struct shell *sh, size_t argc, char **argv, boo
 	ring_buf_init(&fw.rx, sizeof(fw.rx_mem), fw.rx_mem);
 	k_sem_init(&fw.rx_sem, 0, 1);
 
-	shell_print(sh, "partition %s: %u KiB. Start the %s upload now (tio: ctrl-t %c),",
-		    STRINGIFY(FW_LABEL), (unsigned int)(FW_SIZE / 1024),
+	shell_print(sh, "%s: %u KiB. Start the %s upload now (tio: ctrl-t %c),",
+		    FW_NAME, (unsigned int)(FW_SIZE / 1024),
 		    xmodem ? "XMODEM" : "YMODEM", xmodem ? 'x' : 'y');
 	shell_print(sh, "Ctrl-C to abort.%s", fw.dry ? " Dry run." : "");
 
