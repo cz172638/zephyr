@@ -611,6 +611,35 @@ static inline int ns16550_read_char(const struct device *dev, unsigned char *c)
 	return -1;
 }
 
+/*
+ * DesignWare APB UART: LCR writes are dropped while the UART is busy
+ * (transmitting, receiving, FIFOs not empty). If the write that clears DLAB
+ * is lost, every later THR write lands in the divisor latch and the console
+ * goes silent; if the one that sets DLAB is lost, the divisor goes out as
+ * data. Drain the transmitter first, then write and read back, clearing the
+ * FIFOs between retries (Linux 8250_dw: dw8250_check_lcr).
+ */
+static void ns16550_write_lcr(const struct device *dev, uint8_t lcr)
+{
+	const struct uart_ns16550_dev_config * const dev_cfg = dev->config;
+
+#ifdef CONFIG_UART_NS16550_DW8250_DW_APB
+	for (int i = 0; i < 100000 &&
+		(ns16550_inbyte(dev_cfg, LSR(dev)) & LSR_TEMT) == 0U; i++) {
+	}
+	for (int tries = 0; tries < 1000; tries++) {
+		ns16550_outbyte(dev_cfg, LCR(dev), lcr);
+		if (ns16550_inbyte(dev_cfg, LCR(dev)) == lcr) {
+			return;
+		}
+		ns16550_outbyte(dev_cfg, FCR(dev), FCR_FIFO | FCR_RCVRCLR | FCR_XMITCLR);
+		(void)ns16550_inbyte(dev_cfg, RDR(dev));
+	}
+#else
+	ns16550_outbyte(dev_cfg, LCR(dev), lcr);
+#endif
+}
+
 static void set_baud_rate(const struct device *dev, uint32_t baud_rate, uint32_t pclk)
 {
 	struct uart_ns16550_dev_data * const dev_data = dev->data;
@@ -635,7 +664,7 @@ static void set_baud_rate(const struct device *dev, uint32_t baud_rate, uint32_t
 
 		/* set the DLAB to access the baud rate divisor registers */
 		lcr_cache = ns16550_inbyte(dev_cfg, LCR(dev));
-		ns16550_outbyte(dev_cfg, LCR(dev), LCR_DLAB | lcr_cache);
+		ns16550_write_lcr(dev, LCR_DLAB | lcr_cache);
 
 #ifdef CONFIG_UART_NS16550_BCM283X_AUX
 		ns16550_outbyte(dev_cfg, BRD1(dev), (unsigned char)(divisor & 0xff));
@@ -644,7 +673,7 @@ static void set_baud_rate(const struct device *dev, uint32_t baud_rate, uint32_t
 		ns16550_outbyte(dev_cfg, BRDH(dev), (unsigned char)((divisor >> 8) & 0xff));
 #endif
 		/* restore the DLAB to access the baud rate divisor registers */
-		ns16550_outbyte(dev_cfg, LCR(dev), lcr_cache);
+		ns16550_write_lcr(dev, lcr_cache);
 
 		dev_data->uart_config.baudrate = baud_rate;
 	}
@@ -770,8 +799,7 @@ static int uart_ns16550_configure(const struct device *dev,
 	dev_data->uart_config = *cfg;
 
 	/* data bits, stop bits, parity, clear DLAB */
-	ns16550_outbyte(dev_cfg, LCR(dev),
-			uart_cfg.data_bits | uart_cfg.stop_bits | uart_cfg.parity);
+	ns16550_write_lcr(dev, uart_cfg.data_bits | uart_cfg.stop_bits | uart_cfg.parity);
 
 	mdc = MCR_OUT2 | MCR_RTS | MCR_DTR;
 #if defined(CONFIG_UART_NS16550_VARIANT_NS16750) || \
