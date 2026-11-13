@@ -31,6 +31,10 @@ config SYSCON
 config GIC_SAFE_CONFIG
 	default y
 
+# sys_reboot() through PSCI SYSTEM_RESET (TF-A BL31)
+config PM_CPU_OPS
+	default y
+
 endif # ARM64
 
 if CPU_CORTEX_M0

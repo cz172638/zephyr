@@ -6,8 +6,10 @@
  * is the boot medium and the storage: its FAT partition is mounted at
  * /EMMC: before the PCIe role is read from settings. The micro SD slot is
  * left to the JTAG breakout (no SD card disk); "emmc update <file>" rewrites
- * the boot area (MBR, idbloader, FIT) from a file, e.g. on /EMMC:, and
- * "fwupdate ymodem" receives it over the shell UART (<img>-rock_pi_4-boot.bin).
+ * the eMMC boot area (MBR, idbloader, FIT) from a file, e.g. on /EMMC:.
+ * The BootROM tries the SPI NOR first: "fwupdate ymodem" writes
+ * <img>-rock_pi_4-spi.bin there over the shell UART, "flash erase" of its
+ * first sector falls back to the eMMC.
  */
 
 #include <stdlib.h>
