@@ -24,6 +24,7 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/sys/sys_io.h>
 
 static FATFS fat_emmc;
 static struct fs_mount_t emmc_mnt = {
@@ -130,6 +131,41 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_emmc,
 		      cmd_update, 2, 0),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(emmc, &sub_emmc, "eMMC install", NULL);
+
+/*
+ * The BAR carveout (pcie_ep_mem) is identity mapped by its DT memory
+ * attribute, so devmem, which maps again, panics on it: read and write it
+ * here through that mapping. Offsets: PF at 0, VF n at n * 4 MiB.
+ */
+#define EP_MEM_BASE DT_REG_ADDR(DT_NODELABEL(pcie_ep_mem))
+#define EP_MEM_SIZE DT_REG_SIZE(DT_NODELABEL(pcie_ep_mem))
+
+static int cmd_epmem(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long off = strtoul(argv[1], NULL, 0);
+	unsigned long n = argc > 2 ? strtoul(argv[2], NULL, 0) : 4;
+
+	if (off >= EP_MEM_SIZE || (off & 3U) != 0U) {
+		shell_error(sh, "offset 0x%lx: word aligned, below 0x%lx", off,
+			    (unsigned long)EP_MEM_SIZE);
+		return -EINVAL;
+	}
+	if (argc > 3) {
+		sys_write32((uint32_t)strtoul(argv[3], NULL, 0), EP_MEM_BASE + off);
+	}
+	for (unsigned long i = 0; i < n && off + i * 4U < EP_MEM_SIZE; i++) {
+		if ((i % 4U) == 0U) {
+			shell_fprintf(sh, SHELL_NORMAL, "%s%08lx:", i ? "\n" : "", off + i * 4U);
+		}
+		shell_fprintf(sh, SHELL_NORMAL, " %08x", sys_read32(EP_MEM_BASE + off + i * 4U));
+	}
+	shell_print(sh, "");
+	return 0;
+}
+SHELL_CMD_ARG_REGISTER(epmem, NULL,
+		       "<offset> [words] [value]: BAR carveout (PF 0, VF n at n*4M); value writes "
+		       "the first word",
+		       cmd_epmem, 2, 2);
 
 int main(void)
 {

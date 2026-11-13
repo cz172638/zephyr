@@ -52,6 +52,8 @@ LOG_MODULE_REGISTER(pcie_epc_rk3399, CONFIG_PCIE_EP_LOG_LEVEL);
 #define OB_IRQ_REGION 0U
 #define POLL_DOWN_MS  5
 #define POLL_UP_MS    20
+/* link must stay down this long before LINK_DOWN (Recovery passes through) */
+#define LINK_DOWN_DEBOUNCE_MS 100
 
 struct epc_rk3399_config {
 	DEVICE_MMIO_NAMED_ROM(apb);
@@ -91,6 +93,8 @@ struct epc_rk3399_data {
 	struct k_timer sriov_timer; /* ARI Capable Hierarchy for the VFs, see link_work */
 	atomic_t arie_set;
 	uint32_t ups, downs, hot_resets;
+	uint32_t glitches;  /* short drops of DL up, not reported as LINK_DOWN */
+	int64_t down_since; /* uptime the link was last seen dropping, 0 = up */
 };
 
 #define DEV_CFG(_dev)  ((const struct epc_rk3399_config *)(_dev)->config)
@@ -176,9 +180,25 @@ static void link_work(struct k_work *work)
 
 	if (!rk3399_pcie_link_up(apb(dev)) ||
 	    (cdns_ep_read(&d->core, CDNS_LM_PL_CONFIG0) & CDNS_LM_PL_CONFIG0_LS_READY) == 0U) {
-		link_down(dev);
+		/*
+		 * Recovery (retraining after errors, speed changes) briefly drops
+		 * the link status; only a link gone for LINK_DOWN_DEBOUNCE_MS is
+		 * a link down. PERST# and hot reset have their own events.
+		 */
+		if (d->link_up && d->down_since == 0) {
+			d->down_since = k_uptime_get();
+		}
+		if (!d->link_up || k_uptime_get() - d->down_since >= LINK_DOWN_DEBOUNCE_MS) {
+			d->down_since = 0;
+			link_down(dev);
+		}
 		(void)k_work_reschedule(&d->link_work, K_MSEC(POLL_DOWN_MS));
 		return;
+	}
+
+	if (d->down_since != 0) {
+		d->down_since = 0;
+		d->glitches++;
 	}
 
 	if (!d->link_up) {
@@ -644,7 +664,8 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 		shell_print(sh, "BAR%d       %08x", b,
 			    cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(0) + 0x10 + 4 * b));
 	}
-	shell_print(sh, "events     up %u down %u hot-reset %u", d->ups, d->downs, d->hot_resets);
+	shell_print(sh, "events     up %u down %u hot-reset %u glitch %u", d->ups, d->downs,
+		    d->hot_resets, d->glitches);
 }
 
 #if defined(CONFIG_PCIE_ROLE)
