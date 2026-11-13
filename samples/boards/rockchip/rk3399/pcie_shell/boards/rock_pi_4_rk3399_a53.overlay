@@ -16,6 +16,9 @@
 };
 
 &pcie0_ep {
+	/* Gen2 over the crossover cable drops the data link every few hundred
+	 * ms, and every drop resets the configuration space (BARs, VFs) */
+	max-link-speed = <1>;
 	vendor-id = <0x1d87>;
 	device-id = <0x3399>;
 	class-code = <0xff0000>;
