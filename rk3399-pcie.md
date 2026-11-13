@@ -227,3 +227,26 @@ Diagnostika GIC byla výpis registrů z raw UART značek (`ICC_HPPIR1_EL1=3ff` p
 | `<img>-rock_pi_4-boot.bin` (1,5 MiB) | bootovací oblast eMMC (FAT zůstane) | `emmc update /EMMC:/<soubor>` |
 
 BootROM zkouší SPI → eMMC → SD; zpátky na eMMC: `flash erase flash@0 0 0x1000`. SD slot je jen pro JTAG breakout (bez SD disku). `fwupdate` umí cíl `CONFIG_FWUPDATE_BOOT_DISK` (bootovací oblast disku, hlavička idbloaderu na sektoru 64 se maže první a píše poslední); pcie_shell ho teď nepoužívá.
+
+## 11. SR-IOV na EP (13. 11. 2026, proti BeagleY-AI)
+
+RK3399 má v EP režimu 1 PF a 8 VF (TRM). Co bylo potřeba a co se ověřilo na hardwaru:
+
+| Věc | Stav | Poznámka |
+|---|---|---|
+| strap `sr_iov_en` | `PCIE_CLIENT_CONFIG` bit 2, výchozí 0 | `CONFIG_PCIE_EPC_RK3399_SRIOV`; s ním je SR-IOV cap na `0x200` (DPA → SR-IOV → TPH) |
+| výchozí BARy | PF: BAR2/3 a BAR5 zapnuté, VF: 3× 64bit 4 MiB | při startu se vypnou všechny, funkce zapnou své |
+| VF BARy | LM `0x280`/`0x284`, stejný formát jako PF `0x240` | jedno nastavení pro všechny VF |
+| příchozí překlad VF | AT `0x828 + fn·0x40 + bar·8` pro fn 1..8 | **v TRM jen funkce 0**, ověřeno zpětným čtením a zápisem z hostu (`cafe0001` v BAR0 VF1) |
+| ARI Capable Hierarchy | musí být nastavené s VF Enable (TRM) | host bez ARI forwardingu (J722S) ho nenastaví → VF čtou header 0x7f; EP ho nastaví sám z 1ms `k_timer` |
+| MSE na PF | jádro dekóduje paměť VF jen s MSE na PF | `pci-pf-stub` PF nezapíná → `setpci COMMAND=0x02`; `pci-endpoint-test` ano |
+| výběr EPF | `pcie_epf_selected()` pouštěl jen první instanci | opraveno: všechny instance vybrané funkce |
+| `max-functions` | v dtsi bylo 8 (z Linuxu) | 1 PF, funkce 1–8 jsou VF |
+
+Host (Linux): `modprobe pci-pf-stub; echo "1d87 3399" > /sys/bus/pci/drivers/pci-pf-stub/new_id; echo 4 > .../sriov_numvfs`. VF jsou `[1d87:339a]`, 8K + 64K BAR, MSI 4 vektory. Po resetu EP (a po každém výpadku linku) host přijde o BARy i VF: `sriov_numvfs` 0, `remove`, `rescan`.
+
+**Link:** Gen2 x1 přes crossover kabel padal každých pár set ms; každý výpadek data linku resetuje konfigurační prostor EP (BARy, Command, SR-IOV). To byl původní abort hostu při čtení BAR0. pcie_shell EP je teď Gen1 (`max-link-speed = <1>`), link drží.
+
+**pci_endpoint_test na PF:** BARy a zápis do BARů OK, MSI OK (`pcitest -i 1` nejdřív, jinak MSI Enable chybí). `-w` (EP čte z hostu) OK. `-r` (EP zapisuje do hostu): `memcpy` přes Normal-NC OB okno → SError (AXI slave odmítne burst zápisy). dbg25: okno jako Device-nGnRE a kopie po 64bit slovech (`ob_mmio_only`), **zatím netestováno**.
+
+**Další:** dbg25 `-r/-w/-c`, pak `pcitest` na VF (`new_id 1d87 339a`, `-i 1`, `-b 0`, `-m 1`); `devmem` na už mapovanou oblast panikaří (oprava v devmem shellu); pro debug carveoutu `epmem`.
