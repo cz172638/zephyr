@@ -87,15 +87,15 @@
 			#address-cells = <1>;
 			#size-cells = <1>;
 
-			idbloader_partition: partition@0 {
-				label = "idbloader";
-				reg = <0x0 0xe0000>;
-				read-only;
-			};
-
-			fit_partition: partition@e0000 {
-				label = "fit";
-				reg = <0xe0000 0x220000>;
+			/*
+			 * Boot image as rk3399-image.pl --spi makes it: idbloader-spi.img
+			 * at 0 (the BootROM checks its header first), FIT at 0xe0000
+			 * (U-Boot SYS_SPI_U_BOOT_OFFS). One partition, so fwupdate
+			 * replaces both together.
+			 */
+			boot_partition: partition@0 {
+				label = "boot";
+				reg = <0x0 0x300000>;
 			};
 
 			storage_partition: partition@300000 {

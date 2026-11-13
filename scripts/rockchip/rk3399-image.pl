@@ -24,6 +24,7 @@
 #                    FAT big enough for it: boot from the card, then in the
 #                    Zephyr shell "emmc update /SD:/<out>-emmc.bin"
 #   <out>-spi.bin    (--spi) idbloader-spi.img at 0, FIT at --spi-offset
+#                    (default: SYS_SPI_U_BOOT_OFFS of the U-Boot build, 0xe0000)
 #   needs mkfs.vfat (dosfstools) and mcopy (mtools)
 #
 # Example:
@@ -40,7 +41,7 @@ use File::Path qw(make_path);
 
 my ($bl31, $zephyr, $ub, $out);
 my $mkimage;
-my $spi_off = 0xe0000;
+my $spi_off;
 my $sd_idb = 64;
 my $sd_fit = 16384;
 my $fdt_load = 0x07f00000;
@@ -77,9 +78,11 @@ for my $f ($bl31, $zephyr, "$ub/idbloader.img", "$ub/u-boot.dtb", $mkimage,
 if (open(my $cfg, "<", "$ub/.config")) {
 	while (<$cfg>) {
 		$sd_fit = oct($1) if /^CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=(\S+)/;
+		$spi_off //= oct($1) if /^CONFIG_SYS_SPI_U_BOOT_OFFS=(\S+)/;
 	}
 	close($cfg);
 }
+$spi_off //= 0xe0000;
 
 sub slurp {
 	my ($f) = @_;
