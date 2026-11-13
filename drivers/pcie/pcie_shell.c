@@ -1066,7 +1066,51 @@ static int cmd_ep_function(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* the started endpoint controller */
+static const struct device *ep_active(void)
+{
+	STRUCT_SECTION_FOREACH(device, dev) {
+		if (DEVICE_API_IS(pcie_epc, dev) && device_is_ready(dev) &&
+		    pcie_epc_get_features(dev, 0) != NULL) {
+			return dev;
+		}
+	}
+	return NULL;
+}
+
+/* raise an interrupt toward the host by hand, e.g. to release a host waiting on one */
+static int cmd_ep_irq(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *epc = ep_active();
+	uint8_t fn = (uint8_t)strtoul(argv[1], NULL, 0);
+	enum pcie_epc_irq_type type;
+	uint16_t num = 0;
+	int ret;
+
+	if (epc == NULL) {
+		shell_error(sh, "no endpoint controller");
+		return -ENODEV;
+	}
+	if (strcmp(argv[2], "intx") == 0) {
+		type = PCIE_EPC_IRQ_INTX;
+	} else if (strcmp(argv[2], "msi") == 0 && argc > 3) {
+		type = PCIE_EPC_IRQ_MSI;
+		num = (uint16_t)strtoul(argv[3], NULL, 0);
+	} else if (strcmp(argv[2], "msix") == 0 && argc > 3) {
+		type = PCIE_EPC_IRQ_MSIX;
+		num = (uint16_t)strtoul(argv[3], NULL, 0);
+	} else {
+		shell_error(sh, "intx | msi <n> | msix <n> (n from 1)");
+		return -EINVAL;
+	}
+	ret = pcie_epc_raise_irq(epc, fn, type, num);
+	shell_print(sh, "%s fn%u %s %u: %d", epc->name, fn, argv[2], num, ret);
+	return ret;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ep_cmds,
+	SHELL_CMD_ARG(irq, NULL, "<fn> intx | msi <n> | msix <n>  Raise an interrupt to the host",
+		      cmd_ep_irq, 3, 1),
 	SHELL_CMD_ARG(function, NULL,
 		      "[<name>|reset] Endpoint function: list, or save the one for the next boot",
 		      cmd_ep_function, 1, 1),
@@ -1086,7 +1130,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ctrl_cmds,
 		      "Identity (RC: root port, EP: function), saved",
 		      cmd_ctrl_id, 1, 4),
 #if defined(CONFIG_PCIE_EPC)
-	SHELL_CMD(ep, &pcie_ep_cmds, "Endpoint settings: function", NULL),
+	SHELL_CMD(ep, &pcie_ep_cmds, "Endpoint: function, irq", NULL),
 #endif
 	SHELL_CMD_ARG(dsn, NULL, "[<b:d.f>] [<hex> | uid | new | reset]  Device Serial Number, saved",
 		      cmd_ctrl_dsn, 1, 2),

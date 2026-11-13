@@ -459,6 +459,12 @@ static void epc_unmap_addr(const struct device *dev, uint8_t func, uintptr_t cpu
 	if (cpu_addr < cfg->mem_base + OB_REGION || cpu_addr >= cfg->mem_base + cfg->mem_size) {
 		return;
 	}
+	/*
+	 * The window is Normal-NC: writes through it may still sit in the CPU
+	 * write buffer. Drain them before the region goes, or they reach the
+	 * core with no translation.
+	 */
+	barrier_dsync_fence_full();
 	first = (cpu_addr - cfg->mem_base) / OB_REGION;
 	key = k_spin_lock(&d->lock);
 	for (uint32_t i = 0; i < MAX(d->ob_count[first], 1U) && first + i < OB_REGIONS; i++) {
@@ -529,6 +535,7 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 	}
 	base = pci_addr & ~(uint64_t)0xffU;
 
+	barrier_dsync_fence_full(); /* data written through the window goes first */
 	key = k_spin_lock(&d->lock);
 	if (d->irq_pci_addr != base || d->irq_pci_fn != func) {
 		cdns_ep_ob_program(&d->core, func, OB_IRQ_REGION, cfg->mem_base, base, 8U);
