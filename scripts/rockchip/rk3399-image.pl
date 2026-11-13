@@ -13,19 +13,22 @@
 #   }
 #
 # Outputs, written from offset 0 of the medium:
-#   <out>-spi.bin  idbloader-spi.img at 0, FIT at --spi-offset (0xe0000)
-#   <out>-sd.bin   MBR, idbloader.img at sector 64, FIT at sector 16384,
-#                  FAT partition 1 from sector 32768 (16 MiB; --fat-mb
-#                  big, FAT16 below 512 MiB) holding <out>-spi.bin and the --fat-add files, so
-#                  the Zephyr shell can put the SPI image into the flash:
-#                  "spiflash update /SD:/<out>-spi.bin" (mkfs.vfat, mcopy)
+#   <out>-emmc.bin   the image: MBR, idbloader.img at sector 64, FIT at sector
+#                    16384, FAT partition 1 from sector 32768 (16 MiB; --fat-mb
+#                    big, FAT16 below 512 MiB) with the --fat-add files. The
+#                    BootROM and SPL read eMMC and micro SD the same way, so
+#                    this also boots from a card.
+#   <out>-sd-install.bin  (--installer) the same, with <out>-emmc.bin on a
+#                    FAT big enough for it: boot from the card, then in the
+#                    Zephyr shell "emmc update /SD:/<out>-emmc.bin"
+#   <out>-spi.bin    (--spi) idbloader-spi.img at 0, FIT at --spi-offset
+#   needs mkfs.vfat (dosfstools) and mcopy (mtools)
 #
 # Example:
 #   rk3399-image.pl --bl31 tfa/build/rk3399/release/bl31/bl31.elf \
 #       --zephyr build/zephyr/zephyr.elf --uboot uboot-build-rp4 \
-#       -o 151-rp4-pcie
-#   flashcp -v 151-rp4-pcie-spi.bin /dev/mtd0         (or "sf update")
-#   dd if=151-rp4-pcie-sd.bin of=/dev/sdX bs=1M conv=fsync
+#       --installer -o 153-rp4
+#   dd if=153-rp4-sd-install.bin of=/dev/sdX bs=1M conv=fsync
 
 use strict;
 use warnings;
@@ -42,6 +45,8 @@ my $fdt_load = 0x07f00000;
 my $fat_mb = 32;
 my $fat_start = 32768;
 my @fat_add;
+my $want_spi = 0;
+my $installer = 0;
 
 GetOptions(
 	'bl31=s' => \$bl31,
@@ -52,15 +57,17 @@ GetOptions(
 	'fdt-load=o' => \$fdt_load,
 	'fat-mb=i' => \$fat_mb,
 	'fat-add=s' => \@fat_add,
+	'spi!' => \$want_spi,
+	'installer!' => \$installer,
 	'o|output=s' => \$out,
 ) && $bl31 && $zephyr && $ub && $out
 	or die "usage: $0 --bl31 bl31.elf --zephyr zephyr.elf --uboot <u-boot build dir> "
 	     . "-o <prefix> [--mkimage path] [--spi-offset 0xe0000] [--fdt-load 0x07f00000]\n"
-	     . "  [--fat-mb 32 (0: no partition)] [--fat-add file]...\n";
+	     . "  [--fat-mb 32 (0: no partition)] [--fat-add file]... [--installer] [--spi]\n";
 
 $mkimage //= "$ub/tools/mkimage";
-for my $f ($bl31, $zephyr, "$ub/idbloader.img", "$ub/idbloader-spi.img", "$ub/u-boot.dtb",
-	   $mkimage) {
+for my $f ($bl31, $zephyr, "$ub/idbloader.img", "$ub/u-boot.dtb", $mkimage,
+	   $want_spi ? "$ub/idbloader-spi.img" : ()) {
 	-e $f or die "missing $f\n";
 }
 
@@ -163,45 +170,58 @@ my $itb = "$out.itb";
 system($mkimage, '-q', '-E', '-B', '0x200', '-f', $its, $itb) == 0 or die "mkimage failed\n";
 my $fit = slurp($itb);
 
-my $idb_spi = slurp("$ub/idbloader-spi.img");
-length($idb_spi) <= $spi_off or die "idbloader-spi.img larger than the FIT offset\n";
-spew("$out-spi.bin", $idb_spi . ("\xff" x ($spi_off - length($idb_spi))) . $fit);
+if ($want_spi) {
+	my $idb_spi = slurp("$ub/idbloader-spi.img");
+	length($idb_spi) <= $spi_off or die "idbloader-spi.img larger than the FIT offset\n";
+	spew("$out-spi.bin", $idb_spi . ("\xff" x ($spi_off - length($idb_spi))) . $fit);
+	printf "%s-spi.bin %d B (FIT at 0x%x)\n", $out, $spi_off + length($fit), $spi_off;
+}
 
 my $idb = slurp("$ub/idbloader.img");
 $sd_idb * 512 + length($idb) <= $sd_fit * 512 or die "idbloader.img overlaps the FIT\n";
-my $sd = ("\0" x ($sd_idb * 512)) . $idb;
-$sd .= "\0" x ($sd_fit * 512 - length($sd));
-$sd .= $fit;
-if ($fat_mb > 0) {
-	my $sectors = $fat_mb * 2048;
-	my $fatimg = "$work/fat.img";
 
-	length($sd) <= $fat_start * 512 or die "FIT runs into the FAT partition\n";
-	unlink $fatimg;
-	my $fat32 = $fat_mb >= 512;
+# disk(<file>, <FAT MiB>, files...): MBR + idbloader + FIT [+ FAT partition 1]
+sub disk {
+	my ($file, $mb, @files) = @_;
+	my $d = ("\0" x ($sd_idb * 512)) . $idb;
 
-	system('mkfs.vfat', '-F', $fat32 ? '32' : '16', '-n', 'ROCKPI4', '-C', $fatimg, $fat_mb * 1024) == 0
-		or die "mkfs.vfat failed (dosfstools)\n";
-	for my $f ("$out-spi.bin", @fat_add) {
-		system('mcopy', '-o', '-i', $fatimg, $f, '::/' . basename($f)) == 0
-			or die "mcopy $f failed (mtools)\n";
+	$d .= "\0" x ($sd_fit * 512 - length($d));
+	$d .= $fit;
+	if ($mb > 0) {
+		my $fat32 = $mb >= 512;
+		my $fatimg = "$work/fat.img";
+
+		length($d) <= $fat_start * 512 or die "FIT runs into the FAT partition\n";
+		unlink $fatimg;
+		system('mkfs.vfat', '-F', $fat32 ? '32' : '16', '-n', 'ROCKPI4', '-C', $fatimg,
+		       $mb * 1024) == 0 or die "mkfs.vfat failed (dosfstools)\n";
+		for my $f (@files) {
+			system('mcopy', '-o', '-i', $fatimg, $f, '::/' . basename($f)) == 0
+				or die "mcopy $f failed (mtools)\n";
+		}
+		# MBR: disk signature, one FAT16/32 LBA partition, CHS "beyond 8 GB"
+		my $mbr = "\0" x 512;
+		substr($mbr, 440, 4) = pack('V', 0x52503439);
+		substr($mbr, 446, 16) = pack('C C3 C C3 V V', 0x00, 0xfe, 0xff, 0xff,
+					      $fat32 ? 0x0c : 0x0e, 0xfe, 0xff, 0xff, $fat_start,
+					      $mb * 2048);
+		substr($mbr, 510, 2) = "\x55\xaa";
+		substr($d, 0, 512) = $mbr;
+		$d .= "\0" x ($fat_start * 512 - length($d));
+		$d .= slurp($fatimg);
 	}
-	# MBR: disk signature, one FAT16/32 LBA partition, CHS fields "beyond 8 GB"
-	my $mbr = "\0" x 512;
-	substr($mbr, 440, 4) = pack('V', 0x52503439);
-	substr($mbr, 446, 16) = pack('C C3 C C3 V V', 0x00, 0xfe, 0xff, 0xff, $fat32 ? 0x0c : 0x0e,
-				      0xfe, 0xff, 0xff, $fat_start, $sectors);
-	substr($mbr, 510, 2) = "\x55\xaa";
-	substr($sd, 0, 512) = $mbr;
-	$sd .= "\0" x ($fat_start * 512 - length($sd));
-	$sd .= slurp($fatimg);
+	spew($file, $d);
+	printf "%s %d B (idbloader sector %d, FIT sector %d%s)\n", $file, length($d), $sd_idb,
+		$sd_fit, $mb ? ", FAT $mb MiB from sector $fat_start" : "";
 }
-spew("$out-sd.bin", $sd);
 
 for my $i (@images) {
 	printf "  %-7s load 0x%08x%s %8d B\n", $i->{name}, $i->{load},
 		defined $i->{entry} ? sprintf(' entry 0x%08x', $i->{entry}) : ' ' x 17, -s $i->{file};
 }
-printf "%s-spi.bin %d B (FIT at 0x%x)\n%s-sd.bin %d B (idbloader sector %d, FIT sector %d%s)\n",
-	$out, $spi_off + length($fit), $spi_off, $out, length($sd), $sd_idb, $sd_fit,
-	$fat_mb ? ", FAT $fat_mb MiB from sector $fat_start" : "";
+disk("$out-emmc.bin", $fat_mb, @fat_add);
+if ($installer) {
+	# room for the eMMC image plus FAT overhead, whole MiB
+	my $mb = int((-s "$out-emmc.bin") / (1 << 20)) + 16;
+	disk("$out-sd-install.bin", $mb, "$out-emmc.bin", @fat_add);
+}
