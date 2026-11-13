@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Jiri Kastner
 # SPDX-License-Identifier: Apache-2.0
 #
-# Lab images (ESPRESSObin, ROCK Pi 4) in the Zephyr CI container.
+# Lab images of the epc branch (ESPRESSObin, ROCK Pi 4; later K1, A527,
+# A733, LS1012A) in the Zephyr CI container.
 # Each board is scripts/ci/lab/<board>.sh; the same script runs locally.
 #
 # Repository variable (not secret): NETSHELL_AUTHORIZED_KEY, PEM public key
@@ -16,7 +17,7 @@ name: lab-images
 
 on:
   push:
-    branches: [espressobin]
+    branches: [epc]
     paths:
       - 'arch/**'
       - 'boards/**'
