@@ -887,6 +887,7 @@ static int epc_rk3399_init(const struct device *dev)
 		.align = 256,
 		.max_functions = cfg->max_functions,
 		.max_vfs = cfg->max_vfs,
+		.ob_mmio_only = true, /* Normal-NC bursts into the window raise an SError */
 	};
 	d->vf_features = d->features;
 	d->vf_features.intx_capable = false;
