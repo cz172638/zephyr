@@ -43,7 +43,8 @@
 
 /*
  * SR-IOV: 4 VFs (routing functions 1..4), each a pcie_epf_test with its own
- * 4 MiB of the carveout. The VF BAR layout is shared, so bar-sizes match.
+ * 4 MiB of the carveout. The VF BAR layout is shared, so bar-sizes match;
+ * BAR4 is left out so 4 VFs fit a 2 MiB bridge window next to the PF.
  * Host: echo 4 > /sys/bus/pci/devices/<bdf>/sriov_numvfs
  */
 &pcie0_ep {
@@ -58,7 +59,7 @@
 		memory-region = <&pcie_ep_mem>;
 		memory-offset = <0x400000>;
 		memory-size = <0x400000>;
-		bar-sizes = <8192 65536 0 0 0x100000 0>;
+		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
 	};
 
@@ -71,7 +72,7 @@
 		memory-region = <&pcie_ep_mem>;
 		memory-offset = <0x800000>;
 		memory-size = <0x400000>;
-		bar-sizes = <8192 65536 0 0 0x100000 0>;
+		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
 	};
 
@@ -84,7 +85,7 @@
 		memory-region = <&pcie_ep_mem>;
 		memory-offset = <0xc00000>;
 		memory-size = <0x400000>;
-		bar-sizes = <8192 65536 0 0 0x100000 0>;
+		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
 	};
 
@@ -97,7 +98,7 @@
 		memory-region = <&pcie_ep_mem>;
 		memory-offset = <0x1000000>;
 		memory-size = <0x400000>;
-		bar-sizes = <8192 65536 0 0 0x100000 0>;
+		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
 	};
 };

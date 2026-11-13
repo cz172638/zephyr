@@ -28,6 +28,9 @@
 #define CDNS_EP_FUNC_SRIOV_CAP		0x200U
 #define  CDNS_SRIOV_TOTAL_VFS		0x0cU /* [15:0] initial, [31:16] total */
 #define  CDNS_SRIOV_CTRL		0x08U /* [0] VF enable, [3] VF MSE */
+#define   CDNS_SRIOV_CTRL_VFE		BIT(0)
+#define   CDNS_SRIOV_CTRL_VFMSE		BIT(3)
+#define   CDNS_SRIOV_CTRL_ARIE		BIT(4)
 #define  CDNS_SRIOV_NUM_VFS		0x10U
 #define  CDNS_SRIOV_VF_DID		0x18U /* [31:16] */
 

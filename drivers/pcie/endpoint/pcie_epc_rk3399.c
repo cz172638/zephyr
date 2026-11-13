@@ -176,6 +176,25 @@ static void link_work(struct k_work *work)
 		pcie_epc_notify(dev, PCIE_EPC_EVT_LINK_UP, 0);
 	}
 
+	/*
+	 * The core needs ARI Capable Hierarchy whenever VF Enable is set (TRM,
+	 * SR-IOV Control), but a host whose root port lacks ARI forwarding
+	 * never sets it: the VFs then answer config requests with garbage.
+	 * For VFs 1..7 the ARI and legacy routing IDs are the same (device 0),
+	 * so set it from the local side.
+	 */
+	if (DEV_CFG(dev)->max_vfs != 0U) {
+		uint32_t reg = CDNS_EP_FUNC_SRIOV_CAP + CDNS_SRIOV_CTRL;
+		uint32_t ctl = cdns_ep_read(&d->core, reg);
+
+		if ((ctl & CDNS_SRIOV_CTRL_VFE) != 0U && (ctl & CDNS_SRIOV_CTRL_ARIE) == 0U) {
+			cdns_ep_write(&d->core, reg, ctl | CDNS_SRIOV_CTRL_ARIE);
+			LOG_INF("%s: VFs enabled (%u), ARI Capable Hierarchy set locally", dev->name,
+				cdns_ep_read(&d->core, CDNS_EP_FUNC_SRIOV_CAP + CDNS_SRIOV_NUM_VFS) &
+					0xffffU);
+		}
+	}
+
 	/* Bus Master Enable of every enabled function */
 	for (uint8_t fn = 0; fn < nfuncs(dev); fn++) {
 		bool on;
