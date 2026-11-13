@@ -727,6 +727,17 @@ static int epc_rk3399_init(const struct device *dev)
 	LOG_INF("%s: core up, reset VID/SSVID 0x%08x", dev->name,
 		cdns_ep_read(&d->core, CDNS_LM_ID));
 
+	/*
+	 * The core comes out of reset with BARs of its own enabled (BAR2/3
+	 * 64-bit 4 MiB, BAR5 4 MiB on RK3399): disable all, the functions
+	 * set the ones they use.
+	 */
+	for (uint8_t fn = 0; fn < cfg->max_functions; fn++) {
+		for (uint8_t bar = 0; bar < 6U; bar++) {
+			(void)cdns_ep_clear_bar(&d->core, fn, bar);
+		}
+	}
+
 	/* MSI-X is advertised but not functional on this revision. */
 	cdns_ep_hide_msix_cap(&d->core);
 	cdns_ep_write(&d->core, CDNS_LM_EP_FUNC_CFG, BIT(0));
