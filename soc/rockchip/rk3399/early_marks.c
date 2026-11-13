@@ -16,6 +16,9 @@
  *      H    uart_poll_out() through the driver (its own mapping)
  *      "[printk]" through printk, then i
  *   z  APPLICATION 99   after the boot banner
+ *   POST_KERNEL 1: GIC cpu interface, virtual timer, distributor and own
+ *      redistributor registers, then a 5 ms k_timer (prints T from its
+ *      expiry) under k_busy_wait(20 ms), the same dump again, then
  *   S..s  POST_KERNEL 1: around k_msleep(10), i.e. whether the system
  *      timer interrupt arrives (the first sleep of a boot hangs if not)
  */
@@ -93,8 +96,93 @@ static int mark_post(void)
 }
 SYS_INIT(mark_post, POST_KERNEL, 0);
 
+static void hex(const char *name, uint64_t v)
+{
+	static const char digits[] = "0123456789abcdef";
+
+	while (*name != 0) {
+		mark(*name++);
+	}
+	mark('=');
+	for (int i = 60; i >= 0; i -= 4) {
+		if ((v >> i) != 0U || i == 0) {
+			mark(digits[(v >> i) & 0xfU]);
+		}
+	}
+	mark(' ');
+}
+
+#define SYSREG(r) hex(#r, read_sysreg(r))
+
+#define GICD     0xfee00000UL
+#define GICR_SGI(rd) ((rd) + 0x10000UL)
+
+static void gic_dump(void)
+{
+	uintptr_t rd = 0;
+
+	SYSREG(CurrentEL);
+	SYSREG(daif);
+	SYSREG(ICC_SRE_EL1);
+	SYSREG(ICC_PMR_EL1);
+	SYSREG(ICC_IGRPEN1_EL1);
+	SYSREG(ICC_CTLR_EL1);
+	SYSREG(ICC_RPR_EL1);
+	SYSREG(ICC_HPPIR1_EL1);
+	mark('\r');
+	mark('\n');
+	SYSREG(cntfrq_el0);
+	SYSREG(cntv_ctl_el0);
+	SYSREG(cntv_cval_el0);
+	SYSREG(cntvct_el0);
+	SYSREG(mpidr_el1);
+	mark('\r');
+	mark('\n');
+	hex("GICD_CTLR", sys_read32(GICD));
+	hex("TYPER", sys_read32(GICD + 4));
+	for (int i = 0; i < 6; i++) {
+		uintptr_t f = 0xfef00000UL + i * 0x20000UL;
+		uint64_t t = sys_read64(f + 8);
+
+		if (rd == 0 && (t >> 32) == ((read_sysreg(mpidr_el1) & 0xffffffU) |
+					     ((read_sysreg(mpidr_el1) >> 8) & 0xff000000U))) {
+			rd = f;
+		}
+	}
+	hex("RD", rd);
+	if (rd != 0) {
+		hex("CTLR", sys_read32(rd));
+		hex("WAKER", sys_read32(rd + 0x14));
+		hex("TYPER", sys_read64(rd + 8));
+		mark('\r');
+		mark('\n');
+		hex("IGROUPR0", sys_read32(GICR_SGI(rd) + 0x80));
+		hex("ISENABLER0", sys_read32(GICR_SGI(rd) + 0x100));
+		hex("ISPENDR0", sys_read32(GICR_SGI(rd) + 0x200));
+		hex("ISACTIVER0", sys_read32(GICR_SGI(rd) + 0x300));
+		hex("PRIO27", sys_read8(GICR_SGI(rd) + 0x400 + 27));
+		hex("ICFGR1", sys_read32(GICR_SGI(rd) + 0xc04));
+		hex("IGRPMODR0", sys_read32(GICR_SGI(rd) + 0xd00));
+	}
+	mark('\r');
+	mark('\n');
+}
+
+static void tick(struct k_timer *t)
+{
+	ARG_UNUSED(t);
+	mark('T');
+}
+K_TIMER_DEFINE(probe_timer, tick, NULL);
+
 static int mark_sleep(void)
 {
+	mark('\r');
+	mark('\n');
+	gic_dump();
+	k_timer_start(&probe_timer, K_MSEC(5), K_NO_WAIT);
+	k_busy_wait(20000);
+	gic_dump();
 	mark('S');
 	k_msleep(10);
 	mark('s');
