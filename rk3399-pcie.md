@@ -169,7 +169,7 @@ Při detekci se na pinech krátce objeví SD hodiny a příkazy (CMD0/8/55/1). D
 
 ## 8. Co chybí
 
-- **Na hardwaru zatím nic neověřeno.** Ověřené je jen sestavení (Zephyr, TF-A, U-Boot; lokálně i v GitHub Actions) a rozložení image (FIT magic na správných offsetech, idbloader sedí, MBR a FAT čitelné přes mtools). Ovladače eMMC, SD/JTAG a SPI neběžely na železe.
+- **Na hardwaru ověřeno (sekce 10):** boot z SPI NOR, UART, eMMC s FAT, role v settings, EP enumerovaný hostem. Neověřené: RC na železe, SPI jako úložiště, SD (slot je jen JTAG).
 - **RC bez IRQ.** INTx by šlo přes client INT. MSI potřebuje GIC ITS, ten Zephyr na RK3399 zatím nemá. Chybí AER.
 - **Žádná perzistentní identita** (`pcie id set` platí do resetu) ani DSN; settings už jsou (`/EMMC:/settings`), napojení id/DSN na ně chybí.
 - **REFCLK:** RK3399 PHY nemá vstup referenčních hodin, partner musí mít vlastní (SRIS/SSC podle hosta). **Na crossover kabelu nikdy nepropojovat REFCLK ani napájení.**
@@ -195,3 +195,35 @@ Otázka byla, jestli jde u PCIe řadiče plně řídit L0. Krátká odpověď: s
 | Aardvark | `CTRL0` link train, LTSSM ve `0x4c0x`. Force-state registr neznám, kandidát k hledání pomocí `regdiff`/`wmap` |
 
 **Plán:** `pcie link <ctrl> {retrain|disable|enable|speed N|aspm l0s|l1|off|compliance}` jako vendor-neutral příkaz nad standardními registry. Vendor-specifické vynucení stavů (DW Force Link, Cadence LM) přijde do `pcie debug ltssm` jako LLEXT modul.
+
+## 10. První boot na železe (13. 11. 2026)
+
+ROCK Pi 4 bootuje z SPI NOR. Konzole na UART2 běží na 1 500 000 Bd, FAT na eMMC je připojená jako `/EMMC:` a role je v settings. Jako EP ho host vidí:
+
+```
+06:00.0 Unassigned class [ff00]: Rockchip Electronics Co., Ltd Device 3399
+```
+
+Opravy, které k tomu byly potřeba (v pořadí, jak se na ně narazilo):
+
+| Příznak | Příčina | Oprava (PR větev) |
+|---|---|---|
+| po BL31 ticho | DW APB UART bere jen 32bit přístupy | `UART_NS16550_ACCESS_WORD_ONLY` pro rk3399 (`rp4-first-boot`) |
+| ticho, DLAB zůstane nastavený | DW UART zahodí zápis LCR, když je busy | `ns16550_write_lcr()`: počkat na TEMT, zapsat, přečíst zpátky, při neshodě vyprázdnit FIFO a zkusit znovu; kompatibilní `snps,dw-apb-uart` (`rp4-first-boot`) |
+| printk nic nevypíše | v pcie_shell jde printk přes log backend shellu, ten vypisuje až po startu vlákna shellu | jen pro ladění: `debug.conf` |
+| mount selže | FS mount běžel před FAT a disky | priority: SDHC 70, SD disk 72, FAT 74, mount 76 (`rp4-first-boot`) |
+| panika EPC | `device_map()` MSI okna kolidovalo s flat mapováním OB okna | adresa přímo z `mem_base` (`rp4-first-boot`) |
+| visí na prvním `k_msleep` | **GIC-500 na RK3399 vidí NS přístupy z CPU jako Secure** (Linux: `gic_enable_quirk_rk3399`). Zephyr zapisoval `IGRPMODR` = samé jedničky v předpokladu, že je v NS RAZ/WI → všechna přerušení Group 1 Secure; `GIC_SAFE_CONFIG` navíc bral bit G0 od TF-A jako „distributor už nastavený“ a G1NS nikdy nezapnul | `IGRPMODR` = 0 v NS buildech, `SAFE_CONFIG` hlídá jen G1NS (`gicv3-ns-grpmod`) |
+| `kernel reboot` nic neudělá | `sys_arch_reboot()` bez PSCI je prázdný | `PM_CPU_OPS` (PSCI `SYSTEM_RESET`) default pro rk3399 (`rp4-spi-boot`) |
+
+Diagnostika GIC byla výpis registrů z raw UART značek (`ICC_HPPIR1_EL1=3ff` při `ISPENDR0` bit 27 = 1, `IGROUPR0=1` + `IGRPMODR0=1`, `GICD_CTLR=0x35` = Secure pohled). Kód značek a init trace zůstal jen lokálně (`backup/rk3399-early-marks`, `backup/rp4-init-trace`), do `epc` nejde.
+
+**Boot a aktualizace teď:**
+
+| Soubor | Kam | Jak |
+|---|---|---|
+| `<img>-rock_pi_4-spi.bin` (1,4 MiB) | SPI NOR `boot_partition` (0–3 MiB): idbloader-spi na 0, FIT na `0xe0000` | `fwupdate ymodem` (tio ctrl-t y), `kernel reboot cold` |
+| `<img>-rock_pi_4-emmc.bin` (48 MiB) | eMMC od sektoru 0: MBR, idbloader na 64, **FIT na 2048** (U-Boot `SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=0x800`, dřív 16384), FAT od 32768 | dd / maskrom |
+| `<img>-rock_pi_4-boot.bin` (1,5 MiB) | bootovací oblast eMMC (FAT zůstane) | `emmc update /EMMC:/<soubor>` |
+
+BootROM zkouší SPI → eMMC → SD; zpátky na eMMC: `flash erase flash@0 0 0x1000`. SD slot je jen pro JTAG breakout (bez SD disku). `fwupdate` umí cíl `CONFIG_FWUPDATE_BOOT_DISK` (bootovací oblast disku, hlavička idbloaderu na sektoru 64 se maže první a píše poslední); pcie_shell ho teď nepoužívá.
