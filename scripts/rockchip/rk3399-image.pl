@@ -46,6 +46,7 @@ my $fat_mb = 32;
 my $fat_start = 32768;
 my @fat_add;
 my $want_spi = 0;
+my @extra;
 my $installer = 0;
 
 GetOptions(
@@ -58,6 +59,7 @@ GetOptions(
 	'fat-mb=i' => \$fat_mb,
 	'fat-add=s' => \@fat_add,
 	'spi!' => \$want_spi,
+	'loadable=s' => \@extra,
 	'installer!' => \$installer,
 	'o|output=s' => \$out,
 ) && $bl31 && $zephyr && $ub && $out
@@ -137,6 +139,16 @@ spew("$work/zephyr.bin", $blob);
 push @images, {name => 'zephyr', file => "$work/zephyr.bin", type => 'standalone', os => 'u-boot',
 	       load => $zbase, entry => $zentry};
 push @loadables, 'zephyr', grep { $_ ne $firmware } map { $_->{name} } grep { $_->{name} =~ /^atf-/ } @images;
+
+# --loadable ADDR=FILE: more raw images (debug stubs and the like)
+my $xn = 0;
+for my $x (@extra) {
+	my ($addr, $file) = $x =~ /^(0x[0-9a-fA-F]+|\d+)=(.+)$/ or die "--loadable ADDR=FILE\n";
+	my $name = 'extra-' . ++$xn;
+	push @images, {name => $name, file => $file, type => 'standalone', os => 'arm-trusted-firmware',
+		       load => oct($addr)};
+	push @loadables, $name;
+}
 
 my $dtb = "$work/u-boot.dtb";
 spew($dtb, slurp("$ub/u-boot.dtb"));

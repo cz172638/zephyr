@@ -25,6 +25,15 @@ config SOC_RK3399_M0_PERILP
 config SOC_PART_NUMBER
 	default "RK3399" if SOC_SERIES_RK3399
 
+config RK3399_EARLY_MARKS
+	bool "Raw boot marks on UART2"
+	depends on ARM64
+	select SOC_PREP_HOOK
+	help
+	  Writes characters straight to UART2 (as U-Boot SPL left it) from
+	  the reset path: Z3/Z2/Z1 at entry (EL), P before the MMU, M after
+	  it, K at PRE_KERNEL_1. For boots that stay silent after BL31.
+
 if SOC_SERIES_RK3399
 
 config RK3399_A72_SELF_MIGRATE

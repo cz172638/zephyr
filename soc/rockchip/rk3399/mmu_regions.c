@@ -27,6 +27,10 @@ static const struct arm_mmu_region mmu_regions[] = {
 			      MT_DEVICE_nGnRnE | MT_P_RW_U_NA | MT_DEFAULT_SECURE_STATE),
 	MMU_REGION_FLAT_ENTRY("pmucru_cru_grf", RK3399_PMUCRU_BASE, KB(192),
 			      MT_DEVICE_nGnRnE | MT_P_RW_U_NA | MT_DEFAULT_SECURE_STATE),
+#if defined(CONFIG_RK3399_EARLY_MARKS)
+	MMU_REGION_FLAT_ENTRY("uart2_marks", 0xff1a0000UL, KB(4),
+			      MT_DEVICE_nGnRnE | MT_P_RW_U_NA | MT_DEFAULT_SECURE_STATE),
+#endif
 };
 
 const struct arm_mmu_config mmu_config = {
