@@ -132,6 +132,12 @@ struct pcie_epc_features {
 	 * VFs, so every VF has to set the same layout for a given BAR.
 	 */
 	uint8_t max_vfs;
+	/**
+	 * The outbound window only takes single, naturally aligned accesses (no
+	 * bursts of a Normal memory copy): pcie_epc_xfer_memcpy() then copies
+	 * with 64/32/8-bit loads and stores.
+	 */
+	bool ob_mmio_only;
 };
 
 /** @brief Whether routing function  func is an SR-IOV virtual function. */

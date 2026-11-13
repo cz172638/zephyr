@@ -304,9 +304,40 @@ void pcie_epc_unmap_host(const struct device *dev, struct pcie_epc_host_map *map
 	map->ptr = NULL;
 }
 
+/* single aligned accesses on the window side; the local buffer may be unaligned */
+static void copy_toio(mem_addr_t io, const uint8_t *src, size_t n)
+{
+	while (n > 0 && (io & 7U) != 0U) {
+		sys_write8(*src++, io++);
+		n--;
+	}
+	for (; n >= 8U; n -= 8U, io += 8U, src += 8U) {
+		sys_write64(UNALIGNED_GET((const uint64_t *)src), io);
+	}
+	for (; n > 0; n--) {
+		sys_write8(*src++, io++);
+	}
+}
+
+static void copy_fromio(uint8_t *dst, mem_addr_t io, size_t n)
+{
+	while (n > 0 && (io & 7U) != 0U) {
+		*dst++ = sys_read8(io++);
+		n--;
+	}
+	for (; n >= 8U; n -= 8U, io += 8U, dst += 8U) {
+		UNALIGNED_PUT(sys_read64(io), (uint64_t *)dst);
+	}
+	for (; n > 0; n--) {
+		*dst++ = sys_read8(io++);
+	}
+}
+
 int pcie_epc_xfer_memcpy(const struct device *dev, uint8_t func, uint64_t pci_addr,
 			 void *local, size_t size, bool to_host)
 {
+	const struct pcie_epc_features *feat = pcie_epc_get_features(dev, func);
+	bool mmio = feat != NULL && feat->ob_mmio_only;
 	struct pcie_epc_host_map map;
 	int ret;
 
@@ -315,7 +346,13 @@ int pcie_epc_xfer_memcpy(const struct device *dev, uint8_t func, uint64_t pci_ad
 		return ret;
 	}
 
-	if (to_host) {
+	if (to_host && mmio) {
+		copy_toio((mem_addr_t)map.ptr, local, size);
+		barrier_dmem_fence_full();
+		(void)sys_read8((mem_addr_t)map.ptr);
+	} else if (mmio) {
+		copy_fromio(local, (mem_addr_t)map.ptr, size);
+	} else if (to_host) {
 		memcpy((void *)map.ptr, local, size);
 		barrier_dmem_fence_full();
 		/* Non-posted read flushes the posted writes before an IRQ is sent. */
