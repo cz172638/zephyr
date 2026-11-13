@@ -466,11 +466,11 @@ static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l
 
 	switch (evt) {
 	case PCIE_EPC_EVT_LINK_UP:
-		LOG_INF("link up");
+		LOG_DBG("%s: link up", d->dev->name);
 		d->link = true;
 		break;
 	case PCIE_EPC_EVT_LINK_DOWN:
-		LOG_INF("link down");
+		LOG_DBG("%s: link down", d->dev->name);
 		d->link = false;
 		d->bme = false;
 		break;

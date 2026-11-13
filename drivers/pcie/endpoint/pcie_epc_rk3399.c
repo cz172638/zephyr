@@ -52,8 +52,6 @@ LOG_MODULE_REGISTER(pcie_epc_rk3399, CONFIG_PCIE_EP_LOG_LEVEL);
 #define OB_IRQ_REGION 0U
 #define POLL_DOWN_MS  5
 #define POLL_UP_MS    20
-/* link must stay down this long before LINK_DOWN (Recovery passes through) */
-#define LINK_DOWN_DEBOUNCE_MS 100
 
 struct epc_rk3399_config {
 	DEVICE_MMIO_NAMED_ROM(apb);
@@ -93,8 +91,7 @@ struct epc_rk3399_data {
 	struct k_timer sriov_timer; /* ARI Capable Hierarchy for the VFs, see link_work */
 	atomic_t arie_set;
 	uint32_t ups, downs, hot_resets;
-	uint32_t glitches;  /* short drops of DL up, not reported as LINK_DOWN */
-	int64_t down_since; /* uptime the link was last seen dropping, 0 = up */
+	int64_t last_up_log; /* uptime of the last "link up" INF line */
 };
 
 #define DEV_CFG(_dev)  ((const struct epc_rk3399_config *)(_dev)->config)
@@ -181,31 +178,26 @@ static void link_work(struct k_work *work)
 	if (!rk3399_pcie_link_up(apb(dev)) ||
 	    (cdns_ep_read(&d->core, CDNS_LM_PL_CONFIG0) & CDNS_LM_PL_CONFIG0_LS_READY) == 0U) {
 		/*
-		 * Recovery (retraining after errors, speed changes) briefly drops
-		 * the link status; only a link gone for LINK_DOWN_DEBOUNCE_MS is
-		 * a link down. PERST# and hot reset have their own events.
+		 * A data link down resets the function's configuration space
+		 * (BARs, Command, SR-IOV Control): always a real link down.
 		 */
-		if (d->link_up && d->down_since == 0) {
-			d->down_since = k_uptime_get();
-		}
-		if (!d->link_up || k_uptime_get() - d->down_since >= LINK_DOWN_DEBOUNCE_MS) {
-			d->down_since = 0;
-			link_down(dev);
-		}
+		link_down(dev);
 		(void)k_work_reschedule(&d->link_work, K_MSEC(POLL_DOWN_MS));
 		return;
-	}
-
-	if (d->down_since != 0) {
-		d->down_since = 0;
-		d->glitches++;
 	}
 
 	if (!d->link_up) {
 		unsigned int gen, width;
 
 		rk3399_pcie_link_info(apb(dev), &gen, &width);
-		LOG_INF("%s: link up, Gen%u x%u", dev->name, gen, width);
+		/* a flapping link would flood the console: one line per 10 s at most */
+		if (d->last_up_log == 0 || k_uptime_get() - d->last_up_log > 10000) {
+			LOG_INF("%s: link up, Gen%u x%u (ups %u downs %u)", dev->name, gen,
+				width, d->ups + 1U, d->downs);
+			d->last_up_log = k_uptime_get();
+		} else {
+			LOG_DBG("%s: link up, Gen%u x%u", dev->name, gen, width);
+		}
 		d->link_up = true;
 		d->ups++;
 		pcie_epc_notify(dev, PCIE_EPC_EVT_LINK_UP, 0);
@@ -664,8 +656,7 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 		shell_print(sh, "BAR%d       %08x", b,
 			    cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(0) + 0x10 + 4 * b));
 	}
-	shell_print(sh, "events     up %u down %u hot-reset %u glitch %u", d->ups, d->downs,
-		    d->hot_resets, d->glitches);
+	shell_print(sh, "events     up %u down %u hot-reset %u", d->ups, d->downs, d->hot_resets);
 }
 
 #if defined(CONFIG_PCIE_ROLE)
