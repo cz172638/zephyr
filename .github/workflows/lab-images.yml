@@ -47,9 +47,11 @@ on:
         description: 'image number (empty: last lab-build tag + 1)'
         default: ''
 
+# one build at a time over all branches: the next number is read from the
+# tags, so a run waits until the previous one has published its release
 concurrency:
-  group: lab-images-${{ github.ref }}
-  cancel-in-progress: true
+  group: lab-images
+  cancel-in-progress: false
 
 permissions:
   contents: read
