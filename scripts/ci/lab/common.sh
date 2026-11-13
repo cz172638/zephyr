@@ -25,6 +25,8 @@
 set -eu
 
 CI_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# the board is the script name; it also names the files: <img>-<board>-<what>
+BOARD=$(basename "$0" .sh)
 ZEPHYR_BASE=$(cd "$CI_DIR/../../.." && pwd)
 export ZEPHYR_BASE
 WS=${WS:-$(dirname "$ZEPHYR_BASE")}
