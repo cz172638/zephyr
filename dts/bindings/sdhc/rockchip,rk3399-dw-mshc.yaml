@@ -32,3 +32,12 @@ properties:
   rockchip,grf:
     type: phandle
     description: GRF syscon; the driver clears GRF_SOC_CON7.force_jtag.
+
+  rockchip,sd-jtag:
+    type: boolean
+    description: |
+      JTAG through the micro SD slot: GRF_SOC_CON7.force_jtag stays set
+      (JTAG on the pins while card detect says no card), and a breakout
+      that card detect takes for a card (no command answered after
+      power-on) gets the pins muxed to JTAG by hand. Without it,
+      force_jtag is cleared. Needs rockchip,grf.

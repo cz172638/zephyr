@@ -8,6 +8,13 @@
  *
  * Rockchip feeds the card interface unit through a fixed /2, so the CRU
  * clock is set to twice the card clock and CLKDIV stays 0 (bypass).
+ *
+ * JTAG on the slot (rockchip,sd-jtag): GRF_SOC_CON7.force_jtag stays set,
+ * so the SoC itself puts AP/MCU JTAG on the SDMMC pins while card detect
+ * says "no card". A JTAG breakout that card detect sees as a card is told
+ * apart by no command ever being answered after power-on: then the pins
+ * are muxed to JTAG by hand (GPIO4_B2/B3 AP TCK/TMS, B4/B5 MCU TCK/TMS)
+ * and the slot reports no card until the next boot.
  */
 
 #define DT_DRV_COMPAT rockchip_rk3399_dw_mshc
@@ -96,6 +103,11 @@ LOG_MODULE_REGISTER(sdhc_dw_mshc, CONFIG_SDHC_LOG_LEVEL);
 
 #define RK3399_GRF_SOC_CON7 0xe21cU
 #define  GRF_FORCE_JTAG     BIT(12)
+#define RK3399_GRF_GPIO4B_IOMUX 0xe024U
+/* GPIO4_B2..B5 function 2: APJTAG_TCK/TMS, MCUJTAG_TCK/TMS */
+#define  GPIO4B_JTAG        ((0xffU << 20) | (0xaaU << 4))
+/* response timeouts without any answer after power-on: nothing SD/MMC there */
+#define JTAG_RTO_LIMIT      4
 
 #define CMD_TIMEOUT_MS  500
 #define BUSY_TIMEOUT_MS 2000
@@ -112,6 +124,7 @@ struct dw_mshc_config {
 	uint32_t power_delay_ms;
 	uint8_t bus_width;
 	bool broken_cd;
+	bool sd_jtag;
 };
 
 struct dw_mshc_data {
@@ -121,6 +134,9 @@ struct dw_mshc_data {
 	uint32_t fifo_depth;
 	uint32_t clock;
 	bool need_init;
+	bool answered;     /* a command got a response since power-on */
+	uint8_t rto_count; /* response timeouts while !answered */
+	bool jtag;         /* slot handed over to JTAG */
 	struct sdhc_io ios;
 };
 
@@ -132,6 +148,11 @@ static inline uint32_t rd(const struct device *dev, uint32_t off)
 static inline void wr(const struct device *dev, uint32_t off, uint32_t v)
 {
 	sys_write32(v, DEVICE_MMIO_GET(dev) + off);
+}
+
+static inline bool cfg_sd_jtag(const struct device *dev)
+{
+	return ((const struct dw_mshc_config *)dev->config)->sd_jtag;
 }
 
 static int wait_clear(const struct device *dev, uint32_t off, uint32_t mask, int ms)
@@ -226,6 +247,8 @@ static int dw_set_io(const struct device *dev, struct sdhc_io *ios)
 		wr(dev, PWREN, ios->power_mode == SDHC_POWER_ON ? 1U : 0U);
 		if (ios->power_mode == SDHC_POWER_ON) {
 			data->need_init = true;
+			data->answered = false;
+			data->rto_count = 0;
 		}
 		k_msleep(cfg->power_delay_ms);
 	}
@@ -359,6 +382,22 @@ static int pio(const struct device *dev, struct sdhc_data *d, bool write, int ti
 	return done == total ? 0 : -EIO;
 }
 
+/* card detect saw a card, but nothing answers: a JTAG breakout */
+static void jtag_takeover(const struct device *dev)
+{
+	const struct dw_mshc_config *cfg = dev->config;
+	struct dw_mshc_data *data = dev->data;
+
+	wr(dev, CLKENA, 0);
+	(void)clk_update(dev);
+	wr(dev, PWREN, 0);
+	(void)syscon_write_reg(cfg->grf, RK3399_GRF_GPIO4B_IOMUX, GPIO4B_JTAG);
+	(void)syscon_write_reg(cfg->grf, RK3399_GRF_SOC_CON7, (GRF_FORCE_JTAG << 16) | GRF_FORCE_JTAG);
+	data->jtag = true;
+	data->clock = 0;
+	LOG_WRN("%s: card detected but no command answered: JTAG on the SD pins", dev->name);
+}
+
 static int dw_request(const struct device *dev, struct sdhc_command *cmd, struct sdhc_data *d)
 {
 	struct dw_mshc_data *data = dev->data;
@@ -368,6 +407,10 @@ static int dw_request(const struct device *dev, struct sdhc_command *cmd, struct
 	unsigned int tries = cmd->retries + 1U;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
+	if (data->jtag) {
+		k_mutex_unlock(&data->lock);
+		return -ENODEV;
+	}
 	while (tries-- > 0U) {
 		if (cmd->opcode != SD_STOP_TRANSMISSION &&
 		    wait_clear(dev, STATUS, STATUS_DATA_BUSY, BUSY_TIMEOUT_MS) != 0) {
@@ -401,6 +444,15 @@ static int dw_request(const struct device *dev, struct sdhc_command *cmd, struct
 			ret = 0;
 		}
 		wr(dev, RINTSTS, INT_CMD_DONE | INT_CMD_ERR);
+		if (ret == 0 && (f & CMD_RESP_EXP)) {
+			data->answered = true;
+		}
+		if (ret == -ETIMEDOUT && (f & CMD_RESP_EXP) && !data->answered &&
+		    cfg_sd_jtag(dev) && ++data->rto_count >= JTAG_RTO_LIMIT) {
+			jtag_takeover(dev);
+			ret = -ENODEV;
+			break;
+		}
 		if (ret != 0) {
 			LOG_DBG("%s: CMD%u arg %08x: %08x", dev->name, cmd->opcode, cmd->arg, st);
 			if (d != NULL) {
@@ -448,6 +500,9 @@ static int dw_get_card_present(const struct device *dev)
 {
 	const struct dw_mshc_config *cfg = dev->config;
 
+	if (((struct dw_mshc_data *)dev->data)->jtag) {
+		return 0;
+	}
 	return cfg->broken_cd ? 1 : ((rd(dev, CDETECT) & BIT(0)) == 0U);
 }
 
@@ -507,12 +562,17 @@ static int dw_mshc_init(const struct device *dev)
 	if (ret != 0 && ret != -ENOENT) {
 		return ret;
 	}
-	/* the SDMMC pins double as JTAG while this is set (reset default) */
+	/*
+	 * force_jtag: JTAG on the SDMMC pins while card detect says no card.
+	 * Kept (set) with rockchip,sd-jtag, cleared otherwise (U-Boot SPL
+	 * clears it too when it loads from the card).
+	 */
 	if (cfg->grf != NULL) {
 		if (!device_is_ready(cfg->grf)) {
 			return -ENODEV;
 		}
-		(void)syscon_write_reg(cfg->grf, RK3399_GRF_SOC_CON7, GRF_FORCE_JTAG << 16);
+		(void)syscon_write_reg(cfg->grf, RK3399_GRF_SOC_CON7,
+				       (GRF_FORCE_JTAG << 16) | (cfg->sd_jtag ? GRF_FORCE_JTAG : 0U));
 	}
 	if (!device_is_ready(cfg->clk_dev)) {
 		return -ENODEV;
@@ -568,6 +628,8 @@ static int dw_mshc_init(const struct device *dev)
 		.power_delay_ms = DT_INST_PROP(n, power_delay_ms),                                 \
 		.bus_width = DT_INST_PROP(n, bus_width),                                           \
 		.broken_cd = DT_INST_PROP(n, broken_cd),                                           \
+		.sd_jtag = DT_INST_PROP(n, rockchip_sd_jtag) &&                                    \
+			   DT_INST_NODE_HAS_PROP(n, rockchip_grf),                                 \
 	};                                                                                         \
 	static struct dw_mshc_data dw_mshc_data_##n;                                               \
 	DEVICE_DT_INST_DEFINE(n, dw_mshc_init, NULL, &dw_mshc_data_##n, &dw_mshc_config_##n,       \
