@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  RK3399 eMMC controller: Arasan SDHCI 5.1, the eMMC PHY and the core
+  configuration live in the GRF.
+
+compatible: "rockchip,rk3399-sdhci-5.1"
+
+include: sdhc.yaml
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+
+  clock-names:
+    required: true
+    description: Must be "clk_xin" (base clock), "clk_ahb".
+
+  rockchip,grf:
+    type: phandle
+    required: true
+
+  max-frequency:
+    type: int
+    default: 200000000
+    description: Base clock asked from the CRU (GPLL / n not above it).
+
+  bus-width:
+    type: int
+    default: 8
+    enum: [1, 4, 8]

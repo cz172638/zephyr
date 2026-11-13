@@ -90,6 +90,18 @@ enum rk_src {
 	SRC_24M,
 };
 
+enum rk_parents {
+	PAR_CPLL_GPLL,       /* SPI, ACLK_EMMC */
+	PAR_SDMMC,           /* cpll gpll npll ppll upll 24m */
+	PAR_EMMC,            /* cpll gpll npll upll 24m */
+};
+
+static const uint8_t rk_parent_src[][6] = {
+	[PAR_CPLL_GPLL] = {SRC_CPLL, SRC_GPLL},
+	[PAR_SDMMC] = {SRC_CPLL, SRC_GPLL, SRC_NPLL, SRC_NONE, SRC_UPLL, SRC_24M},
+	[PAR_EMMC] = {SRC_CPLL, SRC_GPLL, SRC_NPLL, SRC_UPLL, SRC_24M},
+};
+
 struct rk_comp {
 	uint16_t id;
 	uint8_t sel;
@@ -97,13 +109,20 @@ struct rk_comp {
 	uint8_t mux_width;
 	uint8_t div_shift;
 	uint8_t div_width;
-	bool sdmmc_parents; /* cpll gpll npll ppll upll 24m, else cpll gpll */
+	uint8_t parents;     /* enum rk_parents */
+	uint8_t gpll_idx;    /* mux value of GPLL */
+	uint8_t osc_idx;     /* mux value of 24 MHz, 0xff: none */
 };
 
 static const struct rk_comp rk_comps[] = {
-	{SCLK_SPI0, 59, 7, 1, 0, 7, false},  {SCLK_SPI1, 59, 15, 1, 8, 7, false},
-	{SCLK_SPI2, 60, 7, 1, 0, 7, false},  {SCLK_SPI4, 60, 15, 1, 8, 7, false},
-	{SCLK_SPI5, 58, 15, 1, 8, 7, false}, {SCLK_SDMMC, 16, 8, 3, 0, 7, true},
+	{SCLK_SPI0, 59, 7, 1, 0, 7, PAR_CPLL_GPLL, 1, 0xff},
+	{SCLK_SPI1, 59, 15, 1, 8, 7, PAR_CPLL_GPLL, 1, 0xff},
+	{SCLK_SPI2, 60, 7, 1, 0, 7, PAR_CPLL_GPLL, 1, 0xff},
+	{SCLK_SPI4, 60, 15, 1, 8, 7, PAR_CPLL_GPLL, 1, 0xff},
+	{SCLK_SPI5, 58, 15, 1, 8, 7, PAR_CPLL_GPLL, 1, 0xff},
+	{SCLK_SDMMC, 16, 8, 3, 0, 7, PAR_SDMMC, 1, 5},
+	{SCLK_EMMC, 22, 8, 3, 0, 7, PAR_EMMC, 1, 4},
+	{ACLK_EMMC, 21, 7, 1, 0, 5, PAR_CPLL_GPLL, 1, 0xff},
 };
 
 static const struct rk_comp *rk_comp_find(const struct device *dev, uint32_t id)
@@ -171,7 +190,8 @@ static int clock_control_rk3399_get_rate(const struct device *dev, clock_control
 		return -ENOTSUP;
 	}
 	v = sys_read32(DEVICE_MMIO_GET(dev) + CRU_CLKSEL(c->sel));
-	*rate = rk_src_rate(dev, (v >> c->mux_shift) & BIT_MASK(c->mux_width)) /
+	*rate = rk_src_rate(dev, rk_parent_src[c->parents][(v >> c->mux_shift) &
+							      BIT_MASK(c->mux_width)]) /
 		(((v >> c->div_shift) & BIT_MASK(c->div_width)) + 1U);
 	return 0;
 }
@@ -182,8 +202,7 @@ static int clock_control_rk3399_set_rate(const struct device *dev, clock_control
 {
 	const struct rk_comp *c = rk_comp_find(dev, (uint32_t)(uintptr_t)sys);
 	uint32_t want = (uint32_t)(uintptr_t)rate;
-	uint32_t src, div, mask, max;
-	uint32_t s = SRC_GPLL;
+	uint32_t src, div, mask, max, mux;
 
 	if (c == NULL) {
 		return -ENOTSUP;
@@ -192,10 +211,11 @@ static int clock_control_rk3399_set_rate(const struct device *dev, clock_control
 		return -EINVAL;
 	}
 	max = BIT(c->div_width);
-	src = rk_src_rate(dev, s);
+	mux = c->gpll_idx;
+	src = rk_src_rate(dev, SRC_GPLL);
 	div = DIV_ROUND_UP(src, want);
-	if (div > max && c->sdmmc_parents) {
-		s = SRC_24M;
+	if (div > max && c->osc_idx != 0xffU) {
+		mux = c->osc_idx;
 		src = OSC_HZ;
 		div = DIV_ROUND_UP(src, want);
 	}
@@ -203,7 +223,7 @@ static int clock_control_rk3399_set_rate(const struct device *dev, clock_control
 		return -ERANGE;
 	}
 	mask = (BIT_MASK(c->mux_width) << c->mux_shift) | (BIT_MASK(c->div_width) << c->div_shift);
-	sys_write32((mask << 16) | (s << c->mux_shift) | ((div - 1U) << c->div_shift),
+	sys_write32((mask << 16) | (mux << c->mux_shift) | ((div - 1U) << c->div_shift),
 		    DEVICE_MMIO_GET(dev) + CRU_CLKSEL(c->sel));
 	return 0;
 }

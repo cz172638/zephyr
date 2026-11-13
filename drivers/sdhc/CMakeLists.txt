@@ -25,6 +25,7 @@ zephyr_library_sources_ifdef(CONFIG_SDHC_STM32_SDMMC sdhc_stm32.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_TI_AM654 sdhc_ti_am654.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_XENON sdhc_xenon.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_DW_MSHC sdhc_dw_mshc.c)
+zephyr_library_sources_ifdef(CONFIG_SDHC_RK3399_EMMC sdhc_rk3399_emmc.c)
 zephyr_library_sources_ifdef(CONFIG_SPI_SDHC sdhc_spi.c)
 zephyr_library_sources_ifdef(CONFIG_XLNX_SDHC xlnx_sdhc.c)
 # zephyr-keep-sorted-stop

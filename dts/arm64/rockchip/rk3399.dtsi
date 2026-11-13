@@ -183,6 +183,19 @@
 		};
 	};
 
+	sdhci: mmc@fe330000 {
+		compatible = "rockchip,rk3399-sdhci-5.1";
+		reg = <0xfe330000 0x10000>;
+		interrupts = <GIC_SPI 11 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk SCLK_EMMC>, <&cru_clk ACLK_EMMC>;
+		clock-names = "clk_xin", "clk_ahb";
+		rockchip,grf = <&grf>;
+		max-frequency = <200000000>;
+		min-bus-freq = <400000>;
+		max-bus-freq = <52000000>;
+		status = "disabled";
+	};
+
 	sdmmc: mmc@fe320000 {
 		compatible = "rockchip,rk3399-dw-mshc";
 		reg = <0xfe320000 0x4000>;

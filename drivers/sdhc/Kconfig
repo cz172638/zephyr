@@ -32,6 +32,7 @@ source "drivers/sdhc/Kconfig.ti"
 source "drivers/sdhc/Kconfig.xlnx"
 source "drivers/sdhc/Kconfig.xenon"
 source "drivers/sdhc/Kconfig.dw_mshc"
+source "drivers/sdhc/Kconfig.rk3399_emmc"
 # zephyr-keep-sorted-stop
 
 config SDHC_INIT_PRIORITY

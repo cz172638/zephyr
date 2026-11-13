@@ -106,16 +106,36 @@
 	};
 };
 
-/* micro SD, 3.3 V, up to high speed */
+/*
+ * micro SD, 3.3 V, up to high speed. The slot doubles as JTAG (breakout):
+ * no card -> JTAG by force_jtag, breakout seen as a card -> JTAG by iomux.
+ */
 &sdmmc {
 	pinctrl-0 = <&sdmmc_pins>;
 	pinctrl-names = "default";
 	bus-width = <4>;
+	rockchip,sd-jtag;
 	status = "okay";
 
 	sdmmc_disk: sdmmc {
 		compatible = "zephyr,sdmmc-disk";
 		disk-name = "SD";
+		status = "okay";
+	};
+};
+
+/*
+ * eMMC module: boot medium (idbloader sector 64, FIT sector 16384) and
+ * storage (FAT partition from 16 MiB: settings, LLEXT, images).
+ */
+&sdhci {
+	bus-width = <8>;
+	status = "okay";
+
+	emmc_disk: emmc {
+		compatible = "zephyr,mmc-disk";
+		disk-name = "EMMC";
+		bus-width = <8>;
 		status = "okay";
 	};
 };

@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+
+config SDHC_RK3399_EMMC
+	bool "RK3399 eMMC (Arasan SDHCI 5.1 + GRF PHY)"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_SDHCI_5_1_ENABLED
+	depends on CLOCK_CONTROL && SYSCON
+	select SDHC_SUPPORTS_NATIVE_MODE
+	help
+	  RK3399 eMMC controller: polled PIO, 1/4/8-bit, legacy and high
+	  speed SDR up to 52 MHz.
