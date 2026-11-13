@@ -1,13 +1,13 @@
 # Workspace pro lab image (ESPRESSObin, ROCK Pi 4): lokálně a v GitHub Actions s `zephyrproject-rtos/ci`
 
-Popisuje, jak je postavený můj workspace a jak ho zreprodukovat, aby šly lab image stavět nezávisle: lokálně, v kontejneru nebo v GitHub Actions. Skripty a workflow jsou ve větvi `rk3399` (commity `b371c130d` a `e86ba3351`), která obsahuje i celou větev `espressobin`.
+Popisuje, jak je postavený můj workspace a jak ho zreprodukovat, aby šly lab image stavět nezávisle: lokálně, v kontejneru nebo v GitHub Actions. Všechno je v jediné soukromé větvi `epc` forku. Do ní jsou mergnuté `espressobin` a `rk3399` a postupně přibudou další cíle (XY K1, A527, A733, LS1012A). Do upstreamu půjde, až bude hotové eDMA pro PCIe, přerušení místo pollování a síť.
 
 | Soubor | Co dělá |
 |---|---|
 | `scripts/ci/lab/common.sh` | Společné funkce: hostitelské balíčky, Zephyr SDK, west T2 workspace, firmware na SHA, README, SHA256SUMS |
 | `scripts/ci/lab/espressobin.sh` | ESPRESSObin v5: netshell se všemi EP funkcemi, SATA, lab agent a LLEXT moduly → `-spi.bin`, `-sata.bin`, `-uart.tgz`, `*.llext` |
 | `scripts/ci/lab/rock_pi_4.sh` | ROCK Pi 4: TF-A BL31, U-Boot TPL/SPL bez rkbin, `pcie_shell` → `-emmc.bin`, `-sd-install.bin` |
-| `.github/workflows/lab-images.yml` | Spouští skripty v kontejneru `ghcr.io/zephyrproject-rtos/ci:v0.29.4`, nahraje artefakty, volitelně i release |
+| `.github/workflows/lab-images.yml` | Spouští skripty v kontejneru `ghcr.io/zephyrproject-rtos/ci:v0.29.4`, přidělí buildu číslo image a vydá release `lab-build-<n>` |
 
 Stejný skript běží beze změny na hostiteli, v kontejneru i v Actions. Rozdíl je jen v tom, odkud se vezme SDK a Python.
 
@@ -16,7 +16,7 @@ Stejný skript běží beze změny na hostiteli, v kontejneru i v Actions. Rozd�
 | Co | Kde / verze |
 |---|---|
 | west topdir | `/root/work` (`.west/config`: `manifest.path=zephyr`) |
-| Zephyr | `/root/work/zephyr-a3700`, worktree repozitáře `/root/work/zephyr`. Upstream základ `124121fbb`, větve `espressobin` a `rk3399`. Buildím s `ZEPHYR_BASE=$PWD`. |
+| Zephyr | `/root/work/zephyr-a3700`, worktree repozitáře `/root/work/zephyr`. Upstream základ `124121fbb`, větev `epc` (sloučené `espressobin` a `rk3399`). Buildím s `ZEPHYR_BASE=$PWD`. |
 | gh-pages | worktree `/root/work/ghp` |
 | moduly | jen `cmsis`, `cmsis_6`, `fatfs`, `hal_ti`, `mbedtls`, `tf-psa-crypto` v `/root/work/modules`. `hal_ti` image nepotřebují. |
 | Zephyr SDK | 1.0.1 minimal v `/root/sdk/zephyr-sdk-1.0.1`, toolchainy `aarch64-zephyr-elf` a `arm-zephyr-eabi`, `setup.sh -c` (CMake package) |
@@ -40,7 +40,7 @@ Rozložení workspace:
 
 ```
 $WS/.west
-$WS/zephyr            klon forku, větev rk3399 (nebo espressobin)
+$WS/zephyr            klon forku, větev epc
 $WS/modules/...       cmsis, cmsis_6, fatfs, mbedtls, tf-psa-crypto
 $WS/fw/tfa            TF-A espressobin-cci
 $WS/fw/tfa-rk3399     TF-A rk3399-m0-ns
@@ -73,7 +73,7 @@ Workspace a Python venv. West a requirements Zephyru patří do venv, systémov�
 
 ```sh
 mkdir -p ~/lab && cd ~/lab
-git clone -b rk3399 https://github.com/cz172638/zephyr zephyr
+git clone -b epc https://github.com/cz172638/zephyr zephyr
 python3 -m venv .venv && . .venv/bin/activate
 pip install west setuptools -r zephyr/scripts/requirements-base.txt   # setuptools: pylibfdt v U-Boot
 ```
@@ -100,7 +100,7 @@ Proměnné (všechny volitelné):
 | `NETSHELL_AUTHORIZED_KEY` | povinné pro ESPRESSObin | PEM text nebo cesta |
 | `TFA_URL`/`TFA_SHA`, `WTP_URL`/`WTP_SHA`, `MV_DDR_*`, `CRYPTOPP_*`, `UBOOT_URL`/`UBOOT_SHA` | forky `cz172638/…` a SHA z tabulky výše | firmware; jde i `file:///cesta/k/repu` |
 
-**Číslo image:** `IMG` předává `-DCONFIG_LAB_IMAGE` a podle něj se pojmenují `.bin` i `.llext` a kontroluje verze při `lab mod load`. U nového obsahu zvyš číslo: `IMG=154 … espressobin.sh` (čísla jsou společná pro všechny desky, 153 je ROCK Pi 4), případně uprav snippet `espressobin-lab`.
+**Číslo image:** `IMG` předává `-DCONFIG_LAB_IMAGE` a podle něj se pojmenují `.bin` i `.llext` a kontroluje verze při `lab mod load`. Čísla jsou společná pro všechny desky. V CI je přiděluje workflow (`lab-build-<n>`, sekce 4). Lokálně ho zadej sám, např. `IMG=160 … espressobin.sh`, a vyhni se číslům, která už CI vydalo.
 
 Ruční build bez skriptu (stejné příkazy, jaké používá skript):
 
@@ -149,8 +149,8 @@ Tag `v0.29.4` odpovídá `ci-repo-cache:v0.29.4.*` v `.github/workflows/twister.
 1. **Větev Zephyru do forku:**
 
    ```sh
-   git fetch ../zephyr-espressobin-inc.bundle rk3399:rk3399 espressobin:espressobin gh-pages:gh-pages
-   git push origin rk3399 espressobin gh-pages
+   git fetch ../zephyr-espressobin-inc.bundle epc:epc gh-pages:gh-pages
+   git push origin epc gh-pages
    ```
 
 2. **Firmware větve do forků.** Skripty je berou z `cz172638/…` na pevných SHA, přes `git fetch <sha>`. Proto musí být commity na GitHubu.
@@ -177,14 +177,20 @@ Tag `v0.29.4` odpovídá `ci-repo-cache:v0.29.4.*` v `.github/workflows/twister.
    gh variable set NETSHELL_AUTHORIZED_KEY -R cz172638/zephyr < netshell.pem
    ```
 
-4. **Spouštění.** Push do `rk3399` nebo `espressobin`, který mění zdrojáky (seznam `paths` ve workflow), spustí obě desky.
+4. **Spouštění a čísla buildů.** Push do `epc`, který mění zdrojáky (seznam `paths` ve workflow), spustí obě desky.
+   - Každý build dostane jedno číslo image pro všechny desky: nejvyšší tag `lab-build-<n>` + 1, poprvé 154. Ručnímu spuštění ho jde vnutit vstupem `img`.
+   - Podle čísla se jmenují soubory (`154-lab-mods-spi.bin`, `154-rp4-emmc.bin`) i prefix LLEXT modulů.
+   - Běhy jdou jeden po druhém (jedna concurrency skupina pro všechny větve), protože další číslo se čte z tagů.
+   - **Změny chodí jako pull requesty do `epc`:** pushuju větve `claude/<téma>`, ty uděláš review a merge. PR spustí build všech desek jen s artefakty (číslo je jen náhled, tag ani release nevznikne). Release `lab-build-<n>` vznikne až po merge do `epc`.
+   - Release `lab-build-<n>` (prerelease) zůstává, takže každé číslo jde stáhnout i později. Zrušený nebo celý neúspěšný běh tag nevytvoří a číslo se použije znovu.
    - Ruční `workflow_dispatch` vidí GitHub jen u workflow na **výchozí větvi** (u tebe `ci`). Buď zkopíruj `lab-images.yml` i do `ci`, nebo spouštěj pushem.
 
    ```sh
-   gh workflow run lab-images.yml -R cz172638/zephyr --ref rk3399 -f boards=rock_pi_4 -f release=true
+   gh workflow run lab-images.yml -R cz172638/zephyr --ref epc -f boards=rock_pi_4
    gh run watch -R cz172638/zephyr
    gh run download -R cz172638/zephyr -n rock_pi_4-images -D rp4 && (cd rp4 && sha256sum -c SHA256SUMS)
-   gh release download lab-images-rk3399 -R cz172638/zephyr -p '153-*'
+   gh release download lab-build-154 -R cz172638/zephyr
+   gh release list -R cz172638/zephyr          # všechna čísla
    ```
 
 ### Jak workflow běží
@@ -197,7 +203,8 @@ lab-images.yml
     cache ws/modules + ws/fw  (klíč: west.yml + skript desky + common.sh)
     bash -eu ws/zephyr/scripts/ci/lab/<deska>.sh   → out/
     upload-artifact <deska>-images (30 dní)
-  release (release=true): všechny artefakty → prerelease lab-images-<větev>
+  number: nejvyšší lab-build-<n> + 1 (nebo vstup img) → IMG pro všechny desky
+  release (push, nebo release=true): všechny artefakty → prerelease lab-build-<n>
 ```
 
 ### Na co si dát pozor
@@ -205,13 +212,14 @@ lab-images.yml
 - **Velikost obrazu `ci`:** má jednotky GB komprimovaně, rozbalený přes 10 GB. Na hostovaném `ubuntu-24.04` se vejde, ale místa moc nezbývá. Pokud by docházelo:
   - Zúžit matici na jednu desku.
   - Místo `container:` udělat krok, který nejdřív uvolní disk (`rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android`) a pak spustí `docker run … ghcr.io/zephyrproject-rtos/ci:v0.29.4 bash -eu …` jako v sekci 3.
-- **Upstream workflowy** (twister, compliance) ve větvi `rk3399` se ve forku spustí při pushi, pokud nejsou vypnuté. Vypnutí přes `gh workflow disable` platí podle cesty souboru pro všechny větve. Postup je v `fork-ci-images.md`.
+- **Upstream workflowy** (twister, compliance) se ve větvi `epc` při pushi nespustí (reagují jen na `main`, `v*-branch`, `collab-*` a tagy `v*`). Na `main` forku se ale spouštějí, pokud nejsou vypnuté. Vypnutí přes `gh workflow disable` platí podle cesty souboru pro všechny větve. Postup je v `fork-ci-images.md`.
+- **Přidání cíle:** skript `scripts/ci/lab/<deska>.sh` podle vzoru `rock_pi_4.sh`, deska do `matrix.board` a výchozí hodnoty vstupu `boards` v `lab-images.yml`. Kód desky patří do `epc`. K1 a LS1012A ze staré větve `dwc-epc` (DesignWare knihovna) se do `epc` musí mergnout, ta větev v tomto workspace není.
 - **Vztah ke starší větvi `ci`** (`fork-ci-images.md`): tam běží `ubuntu-24.04` s vlastní instalací SDK (`sdk_install`) a skripty žijí v orphan větvi. Tady je SDK z obrazu `ci` a skripty jsou přímo ve větvi desky, takže jeden checkout dá zdrojáky i postup. Obojí může běžet vedle sebe.
 - **Na železe** nic z CI ověřené není. Lokální běh skriptů z čistého workspace (sekce 5) ověřuje jen to, že se image sestaví.
 
 ## 5. Ověření
 
-Oba skripty jsem pustil z čistého workspace na hostiteli s SDK 1.0.1: nový klon větve `rk3399`, `west update` s filtrem z GitHubu, firmware z lokálních repozitářů přes `file://`.
+Oba skripty jsem pustil z čistého workspace na hostiteli s SDK 1.0.1: nový klon tehdejší větve `rk3399`, `west update` s filtrem z GitHubu, firmware z lokálních repozitářů přes `file://`.
 
 | Skript | Čas | Výstup |
 |---|---|---|
@@ -220,4 +228,4 @@ Oba skripty jsem pustil z čistého workspace na hostiteli s SDK 1.0.1: nový kl
 
 Kontejner ani Actions jsem nespouštěl, protože tady není Docker. Rozdíl proti hostiteli je jen v balíčcích (skript je doinstaluje) a v cestě k SDK/venv.
 
-ESPRESSObin z větve `rk3399` nese číslo 150 ze snippetu, ale obsahuje novější kód než 150 na deskách (`pcie_ctrl_is_rc()` v EPF a lab agentu). Pro nasazení ho postav s `IMG=154` (153 už je ROCK Pi 4), jinak se `.llext` načtou do jiného firmwaru, než pro který byly přeložené.
+Lokální build ESPRESSObinu bez `IMG` nese číslo 150 ze snippetu, i když obsahuje novější kód než 150 na deskách. Pro nasazení ber image z CI (`lab-build-<n>`), nebo lokálně zadej `IMG` s nevydaným číslem.

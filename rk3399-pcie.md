@@ -1,6 +1,6 @@
 # RK3399 (ROCK Pi 4): PCIe RC/EP jako u ESPRESSObinu, Zephyr z TF-A, boot a úložiště na eMMC
 
-Větev `rk3399` (z `espressobin`), commity `c9eb648da` (PCIe ovladače), `43c64204b` (image skript), `28817904e` (pinctrl, CRU), `fc4cfc915` (SPI, SD) `4a3afa951` (role v settings, FAT na SD), `0c8c25e9d` (JTAG ve slotu SD), `a0e6614b9` (eMMC, `emmc update`) a `ef03ba389` (image 153). TF-A je ve větvi `rk3399-m0-ns`, commit `e09b846ea`. U-Boot je ve větvi `rk3399-perilp-m0`, beze změn v defconfigu.
+Větev `epc` (sloučené `espressobin` a `rk3399`), commity `c9eb648da` (PCIe ovladače), `43c64204b` (image skript), `28817904e` (pinctrl, CRU), `fc4cfc915` (SPI, SD) `4a3afa951` (role v settings, FAT na SD), `0c8c25e9d` (JTAG ve slotu SD), `a0e6614b9` (eMMC, `emmc update`) `ef03ba389` (image 153). Další image vydává CI jako `lab-build-<n>` (od 154) se společným číslem pro všechny desky. TF-A je ve větvi `rk3399-m0-ns`, commit `e09b846ea`. U-Boot je ve větvi `rk3399-perilp-m0`, beze změn v defconfigu.
 
 ## 1. Co je hotové
 
