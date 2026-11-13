@@ -34,6 +34,10 @@ on:
       - 'subsys/**'
       - 'west.yml'
       - '.github/workflows/lab-images.yml'
+  # review builds of pull requests into epc: artifacts only, no release,
+  # no number taken
+  pull_request:
+    branches: [epc]
   workflow_dispatch:
     inputs:
       boards:
@@ -66,6 +70,7 @@ jobs:
         env:
           IMG_IN: ${{ github.event.inputs.img }}
         run: |
+          # a pull request only previews the next number (no tag is made)
           if [ -n "$IMG_IN" ]; then
             n=$IMG_IN
           else
