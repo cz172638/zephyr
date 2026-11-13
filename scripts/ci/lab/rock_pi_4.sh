@@ -6,8 +6,8 @@
 # U-Boot TPL/SPL (no Rockchip blobs) + TF-A BL31 + Zephyr BL33. Outputs:
 #
 #   <img>-<name>-emmc.bin        the image: eMMC from sector 0 (boots from SD too)
-#   <img>-<name>-sd-install.bin  micro SD that boots the same and carries
-#                                -emmc.bin: "emmc update /SD:/<img>-<name>-emmc.bin"
+#   <img>-<name>-boot.bin        its first 16 MiB (MBR, idbloader, FIT), for
+#                                "emmc update /EMMC:/<img>-<name>-boot.bin"
 #
 # Variables, beyond common.sh:
 #   IMG, NAME                  [153, rock_pi_4]
@@ -47,8 +47,9 @@ west build -p -d "$B" -b rock_pi_4/rk3399/a53 "$APP"
 
 mkdir -p "$OUT"
 perl "$ZEPHYR_BASE/scripts/rockchip/rk3399-image.pl" --bl31 "$BL31" \
-	--zephyr "$B/zephyr/zephyr.elf" --uboot "$UB" --installer -o "$WS/build/$IMG-$NAME"
-cp "$WS/build/$IMG-$NAME-emmc.bin" "$WS/build/$IMG-$NAME-sd-install.bin" "$OUT/"
+	--zephyr "$B/zephyr/zephyr.elf" --uboot "$UB" -o "$WS/build/$IMG-$NAME"
+cp "$WS/build/$IMG-$NAME-emmc.bin" "$OUT/"
+head -c 16M "$WS/build/$IMG-$NAME-emmc.bin" >"$OUT/$IMG-$NAME-boot.bin"
 
 readme "ROCK Pi 4 image $IMG-$NAME" <<EOT
 Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
@@ -56,10 +57,10 @@ Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
 | file | use |
 |---|---|
 | \`$IMG-$NAME-emmc.bin\` | eMMC from sector 0 (also boots from a micro SD) |
-| \`$IMG-$NAME-sd-install.bin\` | \`dd if=$IMG-$NAME-sd-install.bin of=/dev/sdX bs=1M conv=fsync\`, boot from it, then \`emmc update /SD:/$IMG-$NAME-emmc.bin\`, remove the card, reset |
+| \`$IMG-$NAME-boot.bin\` | boot area only (FAT with settings kept): copy to the eMMC FAT, then \`emmc update /EMMC:/$IMG-$NAME-boot.bin\` and reset |
 
 BootROM order is SPI, eMMC, SD: an old image in the SPI flash wins, clear it
-with \`flash erase\`. The micro SD slot doubles as JTAG (breakout).
+with \`flash erase\`. The micro SD slot is for the JTAG breakout only.
 EOT
 checksums
 ls -l "$OUT"
