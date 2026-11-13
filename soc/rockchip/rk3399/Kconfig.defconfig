@@ -43,4 +43,8 @@ config SYS_CLOCK_HW_CYCLES_PER_SEC
 
 endif # CPU_CORTEX_M0
 
+# DesignWare APB UARTs: byte accesses do not reach them (U-Boot: SYS_NS16550_MEM32)
+configdefault UART_NS16550_ACCESS_WORD_ONLY
+	default y
+
 endif # SOC_SERIES_RK3399
