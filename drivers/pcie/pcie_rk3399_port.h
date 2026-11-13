@@ -29,6 +29,7 @@
 #define RK_CLIENT_CONFIG            0x00U
 #define  RK_CLIENT_CONF_ENABLE      BIT(0)
 #define  RK_CLIENT_LINK_TRAIN       BIT(1)
+#define  RK_CLIENT_SR_IOV_ENABLE    BIT(2)
 #define  RK_CLIENT_ARI_ENABLE       BIT(3)
 #define  RK_CLIENT_LANE_NUM         GENMASK(5, 4)
 #define  RK_CLIENT_MODE_RC          BIT(6)

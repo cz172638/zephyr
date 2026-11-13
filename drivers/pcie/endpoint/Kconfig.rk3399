@@ -21,3 +21,12 @@ config PCIE_EPC_RK3399
 	  0 for MSI), MSI and INTx, PERST# and link events. MSI-X is hidden
 	  (not functional on this silicon). With PCIE_ROLE the same
 	  controller is the root complex when that role is saved.
+
+config PCIE_EPC_RK3399_SRIOV
+	bool "SR-IOV strap (1 PF + up to 8 VFs)"
+	depends on PCIE_EPC_RK3399
+	help
+	  Set sr_iov_en in PCIE_CLIENT_CONFIG (with ari_en, always set) in
+	  endpoint mode, so the core exposes its SR-IOV capability. VF BARs,
+	  inbound windows and MSI per VF are not handled yet: this only shows
+	  the capability and its reset values to the host.
