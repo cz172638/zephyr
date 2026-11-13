@@ -34,9 +34,12 @@ on:
         description: 'boards (space separated)'
         default: 'espressobin rock_pi_4'
       release:
-        description: 'publish as release lab-images-<branch>'
+        description: 'publish as release lab-images-<branch> (push always does)'
         type: boolean
-        default: false
+        default: true
+      espressobin_img:
+        description: 'ESPRESSObin image number / LLEXT prefix (empty: snippet)'
+        default: ''
 
 concurrency:
   group: lab-images-${{ github.ref }}
@@ -59,6 +62,7 @@ jobs:
       WS: ${{ github.workspace }}/ws
       OUT: ${{ github.workspace }}/out
       NETSHELL_AUTHORIZED_KEY: ${{ vars.NETSHELL_AUTHORIZED_KEY }}
+      IMG: ${{ matrix.board == 'espressobin' && github.event.inputs.espressobin_img || '' }}
     steps:
       - name: selected
         id: sel
@@ -96,8 +100,9 @@ jobs:
           path: out/
           retention-days: 30
 
+  # every push replaces the branch's release; dispatch only with release=true
   release:
-    if: github.event.inputs.release == 'true'
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.inputs.release == 'true') }}
     needs: build
     runs-on: ubuntu-24.04
     permissions:
