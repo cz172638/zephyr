@@ -1,6 +1,6 @@
-# RK3399 (ROCK Pi 4): PCIe RC/EP jako u ESPRESSObinu, Zephyr z TF-A, SPI a SD image
+# RK3399 (ROCK Pi 4): PCIe RC/EP jako u ESPRESSObinu, Zephyr z TF-A, boot a úložiště na eMMC
 
-Větev `rk3399` (z `espressobin`), commity `c9eb648da` (PCIe ovladače), `43c64204b` (image skript), `28817904e` (pinctrl, CRU), `fc4cfc915` (SPI, SD) a `4a3afa951` (role v settings, FAT na SD, `spiflash update`). TF-A je ve větvi `rk3399-m0-ns`, commit `e09b846ea`. U-Boot je ve větvi `rk3399-perilp-m0`, beze změn v defconfigu.
+Větev `rk3399` (z `espressobin`), commity `c9eb648da` (PCIe ovladače), `43c64204b` (image skript), `28817904e` (pinctrl, CRU), `fc4cfc915` (SPI, SD) `4a3afa951` (role v settings, FAT na SD), `0c8c25e9d` (JTAG ve slotu SD), `a0e6614b9` (eMMC, `emmc update`) a `ef03ba389` (image 153). TF-A je ve větvi `rk3399-m0-ns`, commit `e09b846ea`. U-Boot je ve větvi `rk3399-perilp-m0`, beze změn v defconfigu.
 
 ## 1. Co je hotové
 
@@ -20,7 +20,7 @@ RK3399 má jediný PCIe řadič a ten umí obě role. Je to Cadence jádro za Ro
 | `dts/arm64/rockchip/rk3399.dtsi` | `pcie0` (RC) a `pcie0_ep` (EP) na stejném `apb` |
 | `boards/radxa/rock_pi_4/rock_pi_4_a.dtsi` | PERST# na GPIO4_D3, 3,3 V slotu na GPIO2_D2 |
 | `samples/boards/rockchip/rk3399/pcie_shell` | Shell s oběma rolemi a funkcí `pcie_epf_test` |
-| `pinctrl_rk3399.c`, `spi_rockchip.c`, `sdhc_dw_mshc.c` | Piny, SPI flash, micro SD (sekce 7) |
+| `pinctrl_rk3399.c`, `sdhc_rk3399_emmc.c`, `sdhc_dw_mshc.c`, `spi_rockchip.c` | Piny, eMMC, micro SD/JTAG, SPI (sekce 7) |
 | `scripts/rockchip/rk3399-image.pl` | SPI a SD image (Perl), SD s MBR a FAT |
 
 EPF funkce (`test`, `fabric`, `nvme`, `vntb`) a `lab_role()` se dřív ptaly přímo na `advk_mode_get()`. Teď volají `pcie_ctrl_is_rc()`, takže fungují i na RK3399.
@@ -34,8 +34,8 @@ uart:~$ kernel reboot warm
 
 Kam se role ukládá:
 
-- **Settings** (`pcie/mode`, NVS v oddílu `storage` SPI flash na `0x300000`), pokud je `CONFIG_PCIE_ROLE_SETTINGS` a backend naběhne. To platí pro desky se SPI flash (sample `pcie_shell` to má zapnuté).
-- **`PMUGRF_OS_REG1` (`0xff320304`)** se zapisuje při každém uložení a čte se, když settings roli nemají nebo nejsou (deska bez SPI flash). Hodnota přežije warm reset, ne vypnutí napájení. Ukládá se jako magic `0x50430000 | role`. `OS_REG0` je boot mode, `OS_REG2/3` drží informace o DRAM, na ty se nesahá.
+- **Settings** (`pcie/mode`), pokud je `CONFIG_PCIE_ROLE_SETTINGS` a backend naběhne. Sample `pcie_shell` je má v souboru `/EMMC:/settings` na FAT eMMC.
+- **`PMUGRF_OS_REG1` (`0xff320304`)** se zapisuje při každém uložení a čte se, když settings roli nemají nebo nejsou (např. eMMC bez FAT). Hodnota přežije warm reset, ne vypnutí napájení. Ukládá se jako magic `0x50430000 | role`. `OS_REG0` je boot mode, `OS_REG2/3` drží informace o DRAM, na ty se nesahá.
 - **Bez uložené role** rozhoduje `CONFIG_PCIE_ROLE_DEFAULT_RC`, výchozí je EP.
 
 Pořadí inicializace (POST_KERNEL):
@@ -100,66 +100,78 @@ make O=../uboot-build-rp4 CROSS_COMPILE=aarch64-linux-gnu- BL31=.../bl31.elf
 west build -b rock_pi_4/rk3399/a53 samples/boards/rockchip/rk3399/pcie_shell
 # image
 scripts/rockchip/rk3399-image.pl --bl31 .../bl31.elf --zephyr build/zephyr/zephyr.elf \
-    --uboot ../uboot-build-rp4 -o 152-rp4-storage
+    --uboot ../uboot-build-rp4 --installer -o 153-rp4
 ```
 
 Oprava v TF-A (`e09b846ea`): M0 Makefile předával linker script přes `-Wl,-T`. Gcc ze Zephyr SDK má výchozí specs s picolibc a přidal k němu i svůj script. Výsledek: `.text` na `0x10000000`, `rk3399m0pmu.bin` o velikosti 256 MiB a přetečení PMUSRAM. Oprava je `-T`.
 
-## 6. Image 152 (151 bez SPI a SD)
+## 6. Image 153: jen eMMC (152 byla SPI + SD)
 
-| Soubor | Obsah | Zápis |
+Obě ROCK Pi 4 mají eMMC, takže je jediné boot médium i úložiště. Slot micro SD slouží jen k instalaci a pro JTAG breakout.
+
+| Soubor | Obsah | Použití |
 |---|---|---|
-| `152-rp4-storage-spi.bin` | `idbloader-spi.img` (rkspi) na 0, FIT na `0xe0000` | do SPI flash od 0 |
-| `152-rp4-storage-sd.bin` (48 MiB) | MBR, `idbloader.img` na sektoru 64, FIT na sektoru 16384, FAT16 32 MiB od sektoru 32768 (16 MiB) se `152-rp4-storage-spi.bin` | `dd if=152-rp4-storage-sd.bin of=/dev/sdX bs=1M conv=fsync` |
+| `153-rp4-emmc.bin` (48 MiB) | MBR, `idbloader.img` na sektoru 64, FIT na sektoru 16384, FAT16 32 MiB od sektoru 32768 | eMMC od sektoru 0 |
+| `153-rp4-sd-install.bin` (80 MiB) | stejný boot, na FAT (64 MiB) leží `153-rp4-emmc.bin` | instalační karta |
 
-Oddíl FAT lze po zápisu zvětšit (`parted /dev/sdX resizepart 1 100%`, `fatresize`) nebo ho skript udělá větší (`--fat-mb`). Další soubory na FAT (LLEXT moduly, data) přidá `--fat-add soubor`.
+BootROM i U-Boot SPL čtou eMMC a SD stejně (sektor 64 / 16384). Proto `-emmc.bin` nabootuje i z karty a instalační karta je jen tentýž image s větší FAT.
 
-**Instalace do SPI bez Linuxu i bez U-Boot:**
+**Instalace na eMMC bez Linuxu i bez U-Boot:**
 
 ```
-# deska nabootovaná z SD (SPI prázdná nebo maskrom)
+$ dd if=153-rp4-sd-install.bin of=/dev/sdX bs=1M conv=fsync
+# karta do slotu; eMMC prázdná nebo s naším image (BootROM: SPI → eMMC → SD)
 uart:~$ fs ls /SD:
-uart:~$ spiflash update /SD:/152-rp4-storage-spi.bin
-...
-done: 1402368 bytes written and verified
+uart:~$ emmc update /SD:/153-rp4-emmc.bin
+................................................
+done: 50331648 bytes written and verified; remove the card (or put the JTAG breakout back) and reset
 ```
 
-`spiflash update` maže a zapisuje po 4 KiB a každý blok zpětně čte a porovnává. Oddíl `storage` (settings, od `0x300000`) zůstane netknutý, protože image končí pod `0x160000`.
+`emmc update` píše raw od sektoru 0 po 32 KiB, každý blok zpětně čte a porovnává. FAT na eMMC před zápisem odpojí a po něm zase připojí.
 
-- **Desky se SPI flash** (4A+/4B+/4C): BootROM bere SPI před SD. Pokud je v SPI platný idbloader, SD se ignoruje.
-  - Pro návrat k bootu z SD stačí v Zephyru `flash erase` prvních 4 KiB SPI, nebo maskrom (při zapnutí zkratovat SPI CLK na GND).
-- **Desky bez SPI** (4A/4B v1.3): stačí SD image, role je jen v `OS_REG1`.
-- **Device tree pro SPL:** všechny desky používají `rk3399-rock-pi-4a`. TPL/SPL potřebuje jen DRAM, SD a SPI1.
-- **LLEXT moduly s prefixem 152** zatím nejsou: chybí síť (lab agent). Úložiště už je (`/SD:`), `lab mod load` z karty je další krok.
+**Pozor na pořadí BootROM (SPI → eMMC → SD):**
+- **Starý image v SPI flash vyhraje** nad eMMC (desky 4A+/4B+/4C, pokud tam je image 151/152). Smaž ho z Zephyru: `flash erase flash@0 0 0x1000`, případně maskrom (SPI CLK na GND při zapnutí).
+- **Na eMMC, která už bootuje, se k instalační kartě nedostaneš.** BootROM vezme eMMC dřív. Nový image proto pusť `emmc update` z karty, kterou nabootuješ, až když eMMC nebootuje (prázdná nebo s poškozeným idbloaderem). Nebo pozdější verzi zapiš z běžícího Zephyru: soubor na `/EMMC:` (nebo `/SD:`) a `emmc update` přepíše eMMC, ze které běží. Zápis jde přes disk API, běžící kód je v RAM.
 
-## 7. SPI a SD v Zephyru
+Další soubory na FAT (LLEXT moduly, data) přidá `--fat-add soubor`. Velikost FAT na eMMC mění `--fat-mb`, nebo ji po instalaci zvětšíš na Linuxu (`parted resizepart 1 100%`, `fatresize`). SPI image skript udělá už jen na požádání (`--spi`).
+
+- **Role:** settings v souboru `/EMMC:/settings` (`CONFIG_SETTINGS_FILE`). FAT eMMC se připojí v `SYS_INIT` POST_KERNEL 76, tedy po SDHC (70) a před rolí (81). `OS_REG1` zůstává jako záloha.
+- **Device tree pro SPL:** všechny desky používají `rk3399-rock-pi-4a`. SPL umí eMMC (`MMC_SDHCI_ROCKCHIP`) i SD a pořadí bere „same-as-spl“.
+- **LLEXT moduly s prefixem 153** zatím nejsou: chybí síť (lab agent). Úložiště je (`/EMMC:`), `lab mod load` z eMMC je další krok.
+
+## 7. eMMC, SD/JTAG a SPI v Zephyru
 
 | Ovladač | Soubor | Co umí |
 |---|---|---|
 | pinctrl | `drivers/pinctrl/pinctrl_rk3399.c` | iomux a pull v PMUGRF (banky 0–1) a GRF (2–4), `RK_PINMUX(bank, pin, func, pull)`; 1,8V pull typ banky 0 A/B a banky 2 C/D se přepočítá |
-| CRU | `clock_control_rk3399_cru.c` | `get_rate`/`set_rate` pro `SCLK_SPI0/1/2/4/5` a `SCLK_SDMMC` z PLL registrů (GPLL, pro nízké SDMMC frekvence 24 MHz) |
-| SPI | `drivers/spi/spi_rockchip.c` (`rockchip,rk3066-spi`) | master, 8bit, polling přes FIFO (hloubka se zjistí, RK3399: 32), CS0/1 nebo `cs-gpios`, SCK = spiclk / sudý BAUDR |
-| SD | `drivers/sdhc/sdhc_dw_mshc.c` (`rockchip,rk3399-dw-mshc`) | DesignWare MSHC na SDHC API, polling, FIFO PIO, auto CMD12, 3,3 V, default/high speed do 50 MHz, 1/4 bit |
+| CRU | `clock_control_rk3399_cru.c` | `get_rate`/`set_rate` pro `SCLK_SPI0/1/2/4/5`, `SCLK_SDMMC`, `SCLK_EMMC`, `ACLK_EMMC` z PLL registrů (GPLL, pro nízké frekvence 24 MHz) |
+| eMMC | `drivers/sdhc/sdhc_rk3399_emmc.c` (`rockchip,rk3399-sdhci-5.1`) | Arasan SDHCI 5.1 + eMMC PHY v GRF, polling, PIO, 1/4/8 bit, legacy a high speed SDR do 52 MHz |
+| SD | `drivers/sdhc/sdhc_dw_mshc.c` (`rockchip,rk3399-dw-mshc`) | DesignWare MSHC na SDHC API, polling, FIFO PIO, auto CMD12, 3,3 V, do 50 MHz, 1/4 bit; JTAG ve slotu (`rockchip,sd-jtag`) |
+| SPI | `drivers/spi/spi_rockchip.c` (`rockchip,rk3066-spi`) | master, 8bit, polling přes FIFO, CS0/1 nebo `cs-gpios`; na ROCK Pi 4 jen kvůli smazání starého image v SPI flash |
 
-ROCK Pi 4 v device tree:
+**eMMC** (`&sdhci`, disk „EMMC“, 8 bit):
+- **Hodiny:** základní hodiny `SCLK_EMMC` z GPLL (594/3 = 198 MHz), zapsané do `corecfg_baseclkfreq` (`GRF_EMMCCORE_CON0`). Programovatelné hodiny jsou vypnuté (`CON11` = 0). Dělič N = 0 (plné základní hodiny) na tomhle jádře nefunguje (v Linuxu `CLOCK_DIV_ZERO_BROKEN`), takže 52 MHz → 49,5 MHz.
+- **PHY** (GRF `0xf780`–`0xf7a0`): vypne se při změně hodin a nad 400 kHz znovu zapne. Pořadí: impedance 50 Ω, výstupní tap delay, power, čekání na `caldone`, rozsah DLL podle hodin karty (50/100/150/200 MHz) a čekání na `dllrdy`. Postup podle U-Boot `rockchip_sdhci.c`.
+- **Co nastavil U-Boot SPL** (při bootu z eMMC), ovladač zahodí: PHY off, `SW_RESET` all.
+- **Chybí:** HS200/HS400 (tuning, 1,8V signalizace), DDR52, ADMA a přerušení.
 
-| Zařízení | Piny | Nastavení |
-|---|---|---|
-| SPI1 + `jedec,spi-nor` | GPIO1_A7 rx, B0 tx, B1 clk, B2 cs0 (func 2) | spiclk 99 MHz, flash 24,75 MHz, SFDP za běhu; oddíly `idbloader` 0, `fit` `0xe0000`, `storage` `0x300000` (1 MiB) |
-| SDMMC + `zephyr,sdmmc-disk` „SD" | GPIO4_B0–B3 data, B4 clk, B5 cmd (func 1), GPIO0_A7 card detect | CRU = 2× hodiny karty (Rockchip dělí CIU dvěma), `CLKDIV` bypass; ovladač shodí `GRF_SOC_CON7.force_jtag` (jinak jsou piny SD po resetu JTAG) |
+**SD slot jako JTAG** (`rockchip,sd-jtag`):
 
-Poznámky:
+| Stav slotu | Co se stane |
+|---|---|
+| prázdný (card detect = žádná karta) | `GRF_SOC_CON7.force_jtag` zůstane nastavený a SoC sám přepne piny na JTAG: GPIO4_B2/B3 AP TCK/TMS, B4/B5 MCU TCK/TMS |
+| karta | normální SD (`/SD:`), instalace |
+| breakout, který card detect vidí jako kartu | po power-on neodpoví žádný příkaz (4 timeouty odpovědi) → ovladač přepne iomux GPIO4_B2–B5 na funkci 2 (JTAG), vypne napájení a hodiny slotu a do dalšího bootu hlásí „žádná karta“ |
 
-- **SPI1 sdílí GPIO1_A7/B0 s UART4.** Na ROCK Pi 4 je konzole na UART2, nevadí to.
-- **Deska bez SPI flash:** `jedec,spi-nor` neprojde SFDP, flash není ready, settings nenaběhnou a role jde do `OS_REG1`.
-- **UHS (1,8 V) není:** chybí přepínání `vqmmc` přes RK808 a `GRF_IO_VSEL`. Ladění fáze (`SDMMC_CON0/1` v CRU) taky ne, pro 50 MHz netřeba.
-- **DMA ani přerušení zatím nejsou** (SPI i SD pollují). Na LLEXT moduly a settings to stačí.
+Při detekci se na pinech krátce objeví SD hodiny a příkazy (CMD0/8/55/1). Debugger připojený během bootu to může vidět, po přepnutí je JTAG čistý.
+
+**SPI1 + flash** (4A+/4B+/4C): už nebootuje ani neukládá. Je v device tree jen proto, aby šel smazat starý image (`flash erase`). SPI1 sdílí GPIO1_A7/B0 s UART4, konzole je na UART2.
 
 ## 8. Co chybí
 
-- **Na hardwaru zatím nic neověřeno.** Ověřené je jen sestavení (Zephyr, TF-A, U-Boot) a rozložení image (FIT magic na správných offsetech, idbloader sedí, MBR a FAT čitelné přes mtools). SPI a SD ovladače neběžely na železe.
+- **Na hardwaru zatím nic neověřeno.** Ověřené je jen sestavení (Zephyr, TF-A, U-Boot; lokálně i v GitHub Actions) a rozložení image (FIT magic na správných offsetech, idbloader sedí, MBR a FAT čitelné přes mtools). Ovladače eMMC, SD/JTAG a SPI neběžely na železe.
 - **RC bez IRQ.** INTx by šlo přes client INT. MSI potřebuje GIC ITS, ten Zephyr na RK3399 zatím nemá. Chybí AER.
-- **Žádná perzistentní identita** (`pcie id set` platí do resetu) ani DSN; settings už jsou (na deskách se SPI flash), napojení id/DSN na ně chybí.
+- **Žádná perzistentní identita** (`pcie id set` platí do resetu) ani DSN; settings už jsou (`/EMMC:/settings`), napojení id/DSN na ně chybí.
 - **REFCLK:** RK3399 PHY nemá vstup referenčních hodin, partner musí mít vlastní (SRIS/SSC podle hosta). **Na crossover kabelu nikdy nepropojovat REFCLK ani napájení.**
 - **EP a RC zatím jen na A53 obrazu.** A72 overlay pro `pcie_shell` není.
 

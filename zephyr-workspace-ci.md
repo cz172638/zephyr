@@ -6,7 +6,7 @@ Popisuje, jak je postavený můj workspace a jak ho zreprodukovat, aby šly lab 
 |---|---|
 | `scripts/ci/lab/common.sh` | Společné funkce: hostitelské balíčky, Zephyr SDK, west T2 workspace, firmware na SHA, README, SHA256SUMS |
 | `scripts/ci/lab/espressobin.sh` | ESPRESSObin v5: netshell se všemi EP funkcemi, SATA, lab agent a LLEXT moduly → `-spi.bin`, `-sata.bin`, `-uart.tgz`, `*.llext` |
-| `scripts/ci/lab/rock_pi_4.sh` | ROCK Pi 4: TF-A BL31, U-Boot TPL/SPL bez rkbin, `pcie_shell` → `-spi.bin`, `-sd.bin` |
+| `scripts/ci/lab/rock_pi_4.sh` | ROCK Pi 4: TF-A BL31, U-Boot TPL/SPL bez rkbin, `pcie_shell` → `-emmc.bin`, `-sd-install.bin` |
 | `.github/workflows/lab-images.yml` | Spouští skripty v kontejneru `ghcr.io/zephyrproject-rtos/ci:v0.29.4`, nahraje artefakty, volitelně i release |
 
 Stejný skript běží beze změny na hostiteli, v kontejneru i v Actions. Rozdíl je jen v tom, odkud se vezme SDK a Python.
@@ -95,7 +95,7 @@ Proměnné (všechny volitelné):
 | `OUT` | `$WS/out` | výstupy |
 | `ZEPHYR_SDK_INSTALL_DIR` | hledá `/opt/toolchains`, `~/zephyr-sdk-*`, `~/sdk/zephyr-sdk-*` | SDK |
 | `WEST_MODULES` | `cmsis,cmsis_6,fatfs,mbedtls,tf-psa-crypto` | west project filter |
-| `IMG`, `NAME` | ESPRESSObin: `CONFIG_LAB_IMAGE` ze snippetu (150) a `lab-mods`; ROCK Pi 4: `152` a `storage` | jména souborů a prefix LLEXT |
+| `IMG`, `NAME` | ESPRESSObin: `CONFIG_LAB_IMAGE` ze snippetu (150) a `lab-mods`; ROCK Pi 4: `153` a `rp4` | jména souborů a prefix LLEXT |
 | `CLOCKS`, `DDR_TOPOLOGY` | `CPU_800_DDR_800`, `2` | ESPRESSObin (C100 čip: `CPU_1000_DDR_800`) |
 | `NETSHELL_AUTHORIZED_KEY` | povinné pro ESPRESSObin | PEM text nebo cesta |
 | `TFA_URL`/`TFA_SHA`, `WTP_URL`/`WTP_SHA`, `MV_DDR_*`, `CRYPTOPP_*`, `UBOOT_URL`/`UBOOT_SHA` | forky `cz172638/…` a SHA z tabulky výše | firmware; jde i `file:///cesta/k/repu` |
@@ -108,7 +108,7 @@ Ruční build bez skriptu (stejné příkazy, jaké používá skript):
 # ROCK Pi 4
 west build -b rock_pi_4/rk3399/a53 zephyr/samples/boards/rockchip/rk3399/pcie_shell
 zephyr/scripts/rockchip/rk3399-image.pl --bl31 fw/tfa-rk3399/build/rk3399/release/bl31/bl31.elf \
-  --zephyr build/zephyr/zephyr.elf --uboot build/u-boot-rock-pi-4 -o 152-rp4-storage
+  --zephyr build/zephyr/zephyr.elf --uboot build/u-boot-rock-pi-4 -o 153-rp4
 
 # ESPRESSObin
 west build -b espressobin/armada3720 zephyr/samples/boards/globalscale/espressobin/netshell \
@@ -184,7 +184,7 @@ Tag `v0.29.4` odpovídá `ci-repo-cache:v0.29.4.*` v `.github/workflows/twister.
    gh workflow run lab-images.yml -R cz172638/zephyr --ref rk3399 -f boards=rock_pi_4 -f release=true
    gh run watch -R cz172638/zephyr
    gh run download -R cz172638/zephyr -n rock_pi_4-images -D rp4 && (cd rp4 && sha256sum -c SHA256SUMS)
-   gh release download lab-images-rk3399 -R cz172638/zephyr -p '152-*'
+   gh release download lab-images-rk3399 -R cz172638/zephyr -p '153-*'
    ```
 
 ### Jak workflow běží
@@ -215,7 +215,7 @@ Oba skripty jsem pustil z čistého workspace na hostiteli s SDK 1.0.1: nový kl
 
 | Skript | Čas | Výstup |
 |---|---|---|
-| `rock_pi_4.sh` | 2 min 17 s | `152-rp4-storage-sd.bin` (48 MiB), `-spi.bin`, README, SHA256SUMS |
+| `rock_pi_4.sh` | 2 min 17 s | tehdy image 152 (SPI + SD); od `ef03ba389` `153-rp4-emmc.bin` a `-sd-install.bin` |
 | `espressobin.sh` | 4 min 26 s | `150-lab-mods-{spi,sata}.bin`, `-uart.tgz`, 9× `150-*.llext` (kontrola symbolů `lab_mods` prošla), `lab.pl`, `sata-install.sh` |
 
 Kontejner ani Actions jsem nespouštěl, protože tady není Docker. Rozdíl proti hostiteli je jen v balíčcích (skript je doinstaluje) a v cestě k SDK/venv.
