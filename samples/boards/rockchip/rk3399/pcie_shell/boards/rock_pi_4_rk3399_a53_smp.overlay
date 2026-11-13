@@ -34,3 +34,8 @@
 		msi-interrupts = <16>;
 	};
 };
+
+/* SD slot host kept for its JTAG handling (force_jtag), no card disk */
+&sdmmc_disk {
+	status = "disabled";
+};
