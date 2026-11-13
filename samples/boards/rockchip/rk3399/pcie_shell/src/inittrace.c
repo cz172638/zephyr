@@ -10,10 +10,31 @@
 
 #include <zephyr/init.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/arch/cpu.h>
+#include <zephyr/sys/sys_io.h>
+
+/*
+ * With CONFIG_RK3399_EARLY_MARKS the marker also goes straight to UART2
+ * (identity mapped then), so it shows even when printk output is held back
+ * (shell log backend not started yet) or the console driver misbehaves.
+ */
+static void raw(const char *s)
+{
+#if defined(CONFIG_RK3399_EARLY_MARKS)
+	for (; *s != '\0'; s++) {
+		while ((sys_read32(0xff1a0014UL) & 0x20U) == 0U) {
+		}
+		sys_write32((uint32_t)*s, 0xff1a0000UL);
+	}
+#else
+	ARG_UNUSED(s);
+#endif
+}
 
 #define MARK(level, prio)                                                                          \
 	static int mark_##level##_##prio(void)                                                     \
 	{                                                                                          \
+		raw("\r\n[raw] init: " #level " " #prio "\r\n");                                    \
 		printk("init: " #level " " #prio "\n");                                            \
 		return 0;                                                                          \
 	}                                                                                          \
