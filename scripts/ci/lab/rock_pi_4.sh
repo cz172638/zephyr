@@ -7,7 +7,7 @@
 #
 #   <img>-<name>-emmc.bin        the image: eMMC from sector 0 (boots from SD too)
 #   <img>-<name>-boot.bin        its first 16 MiB (MBR, idbloader, FIT), for
-#                                "emmc update /EMMC:/<img>-<name>-boot.bin"
+#                                "fwupdate ymodem" or "emmc update <file>"
 #
 # Variables, beyond common.sh:
 #   IMG, NAME                  [153, rock_pi_4]
@@ -57,7 +57,7 @@ Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
 | file | use |
 |---|---|
 | \`$IMG-$NAME-emmc.bin\` | eMMC from sector 0 (also boots from a micro SD) |
-| \`$IMG-$NAME-boot.bin\` | boot area only (FAT with settings kept): copy to the eMMC FAT, then \`emmc update /EMMC:/$IMG-$NAME-boot.bin\` and reset |
+| \`$IMG-$NAME-boot.bin\` | boot area only (FAT with settings kept): \`fwupdate ymodem\` and send it (tio: ctrl-t y), or from a file: \`emmc update /EMMC:/$IMG-$NAME-boot.bin\`; then \`kernel reboot cold\` |
 
 BootROM order is SPI, eMMC, SD: an old image in the SPI flash wins, clear it
 with \`flash erase\`. The micro SD slot is for the JTAG breakout only.
