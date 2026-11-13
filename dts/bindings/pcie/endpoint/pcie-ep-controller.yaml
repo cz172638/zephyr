@@ -14,6 +14,15 @@ properties:
     default: 1
     description: Number of physical functions the controller exposes.
 
+  max-virtual-functions:
+    type: int
+    default: 0
+    description: |
+      SR-IOV virtual functions of physical function 0. EPF child nodes
+      address them by routing function number: max-functions ..
+      max-functions + max-virtual-functions - 1 (First VF Offset =
+      max-functions, stride 1).
+
   max-link-speed:
     type: int
     description: Highest PCIe generation to train to (1..4).

@@ -19,6 +19,17 @@ properties:
       Non-cacheable memory backing the BARs. Must be reachable by the PCIe
       controller (DDR carveout), not core-local TCM.
 
+  memory-offset:
+    type: int
+    default: 0
+    description: |
+      Start of this function's part of memory-region, so several functions
+      (e.g. SR-IOV VFs) can share one carveout.
+
+  memory-size:
+    type: int
+    description: Size of that part; the rest of the region when absent.
+
   bar-sizes:
     type: array
     default: [512, 512, 1024, 16384, 131072, 1048576]

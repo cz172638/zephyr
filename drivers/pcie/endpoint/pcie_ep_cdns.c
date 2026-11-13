@@ -26,7 +26,7 @@ int cdns_ep_write_header(const struct cdns_ep_core *core, uint8_t fn,
 	uint32_t did_reg;
 	uint32_t val;
 
-	if (fn >= CDNS_EP_MAX_FUNCS) {
+	if (fn >= CDNS_EP_MAX_RID) {
 		return -EINVAL;
 	}
 
@@ -49,6 +49,29 @@ int cdns_ep_write_header(const struct cdns_ep_core *core, uint8_t fn,
 	return 0;
 }
 
+/* aperture (size 2^(a+7), 128 B .. 4 GiB) and control field of a BAR setting */
+static int cdns_ep_bar_fields(uintptr_t phys, uint64_t size, uint32_t flags, uint32_t *aperture,
+			      uint32_t *ctrl)
+{
+	uint64_t sz = MAX(size, (uint64_t)CDNS_EP_BAR_MIN_SIZE);
+
+	sz = 1ULL << (64U - u64_count_leading_zeros(sz - 1U));
+	*aperture = (uint32_t)u64_count_trailing_zeros(sz) - 7U;
+	if (*aperture > 25U || (phys & (sz - 1U)) != 0U) {
+		return -EINVAL;
+	}
+	if ((flags & PCIE_EP_CDNS_BAR_IO) != 0U) {
+		*ctrl = CDNS_LM_BAR_CTRL_IO_32;
+	} else if ((flags & PCIE_EP_CDNS_BAR_64BIT) != 0U) {
+		*ctrl = ((flags & PCIE_EP_CDNS_BAR_PREFETCH) != 0U) ? CDNS_LM_BAR_CTRL_PF_MEM_64
+								    : CDNS_LM_BAR_CTRL_MEM_64;
+	} else {
+		*ctrl = ((flags & PCIE_EP_CDNS_BAR_PREFETCH) != 0U) ? CDNS_LM_BAR_CTRL_PF_MEM_32
+								    : CDNS_LM_BAR_CTRL_MEM_32;
+	}
+	return 0;
+}
+
 int cdns_ep_set_bar(const struct cdns_ep_core *core, uint8_t fn, uint8_t bar, uintptr_t phys,
 		    uint64_t size, uint32_t flags)
 {
@@ -57,7 +80,7 @@ int cdns_ep_set_bar(const struct cdns_ep_core *core, uint8_t fn, uint8_t bar, ui
 	uint32_t aperture;
 	uint32_t ctrl;
 	uint32_t cfg;
-	uint64_t sz;
+	int ret;
 
 	if ((fn >= CDNS_EP_MAX_FUNCS) || (bar > 5U) || (size == 0U)) {
 		return -EINVAL;
@@ -67,26 +90,9 @@ int cdns_ep_set_bar(const struct cdns_ep_core *core, uint8_t fn, uint8_t bar, ui
 		return -EINVAL;
 	}
 
-	/* BAR size is 2^(aperture + 7), 128 bytes .. 4 GiB (aperture 0..25). */
-	sz = MAX(size, (uint64_t)CDNS_EP_BAR_MIN_SIZE);
-	sz = 1ULL << (64U - u64_count_leading_zeros(sz - 1U));
-	aperture = (uint32_t)u64_count_trailing_zeros(sz) - 7U;
-	if (aperture > 25U) {
-		return -EINVAL;
-	}
-
-	if ((phys & (sz - 1U)) != 0U) {
-		return -EINVAL;
-	}
-
-	if ((flags & PCIE_EP_CDNS_BAR_IO) != 0U) {
-		ctrl = CDNS_LM_BAR_CTRL_IO_32;
-	} else if ((flags & PCIE_EP_CDNS_BAR_64BIT) != 0U) {
-		ctrl = ((flags & PCIE_EP_CDNS_BAR_PREFETCH) != 0U) ? CDNS_LM_BAR_CTRL_PF_MEM_64
-								   : CDNS_LM_BAR_CTRL_MEM_64;
-	} else {
-		ctrl = ((flags & PCIE_EP_CDNS_BAR_PREFETCH) != 0U) ? CDNS_LM_BAR_CTRL_PF_MEM_32
-								   : CDNS_LM_BAR_CTRL_MEM_32;
+	ret = cdns_ep_bar_fields(phys, size, flags, &aperture, &ctrl);
+	if (ret != 0) {
+		return ret;
 	}
 
 	cfg = cdns_ep_read(core, reg);
@@ -129,7 +135,7 @@ int cdns_ep_set_msi(const struct cdns_ep_core *core, uint8_t fn, uint8_t nr_vect
 	uint32_t mmc;
 	uint32_t ctrl;
 
-	if ((fn >= CDNS_EP_MAX_FUNCS) || (nr_vectors == 0U) || (nr_vectors > 32U) ||
+	if ((fn >= CDNS_EP_MAX_RID) || (nr_vectors == 0U) || (nr_vectors > 32U) ||
 	    !IS_POWER_OF_TWO(nr_vectors)) {
 		return -EINVAL;
 	}
@@ -225,4 +231,86 @@ void cdns_ep_hide_msix_cap(const struct cdns_ep_core *core)
 	/* Link the MSI capability straight to whatever follows MSI-X. */
 	msi = (msi & ~CDNS_MSI_CTRL_NEXT_MASK) | (msix & CDNS_MSI_CTRL_NEXT_MASK);
 	cdns_ep_write(core, CDNS_RP_BASE + CDNS_EP_FUNC_MSI_CAP, msi);
+}
+
+/*
+ * SR-IOV: the BAR layout (aperture, type) is one setting per physical
+ * function for all its VFs, in the VF BAR configuration registers; the
+ * inbound translation is per routing ID (vf_fn = PF + First VF Offset +
+ * index), in the same AT bank as the PF's (verified on RK3399, where the
+ * TRM only lists function 0). A VF BAR is set when its layout is unset
+ * or identical; -EBUSY when another VF already set it differently.
+ */
+int cdns_ep_set_vf_bar(const struct cdns_ep_core *core, uint8_t pf, uint8_t vf_fn, uint8_t bar,
+		       uintptr_t phys, uint64_t size, uint32_t flags)
+{
+	uint32_t reg = CDNS_LM_EP_VFUNC_BAR_CFG(pf, bar);
+	uint32_t b = (bar < 4U) ? bar : (bar - 4U);
+	uint32_t aperture, ctrl, cfg, want;
+	int ret;
+
+	if ((pf >= CDNS_EP_MAX_FUNCS) || (vf_fn >= CDNS_EP_MAX_RID) || (bar > 5U) ||
+	    (size == 0U) || ((flags & PCIE_EP_CDNS_BAR_IO) != 0U)) {
+		return -EINVAL;
+	}
+	if (((flags & PCIE_EP_CDNS_BAR_64BIT) != 0U) && (((bar & 1U) != 0U))) {
+		return -EINVAL;
+	}
+	ret = cdns_ep_bar_fields(phys, size, flags, &aperture, &ctrl);
+	if (ret != 0) {
+		return ret;
+	}
+
+	cfg = cdns_ep_read(core, reg);
+	want = CDNS_LM_BAR_APERTURE(b, aperture) | CDNS_LM_BAR_CTRL(b, ctrl);
+	if ((cfg & CDNS_LM_BAR_CTRL_MASK(b)) != CDNS_LM_BAR_CTRL(b, CDNS_LM_BAR_CTRL_DISABLED) &&
+	    (cfg & (CDNS_LM_BAR_APERTURE_MASK(b) | CDNS_LM_BAR_CTRL_MASK(b))) != want) {
+		return -EBUSY;
+	}
+	cfg &= ~(CDNS_LM_BAR_APERTURE_MASK(b) | CDNS_LM_BAR_CTRL_MASK(b));
+	cdns_ep_write(core, reg, cfg | want);
+
+	cdns_ep_write(core, CDNS_AT_IB_EP_BAR_ADDR0(core->variant->ib_bar_offset, vf_fn, bar),
+		      (uint32_t)phys);
+	cdns_ep_write(core, CDNS_AT_IB_EP_BAR_ADDR1(core->variant->ib_bar_offset, vf_fn, bar),
+		      (uint32_t)((uint64_t)phys >> 32));
+	return 0;
+}
+
+/* Drop the VF's translation; @p last also disables the layout for all VFs. */
+int cdns_ep_clear_vf_bar(const struct cdns_ep_core *core, uint8_t pf, uint8_t vf_fn, uint8_t bar,
+			 bool last)
+{
+	uint32_t reg = CDNS_LM_EP_VFUNC_BAR_CFG(pf, bar);
+	uint32_t b = (bar < 4U) ? bar : (bar - 4U);
+	uint32_t cfg;
+
+	if ((pf >= CDNS_EP_MAX_FUNCS) || (vf_fn >= CDNS_EP_MAX_RID) || (bar > 5U)) {
+		return -EINVAL;
+	}
+	if (last) {
+		cfg = cdns_ep_read(core, reg);
+		cfg &= ~(CDNS_LM_BAR_APERTURE_MASK(b) | CDNS_LM_BAR_CTRL_MASK(b));
+		cfg |= CDNS_LM_BAR_CTRL(b, CDNS_LM_BAR_CTRL_DISABLED);
+		cdns_ep_write(core, reg, cfg);
+	}
+	cdns_ep_write(core, CDNS_AT_IB_EP_BAR_ADDR0(core->variant->ib_bar_offset, vf_fn, bar), 0U);
+	cdns_ep_write(core, CDNS_AT_IB_EP_BAR_ADDR1(core->variant->ib_bar_offset, vf_fn, bar), 0U);
+	return 0;
+}
+
+/* SR-IOV capability of PF @p pf: Initial = Total VFs, VF Device ID. */
+void cdns_ep_sriov_setup(const struct cdns_ep_core *core, uint8_t pf, uint16_t total_vfs)
+{
+	uint32_t cap = CDNS_EP_FUNC_BASE(pf) + CDNS_EP_FUNC_SRIOV_CAP;
+
+	cdns_ep_write(core, cap + CDNS_SRIOV_TOTAL_VFS,
+		      (uint32_t)total_vfs | ((uint32_t)total_vfs << 16));
+}
+
+void cdns_ep_sriov_set_vf_did(const struct cdns_ep_core *core, uint8_t pf, uint16_t did)
+{
+	uint32_t reg = CDNS_EP_FUNC_BASE(pf) + CDNS_EP_FUNC_SRIOV_CAP + CDNS_SRIOV_VF_DID;
+
+	cdns_ep_write(core, reg, (cdns_ep_read(core, reg) & 0xffffU) | ((uint32_t)did << 16));
 }

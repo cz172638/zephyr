@@ -123,7 +123,23 @@ struct pcie_epc_features {
 	size_t align;
 	/** Number of physical functions the controller is configured for. */
 	uint8_t max_functions;
+	/**
+	 * SR-IOV virtual functions of physical function 0. They are addressed
+	 * by their routing function number in every call taking  func:
+	 * max_functions .. max_functions + max_vfs - 1 (First VF Offset =
+	 * max_functions, stride 1). A VF exists for the host only once it set
+	 * NumVFs and VF Enable; its BAR layout (size, type) is shared by all
+	 * VFs, so every VF has to set the same layout for a given BAR.
+	 */
+	uint8_t max_vfs;
 };
+
+/** @brief Whether routing function  func is an SR-IOV virtual function. */
+static inline bool pcie_epc_func_is_vf(const struct pcie_epc_features *feat, uint8_t func)
+{
+	return feat != NULL && func >= MAX(feat->max_functions, 1) &&
+	       func < MAX(feat->max_functions, 1) + feat->max_vfs;
+}
 
 /** @brief Interrupt types an EP can raise toward the root complex. */
 enum pcie_epc_irq_type {
