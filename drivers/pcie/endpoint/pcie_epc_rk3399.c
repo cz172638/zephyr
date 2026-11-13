@@ -88,6 +88,8 @@ struct epc_rk3399_data {
 	bool link_up;
 	uint16_t bme; /* per routing function, PF and VFs */
 	uint16_t vf_bar_users[6]; /* VFs holding the shared layout of each VF BAR */
+	struct k_timer sriov_timer; /* ARI Capable Hierarchy for the VFs, see link_work */
+	atomic_t arie_set;
 	uint32_t ups, downs, hot_resets;
 };
 
@@ -141,6 +143,19 @@ static void link_down(const struct device *dev)
 	}
 }
 
+/* 1 ms, ISR context: VF Enable without ARI Capable Hierarchy -> set it */
+static void sriov_timer_fn(struct k_timer *t)
+{
+	struct epc_rk3399_data *d = CONTAINER_OF(t, struct epc_rk3399_data, sriov_timer);
+	uint32_t reg = CDNS_EP_FUNC_SRIOV_CAP + CDNS_SRIOV_CTRL;
+	uint32_t ctl = cdns_ep_read(&d->core, reg);
+
+	if ((ctl & CDNS_SRIOV_CTRL_VFE) != 0U && (ctl & CDNS_SRIOV_CTRL_ARIE) == 0U) {
+		cdns_ep_write(&d->core, reg, ctl | CDNS_SRIOV_CTRL_ARIE);
+		atomic_set(&d->arie_set, 1);
+	}
+}
+
 static void link_work(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -181,18 +196,13 @@ static void link_work(struct k_work *work)
 	 * SR-IOV Control), but a host whose root port lacks ARI forwarding
 	 * never sets it: the VFs then answer config requests with garbage.
 	 * For VFs 1..7 the ARI and legacy routing IDs are the same (device 0),
-	 * so set it from the local side.
+	 * so sriov_timer sets it from the local side, within the 100 ms Linux
+	 * waits after VF Enable before it scans the VFs; this only reports it.
 	 */
-	if (DEV_CFG(dev)->max_vfs != 0U) {
-		uint32_t reg = CDNS_EP_FUNC_SRIOV_CAP + CDNS_SRIOV_CTRL;
-		uint32_t ctl = cdns_ep_read(&d->core, reg);
-
-		if ((ctl & CDNS_SRIOV_CTRL_VFE) != 0U && (ctl & CDNS_SRIOV_CTRL_ARIE) == 0U) {
-			cdns_ep_write(&d->core, reg, ctl | CDNS_SRIOV_CTRL_ARIE);
-			LOG_INF("%s: VFs enabled (%u), ARI Capable Hierarchy set locally", dev->name,
+	if (atomic_cas(&d->arie_set, 1, 0)) {
+		LOG_INF("%s: VFs enabled (%u), ARI Capable Hierarchy set locally", dev->name,
 				cdns_ep_read(&d->core, CDNS_EP_FUNC_SRIOV_CAP + CDNS_SRIOV_NUM_VFS) &
 					0xffffU);
-		}
 	}
 
 	/* Bus Master Enable of every enabled function */
@@ -276,6 +286,9 @@ static int epc_start(const struct device *dev)
 	rk_client_write(apb(dev), RK_CLIENT_CONFIG,
 			RK_WM16(RK_CLIENT_LINK_TRAIN, 1U) | RK_WM16(RK_CLIENT_CONF_ENABLE, 1U));
 
+	if (cfg->max_vfs != 0U) {
+		k_timer_start(&d->sriov_timer, K_MSEC(1), K_MSEC(1));
+	}
 	if (cfg->perst.port != NULL) {
 		ret = gpio_pin_get_dt(&cfg->perst);
 		if (ret < 0) {
@@ -303,6 +316,7 @@ static void epc_stop(const struct device *dev)
 	if (cfg->perst.port != NULL) {
 		(void)gpio_pin_interrupt_configure_dt(&cfg->perst, GPIO_INT_DISABLE);
 	}
+	k_timer_stop(&d->sriov_timer);
 	(void)k_work_cancel_delayable(&d->link_work);
 	link_down(dev);
 	rk_client_write(apb(dev), RK_CLIENT_CONFIG,
@@ -776,6 +790,7 @@ static int epc_rk3399_init(const struct device *dev)
 	d->irq_pci_addr = UINT64_MAX;
 	d->ob_map = BIT(OB_IRQ_REGION);
 	k_work_init_delayable(&d->link_work, link_work);
+	k_timer_init(&d->sriov_timer, sriov_timer_fn, NULL);
 
 	/* the slot's 3.3 V belongs to the host now */
 	if (cfg->slot_power.port != NULL) {
