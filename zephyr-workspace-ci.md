@@ -197,7 +197,7 @@ Tag `v0.29.4` odpovídá `ci-repo-cache:v0.29.4.*` v `.github/workflows/twister.
 
 ```
 lab-images.yml
-  build (matice espressobin, rock_pi_4; fail-fast: false), runs-on ubuntu-24.04
+  build (matice = scripts/ci/lab/*.sh; fail-fast: false), runs-on ubuntu-24.04
     container ghcr.io/zephyrproject-rtos/ci:v0.29.4  (root)
     checkout → ws/zephyr (depth 1)
     cache ws/modules + ws/fw  (klíč: west.yml + skript desky + common.sh)
@@ -213,7 +213,7 @@ lab-images.yml
   - Zúžit matici na jednu desku.
   - Místo `container:` udělat krok, který nejdřív uvolní disk (`rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android`) a pak spustí `docker run … ghcr.io/zephyrproject-rtos/ci:v0.29.4 bash -eu …` jako v sekci 3.
 - **Upstream workflowy** (twister, compliance) se ve větvi `epc` při pushi nespustí (reagují jen na `main`, `v*-branch`, `collab-*` a tagy `v*`). Na `main` forku se ale spouštějí, pokud nejsou vypnuté. Vypnutí přes `gh workflow disable` platí podle cesty souboru pro všechny větve. Postup je v `fork-ci-images.md`.
-- **Přidání cíle:** skript `scripts/ci/lab/<deska>.sh` podle vzoru `rock_pi_4.sh`, deska do `matrix.board` a výchozí hodnoty vstupu `boards` v `lab-images.yml`. Kód desky patří do `epc`. K1 a LS1012A ze staré větve `dwc-epc` (DesignWare knihovna) se do `epc` musí mergnout, ta větev v tomto workspace není.
+- **Přidání cíle:** stačí skript `scripts/ci/lab/<deska>.sh` podle vzoru `rock_pi_4.sh`. Matice buildu je seznam `scripts/ci/lab/*.sh` (kromě `common.sh`) v buildovaném commitu, takže pull request, který desku přidá, postaví stávající desky i tu novou. Kód desky patří do `epc`. K1 a LS1012A ze staré větve `dwc-epc` (DesignWare knihovna) se do `epc` musí mergnout, ta větev v tomto workspace není.
 - **Vztah ke starší větvi `ci`** (`fork-ci-images.md`): tam běží `ubuntu-24.04` s vlastní instalací SDK (`sdk_install`) a skripty žijí v orphan větvi. Tady je SDK z obrazu `ci` a skripty jsou přímo ve větvi desky, takže jeden checkout dá zdrojáky i postup. Obojí může běžet vedle sebe.
 - **Na železe** nic z CI ověřené není. Lokální běh skriptů z čistého workspace (sekce 5) ověřuje jen to, že se image sestaví.
 
