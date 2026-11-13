@@ -6,7 +6,8 @@
 # U-Boot TPL/SPL (no Rockchip blobs) + TF-A BL31 + Zephyr BL33. Outputs:
 #
 #   <img>-<name>-emmc.bin        the image: eMMC from sector 0 (boots from SD too)
-#   <img>-<name>-boot.bin        its first 16 MiB (MBR, idbloader, FIT), for
+#   <img>-<name>-boot.bin        its start up to the end of the FIT (MBR,
+#                                idbloader, FIT at 1 MiB), for
 #                                "fwupdate ymodem" or "emmc update <file>"
 #
 # Variables, beyond common.sh:
@@ -39,6 +40,9 @@ BL31=$WS/fw/tfa-rk3399/build/rk3399/release/bl31/bl31.elf
 log "U-Boot TPL/SPL"
 UB=$WS/build/u-boot-rock-pi-4
 make -C "$WS/fw/u-boot" O="$UB" rock-pi-4-rk3399_defconfig
+# FIT at 1 MiB instead of 8 MiB: the boot area image (-boot.bin) stays small
+"$WS/fw/u-boot/scripts/config" --file "$UB/.config" --set-val SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR 0x800
+make -C "$WS/fw/u-boot" O="$UB" olddefconfig
 make -C "$WS/fw/u-boot" O="$UB" -j"$JOBS" CROSS_COMPILE=aarch64-linux-gnu- BL31="$BL31"
 
 log "zephyr $IMG-$NAME"
@@ -49,7 +53,7 @@ mkdir -p "$OUT"
 perl "$ZEPHYR_BASE/scripts/rockchip/rk3399-image.pl" --bl31 "$BL31" \
 	--zephyr "$B/zephyr/zephyr.elf" --uboot "$UB" -o "$WS/build/$IMG-$NAME"
 cp "$WS/build/$IMG-$NAME-emmc.bin" "$OUT/"
-head -c 16M "$WS/build/$IMG-$NAME-emmc.bin" >"$OUT/$IMG-$NAME-boot.bin"
+cp "$WS/build/$IMG-$NAME-boot.bin" "$OUT/"
 
 readme "ROCK Pi 4 image $IMG-$NAME" <<EOT
 Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
@@ -57,7 +61,7 @@ Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
 | file | use |
 |---|---|
 | \`$IMG-$NAME-emmc.bin\` | eMMC from sector 0 (also boots from a micro SD) |
-| \`$IMG-$NAME-boot.bin\` | boot area only (FAT with settings kept): \`fwupdate ymodem\` and send it (tio: ctrl-t y), or from a file: \`emmc update /EMMC:/$IMG-$NAME-boot.bin\`; then \`kernel reboot cold\` |
+| \`$IMG-$NAME-boot.bin\` | boot area only (FAT with settings kept): \`fwupdate ymodem\` and send it (tio: ctrl-t y) (the whole -emmc.bin works too, cut to the boot area, but takes much longer), or from a file: \`emmc update /EMMC:/$IMG-$NAME-boot.bin\`; then \`kernel reboot cold\` |
 
 BootROM order is SPI, eMMC, SD: an old image in the SPI flash wins, clear it
 with \`flash erase\`. The micro SD slot is for the JTAG breakout only.

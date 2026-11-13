@@ -125,7 +125,7 @@
 };
 
 /*
- * eMMC module: boot medium (idbloader sector 64, FIT sector 16384) and
+ * eMMC module: boot medium (idbloader sector 64, FIT sector 2048) and
  * storage (FAT partition from 16 MiB: settings, LLEXT, images).
  */
 &sdhci {
