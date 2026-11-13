@@ -263,7 +263,7 @@
 		status = "disabled";
 	};
 	uart0: serial@ff180000 {
-		compatible = "rockchip,rk3399-uart", "ns16550";
+		compatible = "rockchip,rk3399-uart", "snps,dw-apb-uart", "ns16550";
 		reg = <0xff180000 0x100>;
 		interrupts = <GIC_SPI 99 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 		clock-frequency = <DT_FREQ_M(24)>;
@@ -272,7 +272,7 @@
 	};
 
 	uart1: serial@ff190000 {
-		compatible = "rockchip,rk3399-uart", "ns16550";
+		compatible = "rockchip,rk3399-uart", "snps,dw-apb-uart", "ns16550";
 		reg = <0xff190000 0x100>;
 		interrupts = <GIC_SPI 98 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 		clock-frequency = <DT_FREQ_M(24)>;
@@ -281,7 +281,7 @@
 	};
 
 	uart2: serial@ff1a0000 {
-		compatible = "rockchip,rk3399-uart", "ns16550";
+		compatible = "rockchip,rk3399-uart", "snps,dw-apb-uart", "ns16550";
 		reg = <0xff1a0000 0x100>;
 		interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 		clock-frequency = <DT_FREQ_M(24)>;
@@ -290,7 +290,7 @@
 	};
 
 	uart3: serial@ff1b0000 {
-		compatible = "rockchip,rk3399-uart", "ns16550";
+		compatible = "rockchip,rk3399-uart", "snps,dw-apb-uart", "ns16550";
 		reg = <0xff1b0000 0x100>;
 		interrupts = <GIC_SPI 101 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 		clock-frequency = <DT_FREQ_M(24)>;
@@ -305,7 +305,7 @@
 	};
 
 	uart4: serial@ff370000 {
-		compatible = "rockchip,rk3399-uart", "ns16550";
+		compatible = "rockchip,rk3399-uart", "snps,dw-apb-uart", "ns16550";
 		reg = <0xff370000 0x100>;
 		interrupts = <GIC_SPI 102 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 		clock-frequency = <DT_FREQ_M(24)>;
