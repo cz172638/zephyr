@@ -63,6 +63,7 @@ struct epc_rk3399_config {
 	struct pcie_epc_header hdr;
 	bool has_ids;
 	uint8_t max_functions;
+	uint8_t max_vfs; /* SR-IOV VFs of function 0, routing functions 1..max_vfs */
 	uint8_t msi_vectors;
 	bool autostart;
 };
@@ -81,15 +82,28 @@ struct epc_rk3399_data {
 	struct k_work_delayable link_work;
 	struct gpio_callback perst_cb;
 	struct pcie_epc_features features;
+	struct pcie_epc_features vf_features; /* no INTx */
 	bool active;
 	bool perst_asserted;
 	bool link_up;
-	uint8_t bme;
+	uint16_t bme; /* per routing function, PF and VFs */
+	uint16_t vf_bar_users[6]; /* VFs holding the shared layout of each VF BAR */
 	uint32_t ups, downs, hot_resets;
 };
 
 #define DEV_CFG(_dev)  ((const struct epc_rk3399_config *)(_dev)->config)
 #define DEV_DATA(_dev) ((struct epc_rk3399_data *)(_dev)->data)
+
+/* routing functions: the PF(s), then the SR-IOV VFs of function 0 */
+static inline uint8_t nfuncs(const struct device *dev)
+{
+	return DEV_CFG(dev)->max_functions + DEV_CFG(dev)->max_vfs;
+}
+
+static inline bool is_vf(const struct device *dev, uint8_t func)
+{
+	return func >= DEV_CFG(dev)->max_functions && func < nfuncs(dev);
+}
 
 static const struct cdns_ep_variant rk3399_cdns_variant = {
 	.ob_region_offset = 0x20U,
@@ -132,7 +146,6 @@ static void link_work(struct k_work *work)
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
 	struct epc_rk3399_data *d = CONTAINER_OF(dwork, struct epc_rk3399_data, link_work);
 	const struct device *dev = d->dev;
-	const struct epc_rk3399_config *cfg = dev->config;
 	uint32_t ist;
 
 	if (d->perst_asserted || !d->epc.started) {
@@ -164,7 +177,7 @@ static void link_work(struct k_work *work)
 	}
 
 	/* Bus Master Enable of every enabled function */
-	for (uint8_t fn = 0; fn < cfg->max_functions; fn++) {
+	for (uint8_t fn = 0; fn < nfuncs(dev); fn++) {
 		bool on;
 
 		if ((d->epc.func_map & BIT(fn)) == 0U && fn != 0U) {
@@ -292,8 +305,22 @@ static int epc_write_header(const struct device *dev, uint8_t func,
 		.interrupt_pin = hdr->interrupt_pin,
 	};
 
-	if (func >= DEV_CFG(dev)->max_functions) {
+	if (func >= nfuncs(dev)) {
 		return -EINVAL;
+	}
+	if (is_vf(dev, func)) {
+		uint32_t base = CDNS_EP_FUNC_BASE(func);
+
+		/*
+		 * A VF reads Vendor ID 0xffff and the VF Device ID of its PF
+		 * (one for all VFs); the rest of the header is per VF.
+		 */
+		cdns_ep_sriov_set_vf_did(&d->core, 0, hdr->device_id);
+		cdns_ep_write(&d->core, base + 0x08U,
+			      (uint32_t)h.revision_id | ((h.class_code & 0xffffffU) << 8));
+		cdns_ep_write(&d->core, base + 0x2cU,
+			      (uint32_t)h.subsys_vendor_id | ((uint32_t)h.subsys_id << 16));
+		return 0;
 	}
 	return cdns_ep_write_header(&d->core, func, &h);
 }
@@ -303,7 +330,7 @@ static int epc_set_bar(const struct device *dev, uint8_t func, const struct pcie
 	struct epc_rk3399_data *d = dev->data;
 	uint32_t flags = 0;
 
-	if (func >= DEV_CFG(dev)->max_functions) {
+	if (func >= nfuncs(dev)) {
 		return -EINVAL;
 	}
 	if (bar->flags & PCIE_EPC_BAR_IO) {
@@ -315,6 +342,15 @@ static int epc_set_bar(const struct device *dev, uint8_t func, const struct pcie
 	if (bar->flags & PCIE_EPC_BAR_PREFETCH) {
 		flags |= PCIE_EP_CDNS_BAR_PREFETCH;
 	}
+	if (is_vf(dev, func)) {
+		int ret = cdns_ep_set_vf_bar(&d->core, 0, func, bar->barno, (uintptr_t)bar->phys,
+					     bar->size, flags);
+
+		if (ret == 0) {
+			d->vf_bar_users[bar->barno] |= BIT(func);
+		}
+		return ret;
+	}
 	return cdns_ep_set_bar(&d->core, func, bar->barno, (uintptr_t)bar->phys, bar->size,
 			       flags);
 }
@@ -323,7 +359,12 @@ static void epc_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
 {
 	struct epc_rk3399_data *d = dev->data;
 
-	if (func < DEV_CFG(dev)->max_functions) {
+	if (is_vf(dev, func) && barno < 6U) {
+		d->vf_bar_users[barno] &= ~BIT(func);
+		(void)cdns_ep_clear_vf_bar(&d->core, 0, func, barno, d->vf_bar_users[barno] == 0U);
+		return;
+	}
+	if (func < nfuncs(dev)) {
 		(void)cdns_ep_clear_bar(&d->core, func, barno);
 	}
 }
@@ -387,7 +428,7 @@ static int epc_set_msi(const struct device *dev, uint8_t func, uint8_t nr_irqs)
 {
 	struct epc_rk3399_data *d = dev->data;
 
-	if (func >= DEV_CFG(dev)->max_functions) {
+	if (func >= nfuncs(dev)) {
 		return -EINVAL;
 	}
 	return cdns_ep_set_msi(&d->core, func, nr_irqs);
@@ -398,7 +439,7 @@ static int epc_get_msi(const struct device *dev, uint8_t func)
 	struct epc_rk3399_data *d = dev->data;
 	uint32_t ctrl;
 
-	if (func >= DEV_CFG(dev)->max_functions) {
+	if (func >= nfuncs(dev)) {
 		return -EINVAL;
 	}
 	ctrl = cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + CDNS_EP_FUNC_MSI_CAP);
@@ -412,6 +453,9 @@ static int raise_intx(const struct device *dev, uint8_t func)
 {
 	struct epc_rk3399_data *d = dev->data;
 
+	if (is_vf(dev, func)) {
+		return -ENOTSUP; /* VFs have no INTx (SR-IOV) */
+	}
 	if (cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG) &
 	    PCI_COMMAND_INTX_DIS) {
 		return -EINVAL;
@@ -477,7 +521,7 @@ static int epc_cfg_read(const struct device *dev, uint8_t func, uint32_t offset,
 {
 	struct epc_rk3399_data *d = dev->data;
 
-	if ((offset & 3U) != 0U || offset >= 0x1000U || func >= DEV_CFG(dev)->max_functions) {
+	if ((offset & 3U) != 0U || offset >= 0x1000U || func >= nfuncs(dev)) {
 		return -EINVAL;
 	}
 	*val = cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + offset);
@@ -488,7 +532,7 @@ static int epc_cfg_write(const struct device *dev, uint8_t func, uint32_t offset
 {
 	struct epc_rk3399_data *d = dev->data;
 
-	if ((offset & 3U) != 0U || offset >= 0x1000U || func >= DEV_CFG(dev)->max_functions) {
+	if ((offset & 3U) != 0U || offset >= 0x1000U || func >= nfuncs(dev)) {
 		return -EINVAL;
 	}
 	cdns_ep_write(&d->core, CDNS_EP_FUNC_BASE(func) + offset, val);
@@ -499,7 +543,10 @@ static const struct pcie_epc_features *epc_get_features(const struct device *dev
 {
 	struct epc_rk3399_data *d = dev->data;
 
-	return func < DEV_CFG(dev)->max_functions ? &d->features : NULL;
+	if (is_vf(dev, func)) {
+		return &d->vf_features;
+	}
+	return func < nfuncs(dev) ? &d->features : NULL;
 }
 
 static bool epc_link_up(const struct device *dev)
@@ -608,7 +655,7 @@ static int sh_id_get(const struct device *dev, pcie_bdf_t bdf, struct pcie_shell
 	uint8_t fn = PCIE_BDF_TO_FUNC(bdf);
 	uint32_t v;
 
-	if (!d->active || fn >= DEV_CFG(dev)->max_functions) {
+	if (!d->active || fn >= nfuncs(dev)) {
 		return -EINVAL;
 	}
 	v = cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(fn));
@@ -737,6 +784,15 @@ static int epc_rk3399_init(const struct device *dev)
 			(void)cdns_ep_clear_bar(&d->core, fn, bar);
 		}
 	}
+	/* the VF BARs too (reset: 3 x 64-bit 4 MiB), and their translations */
+	for (uint8_t fn = 1; fn <= 8U; fn++) {
+		for (uint8_t bar = 0; bar < 6U; bar++) {
+			(void)cdns_ep_clear_vf_bar(&d->core, 0, fn, bar, true);
+		}
+	}
+	if (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_SRIOV)) {
+		cdns_ep_sriov_setup(&d->core, 0, cfg->max_vfs);
+	}
 
 	/* MSI-X is advertised but not functional on this revision. */
 	cdns_ep_hide_msix_cap(&d->core);
@@ -777,7 +833,10 @@ static int epc_rk3399_init(const struct device *dev)
 		.intx_capable = true,
 		.align = 256,
 		.max_functions = cfg->max_functions,
+		.max_vfs = cfg->max_vfs,
 	};
+	d->vf_features = d->features;
+	d->vf_features.intx_capable = false;
 
 	ret = pcie_epc_init_common(dev, &ob, cfg->autostart);
 	if (ret != 0) {
@@ -802,6 +861,11 @@ static int epc_rk3399_init(const struct device *dev)
 #define EPC_RK3399_INIT(n)                                                                         \
 	BUILD_ASSERT(DT_INST_PROP(n, max_functions) >= 1 &&                                        \
 		     DT_INST_PROP(n, max_functions) <= CDNS_EP_MAX_FUNCS);                         \
+	BUILD_ASSERT(DT_INST_PROP(n, max_virtual_functions) == 0 ||                               \
+		     (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_SRIOV) &&                                    \
+		      DT_INST_PROP(n, max_functions) == 1 &&                                         \
+		      DT_INST_PROP(n, max_virtual_functions) <= 8),                                \
+		     "max-virtual-functions: 1..8 VFs of the one PF, needs PCIE_EPC_RK3399_SRIOV"); \
 	static const struct epc_rk3399_config epc_rk3399_config_##n = {                            \
 		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(apb, DT_DRV_INST(n)),                           \
 		.mem_base = DT_INST_REG_ADDR_BY_NAME(n, mem),                                      \
@@ -842,6 +906,7 @@ static int epc_rk3399_init(const struct device *dev)
 			.interrupt_pin = 1,                                                        \
 		},                                                                                 \
 		.max_functions = DT_INST_PROP(n, max_functions),                                   \
+		.max_vfs = DT_INST_PROP(n, max_virtual_functions),                                 \
 		.msi_vectors = DT_INST_PROP(n, msi_vectors),                                       \
 		.autostart = !DT_INST_PROP(n, zephyr_no_autostart),                                \
 	};                                                                                         \

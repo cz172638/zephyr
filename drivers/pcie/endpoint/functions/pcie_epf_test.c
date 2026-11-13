@@ -816,8 +816,11 @@ static int epf_test_init(const struct device *dev)
 		.epc = PCIE_EPF_DT_INST_EPC(n),                                                    \
 		.func = PCIE_EPF_DT_INST_FUNC(n),                                                  \
 		.hdr = PCIE_EPF_DT_HEADER(DT_DRV_INST(n)),                                         \
-		.mem_base = DT_REG_ADDR(DT_INST_PHANDLE(n, memory_region)),                        \
-		.mem_size = DT_REG_SIZE(DT_INST_PHANDLE(n, memory_region)),                        \
+		.mem_base = DT_REG_ADDR(DT_INST_PHANDLE(n, memory_region)) +                       \
+			    DT_INST_PROP(n, memory_offset),                                        \
+		.mem_size = DT_INST_PROP_OR(n, memory_size,                                        \
+					    DT_REG_SIZE(DT_INST_PHANDLE(n, memory_region)) -       \
+					    DT_INST_PROP(n, memory_offset)),                       \
 		.bar_size = {EPF_TEST_BAR_SIZE(n, 0), EPF_TEST_BAR_SIZE(n, 1),                     \
 			     EPF_TEST_BAR_SIZE(n, 2), EPF_TEST_BAR_SIZE(n, 3),                     \
 			     EPF_TEST_BAR_SIZE(n, 4), EPF_TEST_BAR_SIZE(n, 5)},                    \

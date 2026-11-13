@@ -125,7 +125,8 @@ int pcie_epc_claim_function(const struct device *dev, uint8_t func)
 	const struct pcie_epc_features *feat = pcie_epc_get_features(dev, func);
 	int ret = 0;
 
-	if (func >= 32 || (feat != NULL && func >= MAX(feat->max_functions, 1))) {
+	if (func >= 32 ||
+	    (feat != NULL && func >= MAX(feat->max_functions, 1) + feat->max_vfs)) {
 		return -EINVAL;
 	}
 

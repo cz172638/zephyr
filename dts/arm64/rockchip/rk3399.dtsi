@@ -142,7 +142,7 @@
 		reset-names = "core", "mgmt", "mgmt-sticky", "pipe",
 			      "pm", "pclk", "aclk", "phy";
 		rockchip,grf = <&grf>;
-		max-functions = <8>;
+		max-functions = <1>; /* one PF, up to 8 SR-IOV VFs (TRM) */
 		#address-cells = <1>;
 		#size-cells = <0>;
 		status = "disabled";

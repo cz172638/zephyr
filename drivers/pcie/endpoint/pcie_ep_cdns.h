@@ -25,6 +25,11 @@
 #define CDNS_EP_FUNC_MSI_CAP		0x90U
 #define CDNS_EP_FUNC_MSIX_CAP		0xb0U
 #define CDNS_EP_FUNC_PCIE_CAP		0xc0U
+#define CDNS_EP_FUNC_SRIOV_CAP		0x200U
+#define  CDNS_SRIOV_TOTAL_VFS		0x0cU /* [15:0] initial, [31:16] total */
+#define  CDNS_SRIOV_CTRL		0x08U /* [0] VF enable, [3] VF MSE */
+#define  CDNS_SRIOV_NUM_VFS		0x10U
+#define  CDNS_SRIOV_VF_DID		0x18U /* [31:16] */
 
 /* Local management */
 #define CDNS_LM_BASE			0x100000U
@@ -45,6 +50,9 @@
 #define  CDNS_LM_BAR_CTRL_PF_MEM_32	0x5U
 #define  CDNS_LM_BAR_CTRL_MEM_64	0x6U
 #define  CDNS_LM_BAR_CTRL_PF_MEM_64	0x7U
+/* BARs of the VFs of physical function pf: one setting for all its VFs */
+#define CDNS_LM_EP_VFUNC_BAR_CFG(pf, bar) \
+	(CDNS_LM_BASE + 0x280U + ((uint32_t)(pf) * 8U) + (((bar) < 4U) ? 0U : 4U))
 #define CDNS_LM_EP_FUNC_CFG		(CDNS_LM_BASE + 0x2c0U)
 
 /* Root port configuration space (also the local view of function 0) */
@@ -80,6 +88,8 @@
 #define CDNS_MSI_DATA_64		0x0cU
 
 #define CDNS_EP_MAX_FUNCS		8U
+/* Routing IDs a core can address (PFs and VFs, ARI) */
+#define CDNS_EP_MAX_RID			64U
 #define CDNS_EP_BAR_MIN_SIZE		128U
 
 /**
@@ -123,6 +133,12 @@ int cdns_ep_write_header(const struct cdns_ep_core *core, uint8_t fn,
 int cdns_ep_set_bar(const struct cdns_ep_core *core, uint8_t fn, uint8_t bar, uintptr_t phys,
 		    uint64_t size, uint32_t flags);
 int cdns_ep_clear_bar(const struct cdns_ep_core *core, uint8_t fn, uint8_t bar);
+int cdns_ep_set_vf_bar(const struct cdns_ep_core *core, uint8_t pf, uint8_t vf_fn, uint8_t bar,
+		       uintptr_t phys, uint64_t size, uint32_t flags);
+int cdns_ep_clear_vf_bar(const struct cdns_ep_core *core, uint8_t pf, uint8_t vf_fn, uint8_t bar,
+			 bool last);
+void cdns_ep_sriov_setup(const struct cdns_ep_core *core, uint8_t pf, uint16_t total_vfs);
+void cdns_ep_sriov_set_vf_did(const struct cdns_ep_core *core, uint8_t pf, uint16_t did);
 int cdns_ep_set_msi(const struct cdns_ep_core *core, uint8_t fn, uint8_t nr_vectors);
 uint8_t cdns_ep_ob_nbits(const struct cdns_ep_core *core, uint64_t pci_addr, uint64_t size);
 void cdns_ep_ob_program(const struct cdns_ep_core *core, uint8_t fn, uint32_t region,
