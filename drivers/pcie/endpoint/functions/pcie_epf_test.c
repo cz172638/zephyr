@@ -573,7 +573,7 @@ static int epf_test_setup_bars(const struct device *dev)
 }
 
 /* instances, for the header settings and the epf_hdr shell */
-static const struct device *inst[4];
+static const struct device *inst[9]; /* PF + up to 8 VFs */
 static int n_inst;
 
 #ifdef CONFIG_PCIE_EPF_TEST_SETTINGS
