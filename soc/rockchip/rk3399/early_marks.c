@@ -16,6 +16,8 @@
  *      H    uart_poll_out() through the driver (its own mapping)
  *      "[printk]" through printk, then i
  *   z  APPLICATION 99   after the boot banner
+ *   S..s  POST_KERNEL 1: around k_msleep(10), i.e. whether the system
+ *      timer interrupt arrives (the first sleep of a boot hangs if not)
  */
 
 #include <stdint.h>
@@ -23,6 +25,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/init.h>
+#include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/platform/hooks.h>
 #include <zephyr/arch/cpu.h>
@@ -89,6 +92,17 @@ static int mark_post(void)
 	return 0;
 }
 SYS_INIT(mark_post, POST_KERNEL, 0);
+
+static int mark_sleep(void)
+{
+	mark('S');
+	k_msleep(10);
+	mark('s');
+	mark('\r');
+	mark('\n');
+	return 0;
+}
+SYS_INIT(mark_sleep, POST_KERNEL, 1);
 
 static int mark_app(void)
 {
