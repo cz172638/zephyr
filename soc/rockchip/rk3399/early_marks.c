@@ -11,12 +11,19 @@
  *   d  PRE_KERNEL_1 51   after syscons and the console UART (50)
  *   e  PRE_KERNEL_2 0
  *   f  PRE_KERNEL_2 99   after the system timer
- *   g  POST_KERNEL 0
+ *   g  POST_KERNEL 0 (first thing in the main thread), followed by
+ *      R/N  console UART device ready / not ready
+ *      H    uart_poll_out() through the driver (its own mapping)
+ *      "[printk]" through printk, then i
+ *   z  APPLICATION 99   after the boot banner
  */
 
 #include <stdint.h>
 
+#include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/init.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/platform/hooks.h>
 #include <zephyr/arch/cpu.h>
 #include <zephyr/sys/sys_io.h>
@@ -66,9 +73,28 @@ BAND('f', PRE_KERNEL_2, 99);
 
 static int mark_post(void)
 {
+	const struct device *con = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+
 	mark('g');
+	if (device_is_ready(con)) {
+		mark('R');
+		uart_poll_out(con, 'H');
+	} else {
+		mark('N');
+	}
+	printk("[printk]");
+	mark('i');
 	mark('\r');
 	mark('\n');
 	return 0;
 }
 SYS_INIT(mark_post, POST_KERNEL, 0);
+
+static int mark_app(void)
+{
+	mark('z');
+	mark('\r');
+	mark('\n');
+	return 0;
+}
+SYS_INIT(mark_app, APPLICATION, 99);
