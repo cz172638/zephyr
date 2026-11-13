@@ -10,7 +10,7 @@
 #                                -emmc.bin: "emmc update /SD:/<img>-<name>-emmc.bin"
 #
 # Variables, beyond common.sh:
-#   IMG, NAME                  [153, rp4]
+#   IMG, NAME                  [153, rock_pi_4]
 #   TFA_URL/TFA_SHA, UBOOT_URL/UBOOT_SHA
 
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -20,7 +20,7 @@ TFA_SHA=${TFA_SHA:-e09b846ea342644ec25b51accec8375249d7fc48}       # rk3399-m0-n
 UBOOT_URL=${UBOOT_URL:-https://github.com/cz172638/u-boot}
 UBOOT_SHA=${UBOOT_SHA:-ae095c516eea36b7b9b2c279557f1ca43d0b6f88}   # rk3399-perilp-m0
 IMG=${IMG:-153}
-NAME=${NAME:-rp4}
+NAME=${NAME:-$BOARD}
 APP=$ZEPHYR_BASE/samples/boards/rockchip/rk3399/pcie_shell
 
 host_deps gcc-aarch64-linux-gnu make git bc bison flex swig python3-dev \

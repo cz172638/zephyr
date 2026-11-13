@@ -5,14 +5,15 @@
 # ESPRESSObin v5 lab image: netshell with every PCIe EP function, SATA
 # and the lab agent; LLEXT debug modules. Outputs in $OUT:
 #
-#   <img>-<name>-spi.bin    SPI NOR (TF-A + WTMI + Zephyr BL33)
-#   <img>-<name>-sata.bin   SATA boot (sata-install.sh)
-#   <img>-<name>-uart.tgz   UART recovery images (mox-imager / WtpDownload)
-#   <img>-*.llext           debug modules (lab mod load)
+#   <img>-<name>-spi.bin        SPI NOR (TF-A + WTMI + Zephyr BL33)
+#   <img>-<name>-sata.bin       SATA boot (sata-install.sh)
+#   <img>-<name>-uart.tgz       UART recovery images (mox-imager / WtpDownload)
+#   <img>-<name>-<mod>.llext    debug modules (lab mod load; the image check
+#                               is the embedded number, not the file name)
 #
 # Variables, beyond common.sh:
 #   IMG       image number, also the LLEXT prefix  [CONFIG_LAB_IMAGE of the snippet]
-#   NAME      image name                            [lab-mods]
+#   NAME      file name part                        [espressobin]
 #   CLOCKS    CPU_800_DDR_800 or CPU_1000_DDR_800    [CPU_800_DDR_800]
 #   DDR_TOPOLOGY                                    [2 (1 GiB, v5)]
 #   NETSHELL_AUTHORIZED_KEY   PEM public key text (ssh-keygen -e -m PKCS8)
@@ -35,7 +36,7 @@ SNIPPETS="espressobin-pcie-ep espressobin-pcie-nvme espressobin-sata espressobin
 	  espressobin-nvme-target espressobin-fabric espressobin-lab"
 APP=$ZEPHYR_BASE/samples/boards/globalscale/espressobin/netshell
 IMG=${IMG:-$(sed -n 's/^CONFIG_LAB_IMAGE=//p' "$ZEPHYR_BASE/snippets/espressobin-lab/espressobin-lab.conf")}
-NAME=${NAME:-lab-mods}
+NAME=${NAME:-$BOARD}
 CLOCKS=${CLOCKS:-CPU_800_DDR_800}
 DDR_TOPOLOGY=${DDR_TOPOLOGY:-2}
 
@@ -86,7 +87,10 @@ for dev in SPINOR SATA; do
 	SATA) cp "$REL/flash-image.bin" "$OUT/$IMG-$NAME-sata.bin" ;;
 	esac
 done
-cp "$B"/llext/"$IMG"-*.llext "$OUT/"
+for m in "$B"/llext/"$IMG"-*.llext; do
+	m=$(basename "$m")
+	cp "$B/llext/$m" "$OUT/$IMG-$NAME-${m#"$IMG"-}"
+done
 cp "$ZEPHYR_BASE/boards/globalscale/espressobin/support/sata-install.sh" "$OUT/"
 cp "$ZEPHYR_BASE/scripts/lab/lab.pl" "$OUT/"
 
@@ -99,7 +103,7 @@ Snippets: $(echo $SNIPPETS), EXTRA_CONF_FILE=pcie-ep-uartlog.conf.
 | \`$IMG-$NAME-spi.bin\` | SPI NOR: U-Boot \`sf probe; sf update\` or \`fwupdate\` from netshell |
 | \`$IMG-$NAME-sata.bin\` | SATA boot: \`sata-install.sh\` |
 | \`$IMG-$NAME-uart.tgz\` | UART recovery (mox-imager) |
-| \`$IMG-*.llext\` | debug modules: \`lab mod load\` (prefix must match the image) |
+| \`$IMG-$NAME-*.llext\` | debug modules: \`lab mod load\` (built for image $IMG only) |
 | \`lab.pl\` | lab agent host client (UDP 7777) |
 EOT
 checksums
