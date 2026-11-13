@@ -1,0 +1,122 @@
+# Copyright (c) 2026 Jiri Kastner
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lab images (ESPRESSObin, ROCK Pi 4) in the Zephyr CI container.
+# Each board is scripts/ci/lab/<board>.sh; the same script runs locally.
+#
+# Repository variable (not secret): NETSHELL_AUTHORIZED_KEY, PEM public key
+# for the ESPRESSObin netshell (ssh-keygen -e -m PKCS8 -f ~/.ssh/id_rsa.pub).
+
+name: lab-images
+
+on:
+  push:
+    branches: [rk3399, espressobin]
+    paths:
+      - 'arch/**'
+      - 'boards/**'
+      - 'drivers/**'
+      - 'dts/**'
+      - 'include/**'
+      - 'kernel/**'
+      - 'lib/**'
+      - 'samples/boards/**'
+      - 'scripts/ci/lab/**'
+      - 'scripts/rockchip/**'
+      - 'snippets/**'
+      - 'soc/**'
+      - 'subsys/**'
+      - 'west.yml'
+      - '.github/workflows/lab-images.yml'
+  workflow_dispatch:
+    inputs:
+      boards:
+        description: 'boards (space separated)'
+        default: 'espressobin rock_pi_4'
+      release:
+        description: 'publish as release lab-images-<branch>'
+        type: boolean
+        default: false
+
+concurrency:
+  group: lab-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      # matches the ci-repo-cache tag of .github/workflows/twister.yaml (SDK 1.0.1)
+      image: ghcr.io/zephyrproject-rtos/ci:v0.29.4
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [espressobin, rock_pi_4]
+    env:
+      WS: ${{ github.workspace }}/ws
+      OUT: ${{ github.workspace }}/out
+      NETSHELL_AUTHORIZED_KEY: ${{ vars.NETSHELL_AUTHORIZED_KEY }}
+    steps:
+      - name: selected
+        id: sel
+        shell: bash
+        run: |
+          b=" ${{ github.event.inputs.boards || 'espressobin rock_pi_4' }} "
+          [[ $b == *" ${{ matrix.board }} "* ]] && echo run=1 >> "$GITHUB_OUTPUT" || true
+
+      - name: checkout
+        if: steps.sel.outputs.run
+        uses: actions/checkout@v4
+        with:
+          path: ws/zephyr
+          fetch-depth: 1
+
+      - name: cache modules and firmware trees
+        if: steps.sel.outputs.run
+        uses: actions/cache@v4
+        with:
+          path: |
+            ws/modules
+            ws/fw
+          key: lab-${{ matrix.board }}-${{ hashFiles('ws/zephyr/west.yml', format('ws/zephyr/scripts/ci/lab/{0}.sh', matrix.board), 'ws/zephyr/scripts/ci/lab/common.sh') }}
+
+      - name: build
+        if: steps.sel.outputs.run
+        shell: bash
+        run: bash -eu ws/zephyr/scripts/ci/lab/${{ matrix.board }}.sh
+
+      - name: upload
+        if: steps.sel.outputs.run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.board }}-images
+          path: out/
+          retention-days: 30
+
+  release:
+    if: github.event.inputs.release == 'true'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: release lab-images-${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: lab-images-${{ github.ref_name }}
+        run: |
+          gh release delete "$TAG" -R "$GITHUB_REPOSITORY" -y --cleanup-tag || true
+          for d in dl/*-images; do
+            b=$(basename "$d" -images)
+            mv "$d/README.md" "$d/README-$b.md"
+            mv "$d/SHA256SUMS" "$d/SHA256SUMS-$b"
+          done
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
+            --target "$GITHUB_SHA" --title "$TAG" \
+            --notes "Lab images from ${GITHUB_SHA::12}" dl/*/*
