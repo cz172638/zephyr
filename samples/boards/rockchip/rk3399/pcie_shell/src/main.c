@@ -35,7 +35,7 @@ static struct fs_mount_t sd_mnt = {
 };
 static int emmc_mount_ret = -ENODEV;
 
-/* after the SDHC drivers (70), before the PCIe role (81) */
+/* after the SDHC hosts (70), the disks (72) and FAT (74); before the PCIe role (81) */
 static int emmc_mount(void)
 {
 	emmc_mount_ret = fs_mount(&emmc_mnt);

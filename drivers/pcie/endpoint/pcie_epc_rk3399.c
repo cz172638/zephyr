@@ -30,6 +30,7 @@
 #endif
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/barrier.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
@@ -446,6 +447,7 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 		d->irq_pci_fn = func;
 	}
 	sys_write16(data, d->irq_va + (mm_reg_t)(pci_addr & 0xffU));
+	barrier_dsync_fence_full(); /* normal NC mapping: push the MSI write out */
 	k_spin_unlock(&d->lock, key);
 	return 0;
 }
@@ -735,8 +737,12 @@ static int epc_rk3399_init(const struct device *dev)
 	if (ret != 0) {
 		return ret;
 	}
-	device_map(&d->irq_va, cfg->mem_base + OB_IRQ_REGION * OB_REGION, OB_REGION,
-		   K_MEM_CACHE_NONE);
+	/*
+	 * The whole outbound window is identity mapped (normal non-cacheable)
+	 * by soc/rockchip/rk3399/mmu_regions.c, as pcie_epc_core hands out
+	 * cpu addresses as pointers; mapping region 0 again would collide.
+	 */
+	d->irq_va = (mm_reg_t)(cfg->mem_base + OB_IRQ_REGION * OB_REGION);
 
 	if (cfg->perst.port != NULL) {
 		if (!gpio_is_ready_dt(&cfg->perst)) {
