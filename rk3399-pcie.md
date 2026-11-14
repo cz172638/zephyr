@@ -250,3 +250,19 @@ Host (Linux): `modprobe pci-pf-stub; echo "1d87 3399" > /sys/bus/pci/drivers/pci
 **pci_endpoint_test na PF:** BARy a zápis do BARů OK, MSI OK (`pcitest -i 1` nejdřív, jinak MSI Enable chybí). `-w` (EP čte z hostu) OK. `-r` (EP zapisuje do hostu): `memcpy` přes Normal-NC OB okno → SError (AXI slave odmítne burst zápisy). dbg25: okno jako Device-nGnRE a kopie po 64bit slovech (`ob_mmio_only`), **zatím netestováno**.
 
 **Další:** dbg25 `-r/-w/-c`, pak `pcitest` na VF (`new_id 1d87 339a`, `-i 1`, `-b 0`, `-m 1`); `devmem` na už mapovanou oblast panikaří (oprava v devmem shellu); pro debug carveoutu `epmem`.
+
+## 12. Interconnect (FlexNoC) a PCIe (TRM Part 1, kap. 8)
+
+RK3399 je Arteris FlexNoC (QoS `CoreTypeId 0x04`, probe `0x06`, error logger `0x0d`, RevisionId `0x0001aa00`) + CCI-500 jen pro clustery. PCIe je master NIU 11 v perihp.
+
+| Blok | Adresa | Pro PCIe |
+|---|---|---|
+| QoS `pcie` | `0xffa60080` | po resetu **Regulator**, 1000 MB/s @ 300 MHz, prio 1, saturation 1024 B; zápisy hostu do BARů a uDMA |
+| QoS `perihp_nsp` | `0xffad8080` | perihp → DDR: Regulator **100 MB/s** @ 400 MHz, prio 2 (sdílí pcie, gmac, usb, emmc, sd) |
+| probe `perihp_probe_msch0/1` | `0xffa86800` / `0xffa8e800` | čítače BYTE (`0x08`), PKT (`0x06`), CYCLE; `Counters_n_Src` od `0x138`, `_Val` `0x13c` (podle TRM; RK3308 TRM má tentýž posun, PX30 `0x140`, ověřit) |
+| error logger `slv_err_logger0` | `0xffa64000` | všichni masteři (kromě PMU M0) → slave: tady skončí chyba CPU zápisu do OB okna |
+| `msch_err_logger0/1` | `0xffa87c80` / `0xffa8fc80` | všichni → DDR (např. uDMA na špatnou adresu) |
+
+Regulator nezastavuje provoz (to dělá Limiter), jen nad rozpočtem sníží prioritu (hurry/urgency). Pro PCIe pod zátěží DDR to znamená nižší prioritu, ne strop propustnosti. QoS se ztrácí při vypnutí PD_PERIHP → nastavovat v EPC driveru po zapnutí domény.
+
+Error logger: `ErrVld 0x0c`, `ErrClr 0x10`, `ErrLog0 0x14` (ErrCode [10:8]: SLV, DEC, UNS, DISC, SEC, HIDE, TMO; Opc [4:1]: RD, RDW, RDL, RDX, WR, WRW, WRC…), `ErrLog3 0x20` adresa, `ErrLog5 0x28` master ID [15:10] a AXI ID. `rk3399_noc_errlog_dump()` (větev `claude/rk3399-noc-errlog`) je vypíše; pcie_shell to dělá při každé fatální chybě (dbg26).
