@@ -50,6 +50,8 @@ my $fat_start = 32768;
 my @fat_add;
 my $want_spi = 0;
 my $installer = 0;
+my $maskrom;
+my $nm = $ENV{NM} // "aarch64-linux-gnu-nm";
 
 GetOptions(
 	'bl31=s' => \$bl31,
@@ -62,11 +64,14 @@ GetOptions(
 	'fat-add=s' => \@fat_add,
 	'spi!' => \$want_spi,
 	'installer!' => \$installer,
+	'maskrom=s' => \$maskrom,
+	'nm=s' => \$nm,
 	'o|output=s' => \$out,
 ) && $bl31 && $zephyr && $ub && $out
 	or die "usage: $0 --bl31 bl31.elf --zephyr zephyr.elf --uboot <u-boot build dir> "
 	     . "-o <prefix> [--mkimage path] [--spi-offset 0xe0000] [--fdt-load 0x07f00000]\n"
-	     . "  [--fat-mb 32 (0: no partition)] [--fat-add file]... [--installer] [--spi]\n";
+	     . "  [--fat-mb 32 (0: no partition)] [--fat-add file]... [--installer] [--spi]\n"
+	     . "  [--maskrom <u-boot build dir with ROCKCHIP_MASKROM_IMAGE> [--nm aarch64-linux-gnu-nm]]\n";
 
 $mkimage //= "$ub/tools/mkimage";
 for my $f ($bl31, $zephyr, "$ub/idbloader.img", "$ub/u-boot.dtb", $mkimage,
@@ -182,6 +187,34 @@ close $h;
 my $itb = "$out.itb";
 system($mkimage, '-q', '-E', '-B', '0x200', '-f', $its, $itb) == 0 or die "mkimage failed\n";
 my $fit = slurp($itb);
+
+# USB maskrom boot (xrock maskrom <out>-usb471.bin <out>-usb472.bin --rc4 off): the
+# TPL as is, the SPL of the maskrom U-Boot build with this FIT instead of
+# U-Boot's. The SPL finds the FIT through binman symbols (payload image_pos
+# and size, patched here) and copies it to SPL_LOAD_FIT_ADDRESS first, which
+# must not overlap the load addresses (Zephyr at 0x200000).
+if ($maskrom) {
+	my $u472 = slurp("$maskrom/u-boot-rockchip-usb472.bin");
+	my %sym;
+
+	for (`$nm $maskrom/spl/u-boot-spl`) {
+		$sym{$2} = hex($1) if /^([0-9a-f]+) \S (_binman_payload_prop_(?:image_pos|size))$/;
+	}
+	defined $sym{_binman_payload_prop_image_pos} && defined $sym{_binman_payload_prop_size}
+		or die "$maskrom: no binman payload symbols in spl/u-boot-spl (ROCKCHIP_MASKROM_IMAGE?)\n";
+	my $pos = unpack("Q<", substr($u472, $sym{_binman_payload_prop_image_pos}, 8));
+	substr($u472, $pos, 4) eq "\xd0\x0d\xfe\xed" or die "$maskrom: no FIT at payload 0x$pos\n";
+	my $cfg = slurp("$maskrom/.config");
+	my ($fit_addr) = $cfg =~ /^CONFIG_SPL_LOAD_FIT_ADDRESS=(\S+)/m;
+	($fit_addr && oct($fit_addr) >= 0x400000) or die "$maskrom: SPL_LOAD_FIT_ADDRESS "
+		. ($fit_addr // "unset") . " overlaps the images, set it to e.g. 0x10000000\n";
+	my $spl = substr($u472, 0, $pos);
+	substr($spl, $sym{_binman_payload_prop_size}, 8) = pack("Q<", length($fit));
+	spew("$out-usb471.bin", slurp("$maskrom/u-boot-rockchip-usb471.bin"));
+	spew("$out-usb472.bin", $spl . $fit);
+	printf "%s-usb471.bin + -usb472.bin (maskrom, FIT at 0x%x, staged at %s)\n", $out, $pos,
+		$fit_addr;
+}
 
 if ($want_spi) {
 	my $idb_spi = slurp("$ub/idbloader-spi.img");
