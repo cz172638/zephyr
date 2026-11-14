@@ -96,6 +96,10 @@ config FWUPDATE_BOOT_DISK
 	bool "Boot area at the start of a disk instead of a flash partition"
 	depends on DISK_ACCESS
 	help
+	  With a fwupdate_partition or boot_partition as well, the disk is
+	  the target only when that partition's flash device is not ready
+	  (a board variant without the SPI NOR); images are told apart by
+	  the MBR the disk image starts with.
 	  The image is a raw copy of the first FWUPDATE_BOOT_DISK_SIZE bytes
 	  of the disk FWUPDATE_BOOT_DISK_NAME (e.g. MBR, Rockchip idbloader
 	  at sector 64 and the FIT after it), written from sector 0. The
