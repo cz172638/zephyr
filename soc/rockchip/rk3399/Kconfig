@@ -37,6 +37,16 @@ config RK3399_A72_SELF_MIGRATE
 	  asks PSCI to start CPU4 (MPIDR 0x100) at the image entry point and
 	  powers the calling A53 off.
 
+config RK3399_NOC_ERRLOG
+	bool "Interconnect error logger dump"
+	default y
+	depends on ARM64
+	help
+	  rk3399_noc_errlog_dump(): print what the FlexNoC error loggers
+	  (slave and memory scheduler paths) captured: error class, opcode,
+	  address, master ID. Call it from k_sys_fatal_error_handler() to
+	  explain SErrors from bus errors.
+
 config RK3399_REMOTE_CORE_CONTROL
 	bool "Remote core control (M0 and big/little cluster start)"
 	depends on ARM64
