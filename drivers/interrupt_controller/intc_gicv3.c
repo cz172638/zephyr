@@ -53,8 +53,17 @@ mem_addr_t gic_rdists[CONFIG_MP_MAX_NUM_CPUS];
 #if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_ARMV7_A_NS) \
 	|| defined(CONFIG_GIC_SINGLE_SECURITY_STATE)
 #define IGROUPR_VAL 0xFFFFFFFFU
+/*
+ * Group 1 Non-secure is IGROUPR = 1, IGRPMODR = 0. Non-secure software
+ * normally cannot touch IGRPMODR (RAZ/WI), but some integrations, e.g.
+ * Rockchip RK3399, let its accesses reach the GIC as Secure ones; writing
+ * all ones there would turn every interrupt into Group 1 Secure, signalled
+ * to EL3 instead of Zephyr.
+ */
+#define IGRPMODR_VAL 0x0U
 #else
 #define IGROUPR_VAL 0x0U
+#define IGRPMODR_VAL 0xFFFFFFFFU
 #endif
 
 /*
@@ -511,7 +520,7 @@ static void gicv3_cpuif_init(void)
 	 * All interrupts will be delivered as irq
 	 */
 	sys_write32(IGROUPR_VAL, IGROUPR(base, 0));
-	sys_write32(BIT64_MASK(GIC_NUM_INTR_PER_REG), IGROUPMODR(base, 0));
+	sys_write32(IGRPMODR_VAL, IGROUPMODR(base, 0));
 
 	/*
 	 * Configure default priorities for SGI 0:15 and PPI 0:15.
@@ -557,12 +566,22 @@ static void gicv3_dist_init(void)
 	mem_addr_t base = GIC_DIST_BASE;
 
 #ifdef CONFIG_GIC_SAFE_CONFIG
+#if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_ARMV7_A_NS)
+	/*
+	 * Only Group 1 Non-secure tells another Non-secure OS has been here: on
+	 * integrations exposing the Secure view (RK3399) bit 0 is the Group 0
+	 * enable, set by the secure firmware.
+	 */
+#define GICD_CTLR_OS_ENABLED BIT(GICD_CTLR_ENABLE_G1NS)
+#else
+#define GICD_CTLR_OS_ENABLED (BIT(GICD_CTLR_ENABLE_G0) | BIT(GICD_CTLR_ENABLE_G1NS))
+#endif
 	/*
 	 * Currently multiple OSes can run one the different CPU Cores which share single GIC,
 	 * but GIC distributor should avoid to be re-configured in order to avoid crash the
 	 * OSes has already been started.
 	 */
-	if (sys_read32(GICD_CTLR) & (BIT(GICD_CTLR_ENABLE_G0) | BIT(GICD_CTLR_ENABLE_G1NS))) {
+	if (sys_read32(GICD_CTLR) & GICD_CTLR_OS_ENABLED) {
 		return;
 	}
 #endif
@@ -595,7 +614,7 @@ static void gicv3_dist_init(void)
 		/* Clear pending */
 		sys_write32(BIT64_MASK(GIC_NUM_INTR_PER_REG), ICPENDR(base, idx));
 		sys_write32(IGROUPR_VAL, IGROUPR(base, idx));
-		sys_write32(BIT64_MASK(GIC_NUM_INTR_PER_REG), IGROUPMODR(base, idx));
+		sys_write32(IGRPMODR_VAL, IGROUPMODR(base, idx));
 	}
 
 	/*
@@ -608,7 +627,7 @@ static void gicv3_dist_init(void)
 		/* Clear pending */
 		sys_write32(BIT64_MASK(GIC_NUM_INTR_PER_REG), ICPENDRnE(base, idx));
 		sys_write32(IGROUPR_VAL, IGROUPRnE(base, idx));
-		sys_write32(BIT64_MASK(GIC_NUM_INTR_PER_REG), IGROUPMODRnE(base, idx));
+		sys_write32(IGRPMODR_VAL, IGROUPMODRnE(base, idx));
 	}
 
 	/* wait for rwp on GICD */
