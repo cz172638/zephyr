@@ -188,7 +188,7 @@ my $itb = "$out.itb";
 system($mkimage, '-q', '-E', '-B', '0x200', '-f', $its, $itb) == 0 or die "mkimage failed\n";
 my $fit = slurp($itb);
 
-# USB maskrom boot (xrock maskrom <out>-usb471.bin <out>-usb472.bin --rc4 off): the
+# USB maskrom boot (xrock maskrom <out>-usb471.bin <out>-usb472.bin --rc4 on): the
 # TPL as is, the SPL of the maskrom U-Boot build with this FIT instead of
 # U-Boot's. The SPL finds the FIT through binman symbols (payload image_pos
 # and size, patched here) and copies it to SPL_LOAD_FIT_ADDRESS first, which

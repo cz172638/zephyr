@@ -12,6 +12,7 @@
 #   <img>-<name>-boot.bin        its start up to the end of the FIT (MBR,
 #                                idbloader, FIT at 1 MiB), for
 #                                "emmc update <file>"
+#   <img>-<name>-usb471.bin, -usb472.bin  USB maskrom boot (TPL; SPL with the FIT)
 #
 # Variables, beyond common.sh:
 #   IMG, NAME                  [153, rock_pi_4]
@@ -48,16 +49,28 @@ make -C "$WS/fw/u-boot" O="$UB" rock-pi-4-rk3399_defconfig
 make -C "$WS/fw/u-boot" O="$UB" olddefconfig
 make -C "$WS/fw/u-boot" O="$UB" -j"$JOBS" CROSS_COMPILE=aarch64-linux-gnu- BL31="$BL31"
 
+# the same with ROCKCHIP_MASKROM_IMAGE: SPL boots a FIT sent over USB with it
+UBM=$WS/build/u-boot-rock-pi-4-maskrom
+mkdir -p "$UBM"
+cp "$UB/.config" "$UBM/.config"
+"$WS/fw/u-boot/scripts/config" --file "$UBM/.config" -e ROCKCHIP_MASKROM_IMAGE \
+	--set-val SPL_LOAD_FIT_ADDRESS 0x10000000
+make -C "$WS/fw/u-boot" O="$UBM" olddefconfig
+make -C "$WS/fw/u-boot" O="$UBM" -j"$JOBS" CROSS_COMPILE=aarch64-linux-gnu- BL31="$BL31"
+
 log "zephyr $IMG-$NAME"
 B=$WS/build/rock_pi_4-$NAME
 west build -p -d "$B" -b rock_pi_4/rk3399/a53 "$APP"
 
 mkdir -p "$OUT"
 perl "$ZEPHYR_BASE/scripts/rockchip/rk3399-image.pl" --bl31 "$BL31" \
-	--zephyr "$B/zephyr/zephyr.elf" --uboot "$UB" --spi -o "$WS/build/$IMG-$NAME"
+	--zephyr "$B/zephyr/zephyr.elf" --uboot "$UB" --spi \
+	--maskrom "$UBM" -o "$WS/build/$IMG-$NAME"
 cp "$WS/build/$IMG-$NAME-spi.bin" "$OUT/"
 cp "$WS/build/$IMG-$NAME-emmc.bin" "$OUT/"
 cp "$WS/build/$IMG-$NAME-boot.bin" "$OUT/"
+cp "$WS/build/$IMG-$NAME-usb471.bin" "$OUT/"
+cp "$WS/build/$IMG-$NAME-usb472.bin" "$OUT/"
 
 readme "ROCK Pi 4 image $IMG-$NAME" <<EOT
 Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
@@ -67,6 +80,7 @@ Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
 | \`$IMG-$NAME-spi.bin\` | SPI NOR (boot_partition): \`fwupdate ymodem\`, send it (tio: ctrl-t y), then \`kernel reboot cold\` |
 | \`$IMG-$NAME-emmc.bin\` | eMMC from sector 0 (also boots from a micro SD) |
 | \`$IMG-$NAME-boot.bin\` | eMMC boot area only (FAT with settings kept): \`emmc update /EMMC:/$IMG-$NAME-boot.bin\`, then \`kernel reboot cold\` |
+| \`$IMG-$NAME-usb471.bin\`, \`$IMG-$NAME-usb472.bin\` | USB maskrom boot into RAM, nothing written to SPI, eMMC or SD: \`xrock maskrom $IMG-$NAME-usb471.bin $IMG-$NAME-usb472.bin --rc4 on\` (or \`rkflashtool l < ...usb471.bin; rkflashtool L < ...usb472.bin\`) |
 
 BootROM order is SPI, eMMC, SD: a valid image in the SPI NOR wins; to boot the
 eMMC again erase its first sector: \`flash erase flash@0 0 0x1000\`.
