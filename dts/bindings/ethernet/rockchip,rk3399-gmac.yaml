@@ -1,0 +1,63 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+title: Rockchip RK3399 GMAC
+
+description: |
+  Rockchip RK3399 Gigabit Ethernet MAC, a Synopsys DesignWare MAC 3.70a
+  (dwc_ether_1000 core) with RGMII or RMII. The GRF holds the interface
+  select, the RGMII clock divider and the RGMII delay lines; the CRU the
+  choice between the internal MAC clock and the clock from the PHY.
+
+compatible: "rockchip,rk3399-gmac"
+
+include:
+  - name: snps,dwmac.yaml
+  - name: reset-device.yaml
+  - name: pinctrl-device.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    required: true
+    description: |
+      CRU gates turned on at init, see
+      include/zephyr/dt-bindings/clock/rk3399-cru.h.
+
+  resets:
+    required: true
+
+  rockchip,grf:
+    type: phandle
+    required: true
+    description: GRF syscon (GRF_SOC_CON5, GRF_SOC_CON6).
+
+  rockchip,cru:
+    type: phandle
+    required: true
+    description: CRU node, for the clk_rmii_src select in CRU_CLKSEL_CON19.
+
+  clock-in-out:
+    type: string
+    enum:
+      - "input"
+      - "output"
+    default: "input"
+    description: |
+      "input": the MAC clock (125 MHz RGMII, 50 MHz RMII) comes from the PHY
+      on the mac_clk pin. "output": the MAC uses the CRU clk_gmac.
+
+  tx-delay:
+    type: int
+    default: 0x30
+    description: RGMII TX clock delay line value (GRF_SOC_CON6[6:0]), 0 disables it.
+
+  rx-delay:
+    type: int
+    default: 0x10
+    description: RGMII RX clock delay line value (GRF_SOC_CON6[14:8]), 0 disables it.

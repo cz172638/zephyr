@@ -17,6 +17,7 @@
 #define PMUGRF_PULL  0x0040U
 #define GRF_IOMUX    0xe000U
 #define GRF_PULL     0xe040U
+#define GRF_DRV_3V3  0xe110U
 
 #define GRF_NODE    DT_NODELABEL(grf)
 #define PMUGRF_NODE DT_NODELABEL(pmugrf)
@@ -58,6 +59,34 @@ static uint32_t pull_bits(unsigned int bank, unsigned int pin, unsigned int pull
 	}
 }
 
+/*
+ * Drive strength of a 3.3 V-only pin (GPIO3 ports A to C): 3 bits per pin,
+ * pins 0..4 and bit 0 of pin 5 in GRF_GPIO3x_E01, the rest in GRF_GPIO3x_E2.
+ */
+static int set_drive(mm_reg_t grf, unsigned int bank, unsigned int pin, uint32_t code)
+{
+	unsigned int port = pin / 8U;
+	unsigned int bit = (pin % 8U) * 3U;
+	mm_reg_t e01 = grf + GRF_DRV_3V3 + port * 8U;
+	mm_reg_t e2 = e01 + 4U;
+
+	if (bank != 3U || port > 2U) {
+		return -ENOTSUP;
+	}
+
+	if (bit + 3U <= 16U) {
+		sys_write32((7U << (bit + 16U)) | (code << bit), e01);
+	} else if (bit == 15U) {
+		sys_write32(BIT(31) | ((code & 1U) << 15), e01);
+		sys_write32((3U << 16) | (code >> 1), e2);
+	} else {
+		bit -= 16U;
+		sys_write32((7U << (bit + 16U)) | (code << bit), e2);
+	}
+
+	return 0;
+}
+
 int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintptr_t reg)
 {
 	ARG_UNUSED(reg);
@@ -67,6 +96,7 @@ int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintp
 		unsigned int pin = (pins[i] >> 16) & 0x1fU;
 		unsigned int func = (pins[i] >> 8) & 0xfU;
 		unsigned int pull = pins[i] & 0xfU;
+		unsigned int drive = (pins[i] >> 4) & 0xfU;
 		unsigned int sh = (pin % 8U) * 2U;
 		uint32_t iomux, pullr;
 		mm_reg_t base;
@@ -79,6 +109,13 @@ int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintp
 		if (pull != RK_PULL_KEEP) {
 			sys_write32((3U << (sh + 16U)) | (pull_bits(bank, pin, pull) << sh),
 				    base + pullr + (pin / 8U) * 4U);
+		}
+		if (drive != 0U) {
+			int ret = set_drive(base, bank, pin, drive - 1U);
+
+			if (ret != 0) {
+				return ret;
+			}
 		}
 	}
 	return 0;

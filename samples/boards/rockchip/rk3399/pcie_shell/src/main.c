@@ -21,6 +21,8 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
+#include <zephyr/net/net_if.h>
+#include <zephyr/net/dhcpv4.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/sys/printk.h>
@@ -198,5 +200,10 @@ int main(void)
 	       "then a warm reset (\"kernel reboot warm\")\n",
 	       pcie_role_get() == PCIE_ROLE_RC ? "root complex" : "endpoint",
 	       have ? (saved == PCIE_ROLE_RC ? "rc" : "ep") : "-", pcie_role_storage());
+
+	/* the client waits for the carrier itself and restarts on link changes */
+	if (IS_ENABLED(CONFIG_NET_DHCPV4) && net_if_get_default() != NULL) {
+		net_dhcpv4_start(net_if_get_default());
+	}
 	return 0;
 }

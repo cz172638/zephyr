@@ -37,9 +37,6 @@ LOG_MODULE_REGISTER(dwmac_core, CONFIG_ETHERNET_LOG_LEVEL);
 #define TDES0_TTSS BIT(17)
 #define TDES0_ES  BIT(15)
 #define TDES0_CIC GENMASK(23, 22)
-/* Checksum Insertion Control values */
-#define TDES0_CIC_IP_HDR FIELD_PREP(TDES0_CIC, 1)
-#define TDES0_CIC_FULL   FIELD_PREP(TDES0_CIC, 3)
 
 #define TDES1_TBS1 GENMASK(12, 0)
 #define TDES1_TBS2 GENMASK(28, 16)
@@ -56,6 +53,23 @@ LOG_MODULE_REGISTER(dwmac_core, CONFIG_ETHERNET_LOG_LEVEL);
 #define RDES1_RCH  BIT(14)
 
 #define RX_LEN_FROM_RDES0(rdes0) (FIELD_GET(RDES0_FL, (rdes0)))
+
+/*
+ * Normal descriptors (IP built without the enhanced/alternate format, see
+ * DWMAC_HWFR_ALTDESC): the TX control bits and both buffer sizes are in
+ * DES1, DES0 carries OWN and the status only. RDES0 is the same as above.
+ */
+#define NTDES1_IC   BIT(31)
+#define NTDES1_LS   BIT(30)
+#define NTDES1_FS   BIT(29)
+#define NTDES1_CIC  GENMASK(28, 27)
+#define NTDES1_TER  BIT(25)
+#define NTDES1_TTSE BIT(22)
+#define NTDES1_TBS2 GENMASK(21, 11)
+#define NTDES1_TBS1 GENMASK(10, 0)
+
+#define NRDES1_RER  BIT(25)
+#define NRDES1_RBS1 GENMASK(10, 0)
 
 #define TXDESC_PHYS_L(idx) phys_lo32(&p->tx_descs[idx])
 #define RXDESC_PHYS_L(idx) phys_lo32(&p->rx_descs[idx])
@@ -104,13 +118,13 @@ static __maybe_unused unsigned int net_pkt_get_nbfrags(struct net_pkt *pkt)
  * packet that carries its transport layer checksum already, a forwarded one
  * for example, gets the IPv4 header checksum only.
  */
-static uint32_t tdes0_cic(struct net_pkt *pkt)
+static uint32_t tx_cic(struct net_pkt *pkt)
 {
 	if (!IS_ENABLED(CONFIG_ETH_DWC_ETHER_TX_HW_CHECKSUM_EN)) {
 		return 0U;
 	}
 
-	return net_pkt_is_chksum_done(pkt) ? TDES0_CIC_IP_HDR : TDES0_CIC_FULL;
+	return net_pkt_is_chksum_done(pkt) ? 1U : 3U;
 }
 
 static int dwmac_send(const struct device *dev, struct net_pkt *pkt)
@@ -118,8 +132,9 @@ static int dwmac_send(const struct device *dev, struct net_pkt *pkt)
 	struct dwmac_priv *p = dev->data;
 	unsigned int d_idx, first_d_idx;
 	struct dwmac_dma_desc *d;
-	uint32_t des0_flags;
-	uint32_t cic = tdes0_cic(pkt);
+	uint32_t cic = tx_cic(pkt);
+	bool ttse = IS_ENABLED(CONFIG_PTP_CLOCK_DWC_MAC) && net_pkt_is_tx_timestamping(pkt);
+	bool first = true;
 
 	LOG_DBG("pkt len/frags=%zu/%u", net_pkt_get_len(pkt), net_pkt_get_nbfrags(pkt));
 
@@ -146,43 +161,44 @@ static int dwmac_send(const struct device *dev, struct net_pkt *pkt)
 
 	first_d_idx = p->tx_desc_head;
 	d_idx = first_d_idx;
-	des0_flags = TDES0_IC | cic;
 
 	NET_PKT_FRAG_FOR_EACH(pkt, frag) {
-		LOG_DBG("tx frag %p len=%zu", frag, frag->len);
+		uint16_t len1 = frag->len;
+		uint16_t len2 = 0U;
+		bool ter = d_idx == NB_TX_DESCS - 1;
+		bool last;
+
+		LOG_DBG("tx frag %p len=%u", frag, frag->len);
 
 		sys_cache_data_flush_range(frag->data, frag->len);
 
 		d = &p->tx_descs[d_idx];
-		d->des0 = des0_flags;
-
-		if (d_idx == NB_TX_DESCS - 1) {
-			d->des0 |= TDES0_TER;
-		}
-
-		d->des1 = FIELD_PREP(TDES1_TBS1, frag->len);
 		d->des2 = phys_lo32(frag->data);
 
 		if (frag->frags != NULL) {
 			frag = frag->frags;
-			d->des1 |= FIELD_PREP(TDES1_TBS2, frag->len);
+			len2 = frag->len;
 			d->des3 = phys_lo32(frag->data);
 			sys_cache_data_flush_range(frag->data, frag->len);
 		}
 
-		des0_flags = TDES0_OWN | TDES0_IC | cic;
-		INC_WRAP(d_idx, NB_TX_DESCS);
+		last = frag->frags == NULL;
 
-		if (frag->frags == NULL) {
-			d->des0 |= TDES0_LS;
+		/* every descriptor but the first is handed over right away */
+		if (p->normal_desc) {
+			d->des1 = NTDES1_IC | FIELD_PREP(NTDES1_CIC, cic) |
+				  FIELD_PREP(NTDES1_TBS1, len1) | FIELD_PREP(NTDES1_TBS2, len2) |
+				  (ter ? NTDES1_TER : 0U) | (last ? NTDES1_LS : 0U) |
+				  (first ? NTDES1_FS : 0U) | ((first && ttse) ? NTDES1_TTSE : 0U);
+			d->des0 = first ? 0U : TDES0_OWN;
+		} else {
+			d->des1 = FIELD_PREP(TDES1_TBS1, len1) | FIELD_PREP(TDES1_TBS2, len2);
+			d->des0 = TDES0_IC | FIELD_PREP(TDES0_CIC, cic) | (ter ? TDES0_TER : 0U) |
+				  (last ? TDES0_LS : 0U) | (first ? 0U : TDES0_OWN);
 		}
-	}
 
-	des0_flags = TDES0_OWN | TDES0_FS;
-
-	if (IS_ENABLED(CONFIG_PTP_CLOCK_DWC_MAC) &&
-		net_pkt_is_tx_timestamping(pkt)) {
-		des0_flags |= TDES0_TTSE;
+		first = false;
+		INC_WRAP(d_idx, NB_TX_DESCS);
 	}
 
 	K_SPINLOCK(&p->spinlock) {
@@ -194,7 +210,11 @@ static int dwmac_send(const struct device *dev, struct net_pkt *pkt)
 		barrier_dmem_fence_full();
 
 		d = &p->tx_descs[first_d_idx];
-		d->des0 |= des0_flags;
+		if (p->normal_desc) {
+			d->des0 = TDES0_OWN;
+		} else {
+			d->des0 |= TDES0_OWN | TDES0_FS | (ttse ? TDES0_TTSE : 0U);
+		}
 
 		barrier_dmem_fence_full();
 		DWMAC_REG_WRITE(DWMAC_DMATPDR, 0);
@@ -218,7 +238,7 @@ static void dwmac_tx_release(const struct device *dev)
 			break;
 		}
 
-		if ((des0 & TDES0_LS) != 0U) {
+		if (p->normal_desc ? (d->des1 & NTDES1_LS) != 0U : (des0 & TDES0_LS) != 0U) {
 			struct net_pkt *pkt = k_fifo_get(&p->tx_queue, K_NO_WAIT);
 
 			if (pkt != NULL) {
@@ -372,10 +392,12 @@ static void dwmac_rx_refill_desc(const struct device *dev, struct net_buf *frag)
 	d = &p->rx_descs[d_idx];
 	__ASSERT(!(d->des0 & RDES0_OWN), "rx desc still owned");
 
-	d->des1 = FIELD_PREP(RDES1_RBS1, frag->size);
-
-	if (d_idx == NB_RX_DESCS - 1) {
-		d->des1 |= RDES1_RER;
+	if (p->normal_desc) {
+		d->des1 = FIELD_PREP(NRDES1_RBS1, frag->size) |
+			  (d_idx == NB_RX_DESCS - 1 ? NRDES1_RER : 0U);
+	} else {
+		d->des1 = FIELD_PREP(RDES1_RBS1, frag->size) |
+			  (d_idx == NB_RX_DESCS - 1 ? RDES1_RER : 0U);
 	}
 	d->des2 = phys_lo32(frag->data);
 
@@ -482,6 +504,12 @@ static int dwmac_set_config(const struct device *dev, struct net_if *iface __unu
 	return 0;
 }
 
+__weak void dwmac_platform_link_speed_changed(const struct device *dev, enum phy_link_speed speed)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(speed);
+}
+
 static void phy_link_state_changed(const struct device *phy_dev __unused,
 				   struct phy_link_state *state, void *user_data)
 {
@@ -507,6 +535,7 @@ static void phy_link_state_changed(const struct device *phy_dev __unused,
 		}
 
 		DWMAC_REG_WRITE(DWMAC_MACCR, reg);
+		dwmac_platform_link_speed_changed(dev, state->speed);
 	}
 
 	net_eth_carrier_set(p->iface, state->is_up);
@@ -660,7 +689,9 @@ int dwmac_probe(const struct device *dev)
 	/* get configured hardware features */
 	p->feature0 = DWMAC_REG_READ(DWMAC_HWFR);
 	LOG_DBG("hw_feature: 0x%08x", p->feature0);
-	/* early IP versions don't support this register */
+	/* early IP versions don't support this register: enhanced assumed */
+	p->normal_desc = p->feature0 != 0U && (p->feature0 & DWMAC_HWFR_ALTDESC) == 0U;
+	LOG_INF("%s descriptors", p->normal_desc ? "normal" : "enhanced");
 	if (p->feature0 != 0) {
 		LOG_DBG("10/100 Mbps support: %s",
 			(p->feature0 & DWMAC_HWFR_10_100) ? "yes" : "no");
