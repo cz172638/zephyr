@@ -14,6 +14,7 @@
 #                                "emmc update <file>"
 #   <img>-<name>-usb471.bin, -usb472.bin  USB maskrom boot (TPL; SPL with the FIT)
 #   <img>-<name>-loader.bin  the same two as one loader for rkdeveloptool db
+#   <img>-<name>-debug.tar.xz   zephyr.elf/map/dts/config, bl31.elf, U-Boot TPL/SPL/proper ELFs
 #
 # Variables, beyond common.sh:
 #   IMG, NAME                  [153, rock_pi_4]
@@ -73,6 +74,9 @@ cp "$WS/build/$IMG-$NAME-boot.bin" "$OUT/"
 cp "$WS/build/$IMG-$NAME-usb471.bin" "$OUT/"
 cp "$WS/build/$IMG-$NAME-usb472.bin" "$OUT/"
 cp "$WS/build/$IMG-$NAME-loader.bin" "$OUT/"
+debug "$B/zephyr/zephyr.elf" "$B/zephyr/zephyr.map" "$B/zephyr/zephyr.dts" \
+	"$B/zephyr/.config=zephyr.config" "$BL31" "$UB/spl/u-boot-spl" "$UB/tpl/u-boot-tpl" \
+	"$UB/u-boot"
 
 readme "ROCK Pi 4 image $IMG-$NAME" <<EOT
 Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
@@ -84,10 +88,15 @@ Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
 | \`$IMG-$NAME-boot.bin\` | eMMC boot area only (FAT with settings kept): \`emmc update /EMMC:/$IMG-$NAME-boot.bin\`, then \`kernel reboot cold\` |
 | \`$IMG-$NAME-usb471.bin\`, \`$IMG-$NAME-usb472.bin\` | USB maskrom boot into RAM, nothing written to SPI, eMMC or SD: \`xrock maskrom $IMG-$NAME-usb471.bin $IMG-$NAME-usb472.bin --rc4 on\` (or \`rkflashtool l < ...usb471.bin; rkflashtool L < ...usb472.bin\`) |
 | \`$IMG-$NAME-loader.bin\` | The same maskrom boot as one Rockchip loader file: \`rkdeveloptool db $IMG-$NAME-loader.bin\` (no flash loader inside, not for \`rkdeveloptool ul\`) |
+| \`$IMG-$NAME-debug.tar.xz\` | gdb/OpenOCD: \`zephyr.elf\` (+ map, dts, config), \`bl31.elf\`, U-Boot \`u-boot-tpl\`, \`u-boot-spl\`, \`u-boot\` |
 
 BootROM order is SPI, eMMC, SD: a valid image in the SPI NOR wins; to boot the
 eMMC again erase its first sector: \`flash erase flash@0 0 0x1000\`.
-The micro SD slot is for the JTAG breakout only.
+The micro SD slot is the SWD port (AP: DAT2 = SWCLK, DAT3 = SWDIO; GND):
+
+    openocd -f interface/cmsis-dap.cfg -c "transport select swd" -f target/rk3399.cfg
+    aarch64-zephyr-elf-gdb zephyr.elf -ex "target extended-remote :3333"
+    (gdb) add-symbol-file bl31.elf
 EOT
 checksums
 ls -l "$OUT"

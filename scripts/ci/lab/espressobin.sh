@@ -10,6 +10,7 @@
 #   <img>-<name>-uart.tgz       UART recovery images (mox-imager / WtpDownload)
 #   <img>-<name>-<mod>.llext    debug modules (lab mod load; the image check
 #                               is the embedded number, not the file name)
+#   <img>-<name>-debug.tar.xz   zephyr.elf/map/dts/config, TF-A bl1/bl2/bl31.elf
 #
 # Variables, beyond common.sh:
 #   IMG       image number, also the LLEXT prefix  [CONFIG_LAB_IMAGE of the snippet]
@@ -91,6 +92,9 @@ for m in "$B"/llext/"$IMG"-*.llext; do
 	m=$(basename "$m")
 	cp "$B/llext/$m" "$OUT/$IMG-$NAME-${m#"$IMG"-}"
 done
+debug "$B/zephyr/zephyr.elf" "$B/zephyr/zephyr.map" "$B/zephyr/zephyr.dts" \
+	"$B/zephyr/.config=zephyr.config" "$REL/bl1/bl1.elf" "$REL/bl2/bl2.elf" \
+	"$REL/bl31/bl31.elf"
 cp "$ZEPHYR_BASE/boards/globalscale/espressobin/support/sata-install.sh" "$OUT/"
 cp "$ZEPHYR_BASE/scripts/lab/lab.pl" "$OUT/"
 
@@ -104,6 +108,7 @@ Snippets: $(echo $SNIPPETS), EXTRA_CONF_FILE=pcie-ep-uartlog.conf.
 | \`$IMG-$NAME-sata.bin\` | SATA boot: \`sata-install.sh\` |
 | \`$IMG-$NAME-uart.tgz\` | UART recovery (mox-imager) |
 | \`$IMG-$NAME-*.llext\` | debug modules: \`lab mod load\` (built for image $IMG only) |
+| \`$IMG-$NAME-debug.tar.xz\` | gdb/OpenOCD: \`zephyr.elf\` (+ map, dts, config), TF-A \`bl1.elf\`, \`bl2.elf\`, \`bl31.elf\` |
 | \`lab.pl\` | lab agent host client (UDP 7777) |
 EOT
 checksums
