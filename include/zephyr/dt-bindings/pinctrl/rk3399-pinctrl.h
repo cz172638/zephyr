@@ -52,4 +52,21 @@
 #define RK_PINMUX(bank, pin, func, pull)                                                           \
 	((((bank) & 0x7) << 24) | (((pin) & 0x1f) << 16) | (((func) & 0xf) << 8) | ((pull) & 0xf))
 
+/*
+ * Drive strength: register code + 1, 0 leaves the register alone. Supported
+ * for the 3.3 V-only pins, GPIO3 ports A to C (3-bit field).
+ */
+#define RK_DRV_KEEP 0
+#define RK_DRV_4MA  1
+#define RK_DRV_7MA  2
+#define RK_DRV_10MA 3
+#define RK_DRV_13MA 4
+#define RK_DRV_16MA 5
+#define RK_DRV_19MA 6
+#define RK_DRV_22MA 7
+#define RK_DRV_26MA 8
+
+#define RK_PINMUX_DRV(bank, pin, func, pull, drive)                                                \
+	(RK_PINMUX(bank, pin, func, pull) | (((drive) & 0xf) << 4))
+
 #endif
