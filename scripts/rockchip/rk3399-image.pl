@@ -193,6 +193,7 @@ my $fit = slurp($itb);
 # U-Boot's. The SPL finds the FIT through binman symbols (payload image_pos
 # and size, patched here) and copies it to SPL_LOAD_FIT_ADDRESS first, which
 # must not overlap the load addresses (Zephyr at 0x200000).
+# rkdeveloptool db <out>-loader.bin sends the same two images.
 if ($maskrom) {
 	my $u472 = slurp("$maskrom/u-boot-rockchip-usb472.bin");
 	my %sym;
@@ -212,8 +213,10 @@ if ($maskrom) {
 	substr($spl, $sym{_binman_payload_prop_size}, 8) = pack("Q<", length($fit));
 	spew("$out-usb471.bin", slurp("$maskrom/u-boot-rockchip-usb471.bin"));
 	spew("$out-usb472.bin", $spl . $fit);
+	rkboot("$out-loader.bin", slurp("$maskrom/u-boot-rockchip-usb471.bin"), $spl . $fit);
 	printf "%s-usb471.bin + -usb472.bin (maskrom, FIT at 0x%x, staged at %s)\n", $out, $pos,
 		$fit_addr;
+	printf "%s-loader.bin (the same for rkdeveloptool db)\n", $out;
 }
 
 if ($want_spi) {
@@ -273,4 +276,76 @@ if ($installer) {
 	# room for the eMMC image plus FAT overhead, whole MiB
 	my $mb = int((-s "$out-emmc.bin") / (1 << 20)) + 16;
 	disk("$out-sd-install.bin", $mb, "$out-emmc.bin", @fat_add);
+}
+
+# RC4 with the BootROM key, one keystream over the whole buffer (as xrock
+# --rc4 on; rkdeveloptool's own pack truncates the length to 16 bits)
+sub rc4 {
+	my ($data) = @_;
+	my @k = (124, 78, 3, 4, 85, 5, 9, 7, 45, 44, 123, 56, 23, 13, 23, 17);
+	my @s = (0 .. 255);
+	my $j = 0;
+
+	for my $i (0 .. 255) {
+		$j = ($j + $s[$i] + $k[$i & 15]) & 0xff;
+		@s[$i, $j] = @s[$j, $i];
+	}
+	my @d = unpack("C*", $data);
+	my ($i, $t) = (0, 0);
+	$j = 0;
+	for my $x (0 .. $#d) {
+		$i = ($i + 1) & 0xff;
+		$j = ($j + $s[$i]) & 0xff;
+		@s[$i, $j] = @s[$j, $i];
+		$d[$x] ^= $s[($s[$i] + $s[$j]) & 0xff];
+	}
+	return pack("C*", @d);
+}
+
+# CRC32 of rkdeveloptool and boot_merger: polynomial 0x04c10db7, MSB first,
+# initial value 0, no final xor
+sub rkcrc32 {
+	my ($data) = @_;
+	my @tab = map {
+		my $c = $_ << 24;
+		for (1 .. 8) {
+			$c = ($c & 0x80000000) ? (($c << 1) ^ 0x04c10db7) : ($c << 1);
+			$c &= 0xffffffff;
+		}
+		$c;
+	} 0 .. 255;
+	my $crc = 0;
+
+	$crc = (($crc << 8) & 0xffffffff) ^ $tab[($crc >> 24) ^ $_] for unpack("C*", $data);
+	return $crc;
+}
+
+# Rockchip loader (boot_merger "BOOT" format) with one 0x471 and one 0x472
+# entry and no flash loader entries: enough for rkdeveloptool db, not for ul.
+# Entry data is RC4 coded and padded to 2 KiB, rkdeveloptool sends it as is.
+sub rkboot {
+	my ($file, $c471, $c472) = @_;
+	my ($hsz, $esz) = (102, 57);
+	my @t = localtime;
+	my @ent = (['usb471', 1, $c471, 10], ['usb472', 2, $c472, 10]);
+	my $off = $hsz + $esz * @ent;
+	my ($ents, $data) = ('', '');
+
+	for (@ent) {
+		my ($name, $type, $d, $delay) = @$_;
+
+		$d .= "\0" x ((2048 - length($d) % 2048) % 2048);
+		$ents .= pack("C V a40 V V V", $esz, $type, pack("v*", map { ord } split //, $name),
+			      $off + length($data), length($d), $delay);
+		$data .= rc4($d);
+	}
+	my $hdr = pack("V v V V v C C C C C V C V C C V C C V C C C a57",
+		       0x544f4f42, $hsz, 0x0100, 0x01030000,
+		       $t[5] + 1900, $t[4] + 1, $t[3], $t[2], $t[1], $t[0],
+		       0x33333043,			# "330C": RK3399
+		       1, $hsz, $esz, 1, $hsz + $esz, $esz, 0, $hsz + 2 * $esz, $esz,
+		       0, 0, "");			# no signature, RC4 on
+	my $img = $hdr . $ents . $data;
+
+	spew($file, $img . pack("V", rkcrc32($img)));
 }
