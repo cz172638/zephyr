@@ -31,6 +31,8 @@ static struct fs_mount_t emmc_mnt = {
 	.type = FS_FATFS,
 	.mnt_point = "/EMMC:",
 	.fs_data = &fat_emmc,
+	/* no mkfs on a blank eMMC: it would cover the boot area at sector 64 */
+	.flags = FS_MOUNT_FLAG_NO_FORMAT,
 };
 static int emmc_mount_ret = -ENODEV;
 
