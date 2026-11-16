@@ -274,10 +274,10 @@ int dwmac_platform_init(const struct device *dev);
 void dwmac_setup_multicast_filter(const struct device *dev, const struct ethernet_filter *filter);
 void dwmac_isr(const struct device *ddev);
 /*
- * Called by the QoS core whenever the PHY reports a link at a new speed, after
- * MAC_CONF has been updated. Platforms feeding the MAC from a speed-dependent
- * clock, as RGMII ones typically do, override this to retune that clock. The
- * default implementation does nothing.
+ * Called by the QoS and 1000 cores whenever the PHY reports a link at a new
+ * speed, after the MAC speed configuration has been updated. Platforms feeding
+ * the MAC from a speed-dependent clock, as RGMII ones typically do, override
+ * this to retune that clock. The default implementation does nothing.
  */
 void dwmac_platform_link_speed_changed(const struct device *dev, enum phy_link_speed speed);
 #if defined(CONFIG_PTP_CLOCK_DWC_MAC)
