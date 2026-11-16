@@ -31,6 +31,10 @@ config SYSCON
 config GIC_SAFE_CONFIG
 	default y
 
+# sys_reboot() through PSCI SYSTEM_RESET (TF-A BL31)
+config PM_CPU_OPS
+	default y
+
 endif # ARM64
 
 if CPU_CORTEX_M0
@@ -42,5 +46,9 @@ config SYS_CLOCK_HW_CYCLES_PER_SEC
 	default $(dt_node_int_prop_int,/cpus/cpu@0,clock-frequency)
 
 endif # CPU_CORTEX_M0
+
+# DesignWare APB UARTs: byte accesses do not reach them (U-Boot: SYS_NS16550_MEM32)
+configdefault UART_NS16550_ACCESS_WORD_ONLY
+	default y
 
 endif # SOC_SERIES_RK3399

@@ -2,12 +2,16 @@
 # Copyright (c) 2026 Jiri Kastner
 # SPDX-License-Identifier: Apache-2.0
 #
-# ROCK Pi 4 (RK3399): PCIe RC/EP shell, eMMC as boot medium and storage.
+# ROCK Pi 4 (RK3399): PCIe RC/EP shell; boots from the SPI NOR or the eMMC,
+# the eMMC FAT is the storage.
 # U-Boot TPL/SPL (no Rockchip blobs) + TF-A BL31 + Zephyr BL33. Outputs:
 #
+#   <img>-<name>-spi.bin         SPI NOR image (idbloader at 0, FIT at 0xe0000),
+#                                for "fwupdate ymodem" (boot_partition)
 #   <img>-<name>-emmc.bin        the image: eMMC from sector 0 (boots from SD too)
-#   <img>-<name>-sd-install.bin  micro SD that boots the same and carries
-#                                -emmc.bin: "emmc update /SD:/<img>-<name>-emmc.bin"
+#   <img>-<name>-boot.bin        its start up to the end of the FIT (MBR,
+#                                idbloader, FIT at 1 MiB), for
+#                                "emmc update <file>"
 #
 # Variables, beyond common.sh:
 #   IMG, NAME                  [153, rock_pi_4]
@@ -39,6 +43,9 @@ BL31=$WS/fw/tfa-rk3399/build/rk3399/release/bl31/bl31.elf
 log "U-Boot TPL/SPL"
 UB=$WS/build/u-boot-rock-pi-4
 make -C "$WS/fw/u-boot" O="$UB" rock-pi-4-rk3399_defconfig
+# FIT at 1 MiB instead of 8 MiB: the boot area image (-boot.bin) stays small
+"$WS/fw/u-boot/scripts/config" --file "$UB/.config" --set-val SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR 0x800
+make -C "$WS/fw/u-boot" O="$UB" olddefconfig
 make -C "$WS/fw/u-boot" O="$UB" -j"$JOBS" CROSS_COMPILE=aarch64-linux-gnu- BL31="$BL31"
 
 log "zephyr $IMG-$NAME"
@@ -47,19 +54,23 @@ west build -p -d "$B" -b rock_pi_4/rk3399/a53 "$APP"
 
 mkdir -p "$OUT"
 perl "$ZEPHYR_BASE/scripts/rockchip/rk3399-image.pl" --bl31 "$BL31" \
-	--zephyr "$B/zephyr/zephyr.elf" --uboot "$UB" --installer -o "$WS/build/$IMG-$NAME"
-cp "$WS/build/$IMG-$NAME-emmc.bin" "$WS/build/$IMG-$NAME-sd-install.bin" "$OUT/"
+	--zephyr "$B/zephyr/zephyr.elf" --uboot "$UB" --spi -o "$WS/build/$IMG-$NAME"
+cp "$WS/build/$IMG-$NAME-spi.bin" "$OUT/"
+cp "$WS/build/$IMG-$NAME-emmc.bin" "$OUT/"
+cp "$WS/build/$IMG-$NAME-boot.bin" "$OUT/"
 
 readme "ROCK Pi 4 image $IMG-$NAME" <<EOT
 Board: Radxa ROCK Pi 4 (RK3399), Zephyr on the A53 cluster as BL33.
 
 | file | use |
 |---|---|
+| \`$IMG-$NAME-spi.bin\` | SPI NOR (boot_partition): \`fwupdate ymodem\`, send it (tio: ctrl-t y), then \`kernel reboot cold\` |
 | \`$IMG-$NAME-emmc.bin\` | eMMC from sector 0 (also boots from a micro SD) |
-| \`$IMG-$NAME-sd-install.bin\` | \`dd if=$IMG-$NAME-sd-install.bin of=/dev/sdX bs=1M conv=fsync\`, boot from it, then \`emmc update /SD:/$IMG-$NAME-emmc.bin\`, remove the card, reset |
+| \`$IMG-$NAME-boot.bin\` | eMMC boot area only (FAT with settings kept): \`emmc update /EMMC:/$IMG-$NAME-boot.bin\`, then \`kernel reboot cold\` |
 
-BootROM order is SPI, eMMC, SD: an old image in the SPI flash wins, clear it
-with \`flash erase\`. The micro SD slot doubles as JTAG (breakout).
+BootROM order is SPI, eMMC, SD: a valid image in the SPI NOR wins; to boot the
+eMMC again erase its first sector: \`flash erase flash@0 0 0x1000\`.
+The micro SD slot is for the JTAG breakout only.
 EOT
 checksums
 ls -l "$OUT"

@@ -3,13 +3,15 @@
 
 menuconfig FWUPDATE
 	bool "Firmware update into a flash partition"
-	depends on FLASH && FLASH_MAP
+	depends on (FLASH && FLASH_MAP) || DISK_ACCESS
 	imply REBOOT
 	help
 	  Shell driven update of the boot image in the partition with node
 	  label fwupdate_partition (or boot_partition). The image is
 	  received into RAM, checked, then erased, written (first erase
 	  unit last) and verified.
+	  With FWUPDATE_BOOT_DISK the image is the boot area at the start
+	  of a disk instead (e.g. eMMC on Rockchip SoCs).
 
 if FWUPDATE
 
@@ -89,6 +91,32 @@ config FWUPDATE_DISK_NAME
 	string "Disk with the SATA boot partition"
 	default "sata0"
 	depends on FWUPDATE_DISK
+
+config FWUPDATE_BOOT_DISK
+	bool "Boot area at the start of a disk instead of a flash partition"
+	depends on DISK_ACCESS
+	help
+	  The image is a raw copy of the first FWUPDATE_BOOT_DISK_SIZE bytes
+	  of the disk FWUPDATE_BOOT_DISK_NAME (e.g. MBR, Rockchip idbloader
+	  at sector 64 and the FIT after it), written from sector 0. The
+	  sector the boot ROM checks first (FWUPDATE_BOOT_DISK_HEADER) is
+	  zeroed before and written after the rest, then all is verified.
+
+config FWUPDATE_BOOT_DISK_NAME
+	string "Disk with the boot area"
+	default "EMMC"
+	depends on FWUPDATE_BOOT_DISK
+
+config FWUPDATE_BOOT_DISK_SIZE
+	hex "Size of the boot area (bytes, also the receive buffer)"
+	default 0x1000000
+	depends on FWUPDATE_BOOT_DISK
+
+config FWUPDATE_BOOT_DISK_HEADER
+	int "Sector with the boot header, written last"
+	default 64 if SOC_FAMILY_ROCKCHIP
+	default 0
+	depends on FWUPDATE_BOOT_DISK
 
 config FWUPDATE_PROGRAM_EXTERNAL
 	bool

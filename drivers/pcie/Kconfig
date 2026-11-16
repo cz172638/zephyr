@@ -74,6 +74,11 @@ configdefault PCIE_EPC_INIT_PRIORITY
 configdefault PCIE_EPF_INIT_PRIORITY
 	default 83
 
+# the link autostart walks the registered controllers: after them
+configdefault PCIE_EPC_AUTOSTART_PRIORITY
+	default 90 if PCIE_EPC_DSN_SETTINGS
+	default 85
+
 endif # PCIE_ROLE
 
 config PCIE_RK3399_PORT

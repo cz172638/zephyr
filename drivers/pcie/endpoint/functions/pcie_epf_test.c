@@ -466,11 +466,11 @@ static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l
 
 	switch (evt) {
 	case PCIE_EPC_EVT_LINK_UP:
-		LOG_INF("link up");
+		LOG_DBG("%s: link up", d->dev->name);
 		d->link = true;
 		break;
 	case PCIE_EPC_EVT_LINK_DOWN:
-		LOG_INF("link down");
+		LOG_DBG("%s: link down", d->dev->name);
 		d->link = false;
 		d->bme = false;
 		break;
@@ -573,7 +573,7 @@ static int epf_test_setup_bars(const struct device *dev)
 }
 
 /* instances, for the header settings and the epf_hdr shell */
-static const struct device *inst[4];
+static const struct device *inst[9]; /* PF + up to 8 VFs */
 static int n_inst;
 
 #ifdef CONFIG_PCIE_EPF_TEST_SETTINGS
@@ -816,8 +816,11 @@ static int epf_test_init(const struct device *dev)
 		.epc = PCIE_EPF_DT_INST_EPC(n),                                                    \
 		.func = PCIE_EPF_DT_INST_FUNC(n),                                                  \
 		.hdr = PCIE_EPF_DT_HEADER(DT_DRV_INST(n)),                                         \
-		.mem_base = DT_REG_ADDR(DT_INST_PHANDLE(n, memory_region)),                        \
-		.mem_size = DT_REG_SIZE(DT_INST_PHANDLE(n, memory_region)),                        \
+		.mem_base = DT_REG_ADDR(DT_INST_PHANDLE(n, memory_region)) +                       \
+			    DT_INST_PROP(n, memory_offset),                                        \
+		.mem_size = DT_INST_PROP_OR(n, memory_size,                                        \
+					    DT_REG_SIZE(DT_INST_PHANDLE(n, memory_region)) -       \
+					    DT_INST_PROP(n, memory_offset)),                       \
 		.bar_size = {EPF_TEST_BAR_SIZE(n, 0), EPF_TEST_BAR_SIZE(n, 1),                     \
 			     EPF_TEST_BAR_SIZE(n, 2), EPF_TEST_BAR_SIZE(n, 3),                     \
 			     EPF_TEST_BAR_SIZE(n, 4), EPF_TEST_BAR_SIZE(n, 5)},                    \

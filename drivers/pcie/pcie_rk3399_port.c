@@ -176,6 +176,8 @@ int rk3399_pcie_port_init(const struct rk3399_pcie_port_cfg *cfg, mm_reg_t apb, 
 			RK_WM16(RK_CLIENT_GEN_SEL_2, (cfg->link_gen > 1U) ? 1U : 0U));
 	rk_client_write(apb, RK_CLIENT_CONFIG,
 			RK_WM16(RK_CLIENT_ARI_ENABLE, 1U) |
+				RK_WM16(RK_CLIENT_SR_IOV_ENABLE,
+					(!rc && IS_ENABLED(CONFIG_PCIE_EPC_RK3399_SRIOV)) ? 1U : 0U) |
 				RK_WM16(RK_CLIENT_LANE_NUM, ((uint32_t)cfg->lanes >> 1) & 3U) |
 				RK_WM16(RK_CLIENT_LINK_TRAIN, 0U) |
 				RK_WM16(RK_CLIENT_CONF_ENABLE, 0U) |
