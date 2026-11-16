@@ -21,12 +21,6 @@
 			status = "disabled";
 		};
 
-		spi1: spi@4046a000 {
-			compatible = "ti,mspm0-spi";
-			reg = <0x4046a000 0x2000>;
-			status = "disabled";
-		};
-
 		timg0: timg0@40084000 {
 			compatible = "ti,mspm0-timer";
 			reg = <0x40084000 0x2000>;
@@ -34,11 +28,11 @@
 			interrupts = <21 0>;
 			ti,clk-prescaler = <255>;
 			ti,clk-div = <1>;
-			status = "disabled";
 
 			counterg0: counterg0 {
 				compatible = "ti,mspm0-timer-counter";
 				resolution = <16>;
+				channels = <2>;
 				status = "disabled";
 			};
 		};
@@ -50,11 +44,11 @@
 			interrupts = <22 0>;
 			ti,clk-prescaler = <255>;
 			ti,clk-div = <1>;
-			status = "disabled";
 
 			counterg4: counterg4 {
 				compatible = "ti,mspm0-timer-counter";
 				resolution = <16>;
+				channels = <2>;
 				status = "disabled";
 			};
 		};
@@ -66,11 +60,11 @@
 			interrupts = <23 0>;
 			ti,clk-prescaler = <255>;
 			ti,clk-div = <1>;
-			status = "disabled";
 
 			counterg5: counterg5 {
 				compatible = "ti,mspm0-timer-counter";
 				resolution = <16>;
+				channels = <2>;
 				status = "disabled";
 			};
 		};
@@ -82,11 +76,47 @@
 			interrupts = <20 0>;
 			ti,clk-prescaler = <255>;
 			ti,clk-div = <1>;
-			status = "disabled";
 
 			counterg8: counterg8 {
 				compatible = "ti,mspm0-timer-counter";
 				resolution = <16>;
+				channels = <2>;
+				status = "disabled";
+			};
+		};
+
+		crc: crc@40440000 {
+			compatible = "ti,mspm0-crcp";
+			reg = <0x40440000 0x2000>;
+			status = "disabled";
+		};
+
+		trng: trng@40444000 {
+			compatible = "ti,mspm0-trng";
+			reg = <0x40444000 0x2000>;
+			interrupts = <1 0>;
+			clocks = <&ckm MSPM0_CLOCK_MCLK>;
+			status = "disabled";
+		};
+
+		spi1: spi@4046a000 {
+			compatible = "ti,mspm0-spi";
+			reg = <0x4046a000 0x2000>;
+			status = "disabled";
+		};
+
+		tima0: tima0@40860000 {
+			compatible = "ti,mspm0-timer";
+			reg = <0x40860000 0x2000>;
+			clocks = <&ckm MSPM0_CLOCK_ULPCLK>;
+			interrupts = <18 0>;
+			ti,clk-prescaler = <255>;
+			ti,clk-div = <1>;
+
+			countera0: countera0 {
+				compatible = "ti,mspm0-timer-counter";
+				resolution = <16>;
+				channels = <4>;
 				status = "disabled";
 			};
 		};
@@ -98,27 +128,11 @@
 			interrupts = <2 0>;
 			ti,clk-prescaler = <0>; /* No prescaler */
 			ti,clk-div = <1>;
-			status = "disabled";
 
 			counterg12: counterg12 {
 				compatible = "ti,mspm0-timer-counter";
 				resolution = <32>;
-				status = "disabled";
-			};
-		};
-
-		tima0: tima0@40860000 {
-			compatible = "ti,mspm0-timer";
-			reg = <0x40860000 0x2000>;
-			clocks = <&ckm MSPM0_CLOCK_ULPCLK>;
-			interrupts = <18 0>;
-			ti,clk-prescaler = <255>;
-			ti,clk-div = <1>;
-			status = "disabled";
-
-			countera0: countera0 {
-				compatible = "ti,mspm0-timer-counter";
-				resolution = <16>;
+				channels = <2>;
 				status = "disabled";
 			};
 		};

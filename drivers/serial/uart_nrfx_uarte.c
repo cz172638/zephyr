@@ -16,6 +16,7 @@
 #include <hal/nrf_timer.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/minmax.h>
+#include <zephyr/sys/div64.h>
 #include <zephyr/kernel.h>
 #include <zephyr/cache.h>
 #include <soc.h>
@@ -1851,11 +1852,7 @@ static void notify_uart_rx_rdy(const struct device *dev, size_t len)
 #ifdef UARTE_HAS_FRAME_TIMEOUT
 static uint32_t us_to_bauds(uint32_t baudrate, int32_t timeout)
 {
-	/* Divide baudrate by 1000 to avoid 64 bit division. This approach is not 100% accurate
-	 * but error is insignificant (within few bauds). Precise timeout my be more important
-	 * for higher baudrates but inaccuracy diminishes with higher baudrate.
-	 */
-	uint32_t bauds = ((baudrate / 1000) * timeout) / 1000;
+	uint32_t bauds = (uint32_t)sys_div64_u32_const((uint64_t)baudrate * timeout, 1000000);
 
 	return MIN(bauds, UARTE_FRAMETIMEOUT_COUNTERTOP_Msk);
 }
@@ -3308,9 +3305,6 @@ static int uarte_instance_deinit(const struct device *dev)
 
 #define UARTE_TIMER_REG(node) (NRF_TIMER_Type *)DT_REG_ADDR(node)
 
-#define UARTE_TIMER_NODE(idx) \
-	DT_NODELABEL(NRFX_CONCAT(timer, CONFIG_UART_##idx##_NRF_HW_ASYNC_TIMER))
-
 #define UARTE_TIMER_IRQN(idx) DT_IRQN(DT_PHANDLE(UARTE(idx), timer))
 
 #define UARTE_TIMER_IRQ_PRIO(idx) DT_IRQ(DT_PHANDLE(UARTE(idx), timer), priority)
@@ -3330,9 +3324,7 @@ static int uarte_instance_deinit(const struct device *dev)
 #define UARTE_COUNT_BYTES_WITH_TIMER_COMMON_CONFIG(idx)                            \
 	.timer_regs = COND_CODE_1(UARTE_USE_TIMER_PROP(idx),                       \
 		(UARTE_TIMER_REG(DT_PHANDLE(UARTE(idx), timer))),                  \
-		(COND_CODE_1(CONFIG_UART_##idx##_NRF_HW_ASYNC,                     \
-			(UARTE_TIMER_REG(UARTE_TIMER_NODE(idx))),                  \
-			(NULL)))),                                                 \
+		(NULL)),                                                           \
 	.uarte_irqn = DT_IRQN(UARTE(idx)),
 
 #define UARTE_COUNT_BYTES_WITH_TIMER_CONFIG(idx)					\
@@ -3618,6 +3610,10 @@ static int uarte_instance_deinit(const struct device *dev)
 				.tx_buff_size = sizeof(uarte##idx##_tx_buffer),\
 			};))
 
+#define UART_NRF_UARTE_DEVICE_DEFINE(idx) UART_NRF_UARTE_DEVICE(idx);
+#define UART_NRF_UARTE_DEVICE_SKIP(idx)
 #define COND_UART_NRF_UARTE_DEVICE(unused, prefix, i, _) \
-	IF_ENABLED(CONFIG_HAS_HW_NRF_UARTE##prefix##i, (UART_NRF_UARTE_DEVICE(prefix##i);))
+	COND_CODE_1(CONFIG_HAS_HW_NRF_UARTE##prefix##i, \
+		    (UART_NRF_UARTE_DEVICE_DEFINE), (UART_NRF_UARTE_DEVICE_SKIP))(prefix##i)
+
 UARTE_FOR_EACH_INSTANCE(COND_UART_NRF_UARTE_DEVICE, (), ())

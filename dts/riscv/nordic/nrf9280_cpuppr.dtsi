@@ -26,14 +26,18 @@ cpusys_vevif: &cpusys_vevif_tx {};
 / {
 	soc {
 		compatible = "simple-bus";
-		interrupt-parent = <&cpuppr_clic>;
 		ranges;
+		interrupt-parent = <&cpuppr_clic>;
 	};
 };
 
 &cpuppr_private {
 	compatible = "simple-bus";
 	ranges;
+};
+
+&cpuppr_vpr {
+	status = "okay";
 };
 
 &cpuppr_clic {

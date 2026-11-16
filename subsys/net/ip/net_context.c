@@ -1423,6 +1423,71 @@ int net_context_create_ipv6_new(struct net_context *context,
 }
 #endif /* CONFIG_NET_IPV6 */
 
+/* Get the interface the zone of a link-local or interface-local IPv6 peer
+ * names, NULL for other peers and for zone 0. Fails with -ENODEV if no
+ * interface has that index, and with -EINVAL if the socket is bound to another
+ * interface or to an address of another interface.
+ */
+static int get_zone_iface(struct net_context *context, const struct net_sockaddr_in6 *peer,
+			  struct net_if **iface)
+{
+	bool scoped = net_ipv6_is_ll_addr(&peer->sin6_addr) ||
+		      net_ipv6_is_addr_mcast_link(&peer->sin6_addr) ||
+		      net_ipv6_is_addr_mcast_iface(&peer->sin6_addr);
+
+	*iface = NULL;
+
+	if (!scoped || peer->sin6_scope_id == 0U) {
+		return 0;
+	}
+
+	*iface = net_if_get_by_index(peer->sin6_scope_id);
+	if (*iface == NULL) {
+		return -ENODEV;
+	}
+
+	if ((net_context_is_bound_to_iface(context) ||
+	     (net_context_is_local_addr_set(context) &&
+	      !net_ipv6_is_addr_unspecified(&net_sin6(&context->local)->sin6_addr))) &&
+	    net_context_get_iface(context) != *iface) {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* A TCP context bound neither to an interface nor to a unicast address got its
+ * interface at bind() time, from a peer that was not known yet. The source
+ * address is selected on that interface, so it must be the one the peer is
+ * reached through.
+ */
+static bool tcp_iface_from_peer(struct net_context *context)
+{
+	if (net_context_get_proto(context) != NET_IPPROTO_TCP ||
+	    net_context_is_bound_to_iface(context)) {
+		return false;
+	}
+
+	if (IS_ENABLED(CONFIG_NET_OFFLOAD) &&
+	    net_if_is_ip_offloaded(net_context_get_iface(context))) {
+		return false;
+	}
+
+	if (!net_context_is_local_addr_set(context)) {
+		return true;
+	}
+
+	if (IS_ENABLED(CONFIG_NET_IPV6) && net_context_get_family(context) == NET_AF_INET6) {
+		return net_ipv6_is_addr_unspecified(&net_sin6(&context->local)->sin6_addr);
+	}
+
+	if (IS_ENABLED(CONFIG_NET_IPV4) && net_context_get_family(context) == NET_AF_INET) {
+		return net_ipv4_is_addr_unspecified(&net_sin(&context->local)->sin_addr);
+	}
+
+	return false;
+}
+
 int net_context_connect(struct net_context *context,
 			const struct net_sockaddr *addr,
 			net_socklen_t addrlen,
@@ -1485,6 +1550,7 @@ int net_context_connect(struct net_context *context,
 	    net_context_get_family(context) == NET_AF_INET6) {
 		struct net_sockaddr_in6 *addr6 = (struct net_sockaddr_in6 *)
 							&context->remote;
+		struct net_if *zone_iface = NULL;
 
 		if (addrlen < sizeof(struct net_sockaddr_in6)) {
 			ret = -EINVAL;
@@ -1492,8 +1558,13 @@ int net_context_connect(struct net_context *context,
 		}
 
 		if (net_context_get_proto(context) == NET_IPPROTO_TCP &&
-		    net_ipv6_is_addr_mcast(&addr6->sin6_addr)) {
+		    net_ipv6_is_addr_mcast(&net_sin6(addr)->sin6_addr)) {
 			ret = -EADDRNOTAVAIL;
+			goto unlock;
+		}
+
+		ret = get_zone_iface(context, net_sin6(addr), &zone_iface);
+		if (ret < 0) {
 			goto unlock;
 		}
 
@@ -1502,6 +1573,12 @@ int net_context_connect(struct net_context *context,
 
 		addr6->sin6_port = net_sin6(addr)->sin6_port;
 		addr6->sin6_family = NET_AF_INET6;
+
+		if (zone_iface != NULL) {
+			addr6->sin6_scope_id = net_sin6(addr)->sin6_scope_id;
+		} else {
+			addr6->sin6_scope_id = 0U;
+		}
 
 		if (!net_ipv6_is_addr_unspecified(&addr6->sin6_addr)) {
 			context->flags |= NET_CONTEXT_REMOTE_ADDR_SET;
@@ -1522,6 +1599,19 @@ int net_context_connect(struct net_context *context,
 			goto unlock;
 		}
 
+		/* Replace the interface chosen at bind time with the one of the
+		 * zone, or else with the one the peer is reached through.
+		 */
+		if (zone_iface != NULL) {
+			net_context_set_iface(context, zone_iface);
+		} else if (tcp_iface_from_peer(context)) {
+			struct net_if *iface = net_if_ipv6_select_src_iface(&addr6->sin6_addr);
+
+			if (iface != NULL) {
+				net_context_set_iface(context, iface);
+			}
+		}
+
 		net_sin6(&context->local)->sin6_family = NET_AF_INET6;
 		net_sin6(local_addr)->sin6_family = NET_AF_INET6;
 		net_sin6(local_addr)->sin6_port = lport =
@@ -1537,16 +1627,22 @@ int net_context_connect(struct net_context *context,
 		   net_context_get_family(context) == NET_AF_INET) {
 		struct net_sockaddr_in *addr4 = (struct net_sockaddr_in *)
 							&context->remote;
+		struct net_if *iface = net_context_get_iface(context);
+		bool iface_from_peer;
 
 		if (addrlen < sizeof(struct net_sockaddr_in)) {
 			ret = -EINVAL;
 			goto unlock;
 		}
 
+		iface_from_peer = tcp_iface_from_peer(context);
+		if (iface_from_peer) {
+			iface = net_if_ipv4_select_src_iface(&net_sin(addr)->sin_addr);
+		}
+
 		if (net_context_get_proto(context) == NET_IPPROTO_TCP &&
-		    (net_ipv4_is_addr_mcast(&addr4->sin_addr) ||
-		     net_ipv4_is_addr_bcast(net_context_get_iface(context),
-					    &addr4->sin_addr))) {
+		    (net_ipv4_is_addr_mcast(&net_sin(addr)->sin_addr) ||
+		     net_ipv4_is_addr_bcast(iface, &net_sin(addr)->sin_addr))) {
 			ret = -EADDRNOTAVAIL;
 			goto unlock;
 		}
@@ -1568,6 +1664,13 @@ int net_context_connect(struct net_context *context,
 		ret = bind_default(context);
 		if (ret) {
 			goto unlock;
+		}
+
+		/* Replace the interface chosen at bind time with the one the
+		 * peer is reached through.
+		 */
+		if (iface_from_peer && iface != NULL) {
+			net_context_set_iface(context, iface);
 		}
 
 		net_sin(&context->local)->sin_family = NET_AF_INET;
@@ -1717,6 +1820,21 @@ __maybe_unused static int get_uint16_option(uint16_t option, int *value, uint32_
 	return 0;
 }
 
+__maybe_unused static int get_uint32_option(uint32_t option, int *value, uint32_t *len)
+{
+	if (value == NULL) {
+		return -EINVAL;
+	}
+
+	*value = (int)option;
+
+	if (len != NULL) {
+		*len = sizeof(int);
+	}
+
+	return 0;
+}
+
 static int get_context_priority(struct net_context *context,
 				void *value, uint32_t *len)
 {
@@ -1819,7 +1937,7 @@ static int get_context_rcvbuf(struct net_context *context,
 			      void *value, uint32_t *len)
 {
 #if defined(CONFIG_NET_CONTEXT_RCVBUF)
-	return get_uint16_option(context->options.rcvbuf,
+	return get_uint32_option(context->options.rcvbuf,
 				 value, len);
 #else
 	ARG_UNUSED(context);
@@ -1834,7 +1952,7 @@ static int get_context_sndbuf(struct net_context *context,
 				void *value, uint32_t *len)
 {
 #if defined(CONFIG_NET_CONTEXT_SNDBUF)
-	return get_uint16_option(context->options.sndbuf,
+	return get_uint32_option(context->options.sndbuf,
 				 value, len);
 #else
 	ARG_UNUSED(context);
@@ -2541,9 +2659,14 @@ static int context_setup_raw_ip_packet(net_sa_family_t family,
 			return -ENOBUFS;
 		}
 
+		hdr_len = (ipv4_hdr->vhl & 0x0F) * 4;
+		if (hdr_len < sizeof(struct net_ipv4_hdr) ||
+		    hdr_len > net_pkt_get_len(pkt)) {
+			return -EINVAL;
+		}
+
 		net_pkt_set_ip_hdr_len(pkt, sizeof(struct net_ipv4_hdr));
 
-		hdr_len = (ipv4_hdr->vhl & 0x0F) * 4;
 		if (hdr_len > sizeof(struct net_ipv4_hdr)) {
 			net_pkt_set_ipv4_opts_len(
 				pkt, hdr_len - sizeof(struct net_ipv4_hdr));
@@ -3055,6 +3178,14 @@ static int context_sendto(struct net_context *context,
 		    addr4->sin_family == NET_AF_INET6 &&
 		    net_ipv6_addr_is_v4_mapped(&net_sin6(dst_addr)->sin6_addr)) {
 			struct net_sockaddr_in6 *addr6 = (struct net_sockaddr_in6 *)dst_addr;
+
+			/* Only the unspecified IPv6 address has an IPv4 equivalent
+			 * to send from; an IPv4-mapped one cannot be bound.
+			 */
+			if (context->local.sa_family == NET_AF_INET6 &&
+			    !net_ipv6_is_addr_unspecified(&net_sin6(&context->local)->sin6_addr)) {
+				return -EINVAL;
+			}
 
 			mapped.sin_port = addr6->sin6_port;
 			mapped.sin_family = NET_AF_INET;
@@ -3970,6 +4101,7 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 					     void *user_data)
 {
 	struct net_context *context = find_context(conn);
+	net_context_recv_cb_t recv_cb;
 	enum net_verdict verdict = NET_DROP;
 
 	NET_ASSERT(context);
@@ -3980,9 +4112,6 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 	net_context_set_iface(context, net_pkt_iface(pkt));
 	net_pkt_set_context(pkt, context);
 
-	/* If there is no callback registered, then we can only drop
-	 * the packet.
-	 */
 	if (!context_allow_udp_options(context, pkt)) {
 		goto unlock;
 	}
@@ -3994,7 +4123,14 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 	}
 #endif /* CONFIG_NET_UDP_OPTIONS_DPLPMTUD */
 
-	if (!context->recv_cb) {
+	/* If there is no callback registered, then we can only drop
+	 * the packet.
+	 *
+	 * Snapshot the callback while holding the context lock. Another thread
+	 * may disable receiving immediately after the unlock below.
+	 */
+	recv_cb = context->recv_cb;
+	if (!recv_cb) {
 		goto unlock;
 	}
 
@@ -4009,7 +4145,7 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 
 	k_mutex_unlock(&context->lock);
 
-	context->recv_cb(context, pkt, ip_hdr, proto_hdr, 0, user_data);
+	recv_cb(context, pkt, ip_hdr, proto_hdr, 0, user_data);
 
 	verdict = NET_OK;
 
@@ -4384,6 +4520,31 @@ __maybe_unused static int set_uint16_option(uint16_t *option, const void *value,
 
 }
 
+/* The value is an int, so max must not be above INT_MAX. */
+__maybe_unused static int set_uint32_option(uint32_t *option, const void *value, uint32_t len,
+					    uint32_t max)
+{
+	int v;
+
+	if (value == NULL) {
+		return -EINVAL;
+	}
+
+	if (len != sizeof(int)) {
+		return -EINVAL;
+	}
+
+	v = *((const int *)value);
+
+	if (v < 0 || (uint32_t)v > max) {
+		return -EINVAL;
+	}
+
+	*option = (uint32_t)v;
+
+	return 0;
+}
+
 static int set_context_priority(struct net_context *context,
 				const void *value, uint32_t len)
 {
@@ -4483,7 +4644,7 @@ static int set_context_rcvbuf(struct net_context *context,
 				const void *value, uint32_t len)
 {
 #if defined(CONFIG_NET_CONTEXT_RCVBUF)
-	return set_uint16_option(&context->options.rcvbuf, value, len);
+	return set_uint32_option(&context->options.rcvbuf, value, len, NET_TCP_MAX_WINDOW);
 #else
 	ARG_UNUSED(context);
 	ARG_UNUSED(value);
@@ -4497,7 +4658,7 @@ static int set_context_sndbuf(struct net_context *context,
 				const void *value, uint32_t len)
 {
 #if defined(CONFIG_NET_CONTEXT_SNDBUF)
-	return set_uint16_option(&context->options.sndbuf, value, len);
+	return set_uint32_option(&context->options.sndbuf, value, len, NET_TCP_MAX_WINDOW);
 #else
 	ARG_UNUSED(context);
 	ARG_UNUSED(value);

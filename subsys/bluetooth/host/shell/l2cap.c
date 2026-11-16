@@ -122,7 +122,7 @@ static int l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
 				       l2cap_recv_delay_ms);
 		}
 
-		k_fifo_put(&l2cap_recv_fifo, buf);
+		k_fifo_put(&l2cap_recv_fifo, net_buf_take(&buf));
 		k_work_schedule(&l2ch->recv_work, K_MSEC(l2cap_recv_delay_ms));
 
 		return -EINPROGRESS;
@@ -539,7 +539,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(l2cap_cmds,
 	SHELL_CMD_ARG(connect, NULL, "<psm> [sec_level]", cmd_connect, 2, 1),
 	SHELL_CMD_ARG(disconnect, NULL, HELP_NONE, cmd_disconnect, 1, 0),
 	SHELL_CMD_ARG(metrics, NULL, "<value on, off>", cmd_metrics, 1, 1),
-	SHELL_CMD_ARG(recv, NULL, "[delay (in milliseconds)", cmd_recv, 1, 1),
+	SHELL_CMD_ARG(recv, NULL, "[delay (in milliseconds)]", cmd_recv, 1, 1),
 	SHELL_CMD_ARG(register, NULL, "<psm> [sec_level] "
 		      "[policy: allowlist, 16byte_key]", cmd_register, 2, 2),
 	SHELL_CMD_ARG(send, NULL, "[number of packets] [length of packet(s)]",

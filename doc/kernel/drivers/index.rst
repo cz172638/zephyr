@@ -444,6 +444,11 @@ to the associated device node in the DTS file. For example:
            };
    };
 
+.. note::
+   Some drivers might not work correctly if deferred initialization is used,
+   as they may expect to be initialized at boot time.
+   Network drivers currently do not support deferred initialization.
+
 System Drivers
 **************
 
@@ -476,9 +481,7 @@ assertions.
 
 When it is appropriate to return error conditions for the caller to
 check, 0 should be returned on success and a POSIX :file:`errno.h` code
-returned on failure.  See
-https://github.com/zephyrproject-rtos/zephyr/wiki/Naming-Conventions#return-codes
-for details about this.
+returned on failure. See :c:group:`system_errno` for details about this.
 
 Memory Mapping
 **************

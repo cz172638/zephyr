@@ -102,6 +102,42 @@ Default Zephyr Peripheral Mapping
 +-----------+-----------------+----------------------------+
 | P2.0      | GPIO            | Button SW2                 |
 +-----------+-----------------+----------------------------+
+| P9.0      | SCB0 I2C SCL    | MikroBUS I2C               |
++-----------+-----------------+----------------------------+
+| P9.2      | SCB0 I2C SDA    | MikroBUS I2C               |
++-----------+-----------------+----------------------------+
+| P7.0      | SCB2 SPI CLK    | MikroBUS SPI               |
++-----------+-----------------+----------------------------+
+| P7.1      | SCB2 SPI MOSI   | MikroBUS SPI               |
++-----------+-----------------+----------------------------+
+| P7.2      | SCB2 SPI MISO   | MikroBUS SPI               |
++-----------+-----------------+----------------------------+
+| P9.5      | GPIO            | MikroBUS SPI CS            |
++-----------+-----------------+----------------------------+
+
+MikroBUS Connector
+------------------
+
+The board exposes one MikroBUS slot (``mikrobus_header``) with the following
+aliases pre-configured:
+
+- ``mikrobus_i2c`` — ``i2c0`` (SCB0), P9.0 (SCL) / P9.2 (SDA), 100 kHz
+- ``mikrobus_spi`` — SCB2 SPI, P7.0 (CLK) / P7.1 (MOSI) / P7.2 (MISO),
+  GPIO CS on P9.5; SCB oversampling >= 4 caps the maximum rate at
+  CLK_HF2 / 4 = 20 MHz. SCB2 is shared with ``arduino_spi`` and is disabled
+  by default; the shield enables it.
+- ``mikrobus_adc`` — AN pin mapped to ``adc0`` channel 4
+  (PASS[0].SAR[0].CH[4])
+
+Connector pin limitations:
+
+- **AN (slot 0):** Wired to PASS[0].SAR[0].CH[4]; ADC input only, no GPIO.
+- **RST (slot 1):** Wired to XRES_L_MCU (device reset); not usable as a
+  software-controlled GPIO.
+- **PWM (slot 6, P5.1):** Routed to P5.1 but no TCPWM channel is assigned
+  in the board configuration; available as GPIO only.
+- **UART (slots 8/9, P3.2/P3.3):** Routed as GPIO only; MikroBUS UART is
+  not supported yet.
 
 System Clock
 ============
@@ -322,15 +358,14 @@ derived from the Zephyr partition layout and flash the signed image:
      --image  <build>/mcuboot/zephyr/zephyr.hex \
      --output <build>/mcuboot/zephyr/zephyr.signed.hex \
      --key    <oem-private-key>.pem \
-     --hex-addr 0x32000000 \
      --header-size 0x400 --slot-size 0x10000 \
      --align 1 --min-erase-size 0x200 --erased-val 0 --overwrite-only
 
    west flash --hex-file <build>/mcuboot/zephyr/zephyr.signed.hex
 
-``--hex-addr 0x32000000`` is required because the SAHB window is the
-writable data-access path to the flash; the CBUS window
-(``0x12000000``) is read-only and cannot be written.
+``zephyr.hex`` is already addressed at the SAHB window (``0x32000000``), so
+no ``--hex-addr`` override is needed. ``west flash`` writes through the CBUS
+alias, which OpenOCD remaps onto the same SAHB flash banks.
 When using MCUboot, the Zephyr application in ``slot0_partition`` is
 signed by the standard ``imgtool`` sysbuild flow and does not require
 EPT signing.

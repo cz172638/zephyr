@@ -980,8 +980,6 @@ static struct net_stats_eth *eth_mchp_get_stats(const struct device *dev,
 				gmac_regs->GMAC_JR + err_ofr + gmac_regs->GMAC_UFR;
 	eth_stats->errors.tx +=
 		err_scf + err_mcf + err_ecf + gmac_regs->GMAC_TUR + gmac_regs->GMAC_CSE;
-	eth_stats->multicast.rx += gmac_regs->GMAC_MFR;
-	eth_stats->multicast.tx += gmac_regs->GMAC_MFT;
 	eth_stats->tx_dropped = 0;
 	eth_stats->tx_restart_queue = 0;
 	eth_stats->tx_timeout_count = 0;
@@ -1055,7 +1053,7 @@ static int eth_mchp_get_config(const struct device *dev, struct net_if *iface __
 	return retval;
 }
 
-static const struct ethernet_api eth_mchp_api = {
+static DEVICE_API(ethernet, eth_mchp_api) = {
 	.iface_api.init = eth_mchp_iface_init,
 #if defined(CONFIG_NET_STATISTICS_ETHERNET)
 	.get_stats = eth_mchp_get_stats,

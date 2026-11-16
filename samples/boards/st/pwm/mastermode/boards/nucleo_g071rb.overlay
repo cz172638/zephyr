@@ -20,11 +20,12 @@
 	 */
 	st,countermode = <STM32_TIM_COUNTERMODE_UP>;
 	st,mastermode = "UPDATE";
+	status = "okay";
 
 	pwm1: pwm {
-		status = "okay";
 		pinctrl-0 = <>;
 		pinctrl-names = "default";
+		status = "okay";
 	};
 };
 

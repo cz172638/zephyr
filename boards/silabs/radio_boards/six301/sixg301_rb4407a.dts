@@ -46,6 +46,7 @@
 	};
 
 	chosen {
+		zephyr,bt-c2h-uart = &eusart0;
 		zephyr,bt-hci = &bt_hci_silabs;
 		zephyr,code-partition = &slot0_partition;
 		zephyr,console = &eusart0;
@@ -251,7 +252,7 @@
 &gpioa {
 	status = "okay";
 
-	board-controller-enable {
+	vcom_enable: vcom-enable {
 		gpio-hog;
 		gpios = <8 GPIO_ACTIVE_HIGH>;
 		output-high;

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -891,6 +892,11 @@ static int h3_encode_response_headers(uint8_t *buf, size_t buflen,
 		size_t name_len = strlen(hdr->name);
 		size_t val_len = strlen(hdr->value);
 
+		if (http_server_is_connection_specific_header(hdr->name)) {
+			LOG_DBG("Connection-specific header '%s' dropped", hdr->name);
+			continue;
+		}
+
 		if (strcasecmp(hdr->name, "content-type") == 0) {
 			content_type_sent = true;
 		}
@@ -912,7 +918,11 @@ static int h3_encode_response_headers(uint8_t *buf, size_t buflen,
 			return -ENOSPC;
 		}
 
-		memcpy(buf + pos, hdr->name, name_len);
+		/* Field names are lowercase in HTTP/3 (RFC 9114, Section 4.2) */
+		for (size_t j = 0; j < name_len; j++) {
+			buf[pos + j] = tolower((unsigned char)hdr->name[j]);
+		}
+
 		pos += name_len;
 
 		/* Value: no Huffman */
@@ -1296,7 +1306,7 @@ static int h3_handle_static_fs_resource(
 	}
 
 	/* Get filename and content-type from URL */
-	len = strlen((const char *)client->url_buffer);
+	len = http_server_path_len_without_query((const char *)client->url_buffer);
 
 	if (len == 1) {
 		snprintk(fname, sizeof(fname), "%s/index.html",
@@ -1305,8 +1315,8 @@ static int h3_handle_static_fs_resource(
 		http_server_get_content_type_from_extension(
 			(char *)client->url_buffer, content_type,
 			sizeof(content_type));
-		snprintk(fname, sizeof(fname), "%s%s",
-			 static_fs_detail->fs_path, client->url_buffer);
+		snprintk(fname, sizeof(fname), "%s%.*s",
+			 static_fs_detail->fs_path, len, client->url_buffer);
 	}
 
 	ret = http_server_find_file(fname, sizeof(fname), &file_size, 0, NULL);
@@ -1337,6 +1347,13 @@ static int h3_handle_static_fs_resource(
 		if (len < 0) {
 			LOG_DBG("[%p] H3: filesystem read error (%d)", client, len);
 			ret = len;
+			goto out;
+		}
+
+		if (len == 0) {
+			LOG_DBG("[%p] H3: file shorter than announced size (%d bytes left)",
+				client, remaining);
+			ret = -EIO;
 			goto out;
 		}
 

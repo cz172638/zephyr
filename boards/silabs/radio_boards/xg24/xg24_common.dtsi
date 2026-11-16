@@ -13,6 +13,7 @@
 
 / {
 	chosen {
+		zephyr,bt-c2h-uart = &usart0;
 		zephyr,bt-hci = &bt_hci_silabs;
 		zephyr,code-partition = &slot0_partition;
 		zephyr,console = &usart0;
@@ -128,9 +129,9 @@
 		dpd-wakeup-sequence = <30000 20 35000>;
 		has-dpd;
 		jedec-id = [c2 28 14];
-		mxicy,mx25r-power-mode = "low-power";
 		size = <DT_SIZE_M(8)>;
 		spi-max-frequency = <DT_FREQ_M(33)>;
+		mxicy,mx25r-power-mode = "low-power";
 		zephyr,pm-device-runtime-auto;
 	};
 };
@@ -245,9 +246,9 @@
 };
 
 &ieee802154 {
-	status = "okay";
 	hfxo = <&hfxo>;
 	sleep-clock = <&lfxo>;
+	status = "okay";
 };
 
 &protimer {

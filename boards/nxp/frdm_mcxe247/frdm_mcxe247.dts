@@ -12,8 +12,8 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 
 / {
-	model = "NXP FRDM-MCXE247 board";
 	compatible = "nxp,mcxe247", "nxp,mcx";
+	model = "NXP FRDM-MCXE247 board";
 
 	aliases {
 		led0 = &red_led;
@@ -101,17 +101,17 @@
 };
 
 &adc0 {
-	status = "okay";
 	sample-time = <12>;
 	vref-mv = <3300>;
 	pinctrl-0 = <&pinmux_adc0>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &cmp0 {
-	status = "okay";
 	pinctrl-0 = <&pinmux_cmp0>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &cpu0 {
@@ -198,18 +198,46 @@
 	status = "okay";
 };
 
-&lpuart1 {
-	status = "okay";
-	current-speed = <115200>;
-	pinctrl-0 = <&pinmux_lpuart1>;
+&enet {
+	pinctrl-0 = <&pinmux_enet>;
 	pinctrl-names = "default";
 };
 
-&lpuart2 {
+&enet_mac {
+	phy-handle = <&phy0>;
+	phy-connection-type = "rmii";
+	zephyr,random-mac-address;
 	status = "okay";
+};
+
+&enet_mdio {
+	pinctrl-0 = <&pinmux_enet_mdio>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	phy0: ethernet-phy@0 {
+		compatible = "microchip,lan8742";
+		reg = <0>;
+		reset-gpios = <&gpioc 3 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&enet_ptp_clock {
+	status = "okay";
+};
+
+&lpuart1 {
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_lpuart1>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&lpuart2 {
 	current-speed = <115200>;
 	pinctrl-0 = <&pinmux_lpuart2>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &lpit0 {
@@ -254,9 +282,9 @@
 };
 
 &lpspi1 {
-	status = "okay";
 	pinctrl-0 = <&pinmux_lpspi1>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &edma {

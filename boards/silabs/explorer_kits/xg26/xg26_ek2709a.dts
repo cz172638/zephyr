@@ -9,10 +9,11 @@
 #include "xg26_explorer_kit.dtsi"
 
 / {
-	model = "Silicon Labs EFR32xG26 Explorer Kit";
 	compatible = "silabs,xg26_ek2709a", "silabs,efr32mg26";
+	model = "Silicon Labs EFR32xG26 Explorer Kit";
 
 	chosen {
+		zephyr,bt-c2h-uart = &usart0;
 		zephyr,bt-hci = &bt_hci_silabs;
 		zephyr,ieee802154 = &ieee802154;
 		zephyr,openthread-counter = &protimer;
@@ -24,9 +25,9 @@
 };
 
 &ieee802154 {
-	status = "okay";
 	hfxo = <&hfxo>;
 	sleep-clock = <&lfxo>;
+	status = "okay";
 };
 
 &hfxo {

@@ -86,7 +86,7 @@ enum _virtio_net_hdr_gso_types {
 };
 
 #define VIRTIO_NET_BUFLEN                                                                          \
-	(NET_ETH_MTU + sizeof(struct net_eth_hdr) + sizeof(struct _virtio_net_hdr))
+	(NET_ETH_MAX_FRAME_SIZE + sizeof(struct _virtio_net_hdr))
 /* virtqueue pairs are numbered from 1 upwards */
 /* convert pair number to virtqueue index */
 #define VIRTQ_RX(n) ((n - 1) * 2)
@@ -138,6 +138,10 @@ static int virtnet_send(const struct device *dev, struct net_pkt *pkt)
 	const struct virtnet_config *config = dev->config;
 	struct virtnet_data *data = dev->data;
 	size_t len = net_pkt_get_len(pkt);
+
+	if (len > NET_ETH_MAX_FRAME_SIZE) {
+		return -EMSGSIZE;
+	}
 
 	if (net_pkt_read(pkt, data->txb + sizeof(struct _virtio_net_hdr), len)) {
 		LOG_ERR("could not read contents of packet to be sent");
@@ -232,7 +236,7 @@ static int virtnet_dev_init(const struct device *dev)
 	return 0;
 }
 
-static struct ethernet_api virtnet_api = {
+static DEVICE_API(ethernet, virtnet_api) = {
 	.iface_api.init = virtnet_if_init,
 	.get_capabilities = virtnet_get_capabilities,
 	.send = virtnet_send,

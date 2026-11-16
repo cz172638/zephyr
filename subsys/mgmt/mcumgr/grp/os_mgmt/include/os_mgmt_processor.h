@@ -139,10 +139,12 @@ extern "C" {
 #define PROCESSOR_NAME "cortex-a76"
 #elif defined(CONFIG_CPU_CORTEX_A78)
 #define PROCESSOR_NAME "cortex-a78"
-#elif defined(CONFIG_CPU_CORTEX_A510)
-#define PROCESSOR_NAME "cortex-a510"
 #elif defined(CONFIG_CPU_CORTEX_A320)
 #define PROCESSOR_NAME "cortex-a320"
+#elif defined(CONFIG_CPU_CORTEX_A510)
+#define PROCESSOR_NAME "cortex-a510"
+#elif defined(CONFIG_CPU_CORTEX_A520)
+#define PROCESSOR_NAME "cortex-a520"
 #elif defined(CONFIG_CPU_CORTEX_A720)
 #define PROCESSOR_NAME "cortex-a720"
 #elif defined(CONFIG_CPU_CORTEX_R82)
@@ -194,6 +196,8 @@ extern "C" {
 #define PROCESSOR_NAME "openrisc"
 #elif defined(CONFIG_TRICORE)
 #define PROCESSOR_NAME "tricore"
+#elif defined(CONFIG_HEXAGON)
+#define PROCESSOR_NAME "hexagon"
 #endif
 
 #if defined(CONFIG_ARCH_POSIX)

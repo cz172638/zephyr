@@ -37,6 +37,9 @@ LOG_MODULE_REGISTER(ptp_clock_nxp_enet_qos);
  */
 #define PTP_CLOCK_NXP_ENET_QOS_PTPCLK_HZ 50000000U
 
+/* Rate offsets below 1 ppb, which is 65.536 in scaled ppm, are not applied. */
+#define PTP_CLOCK_NXP_ENET_QOS_SCALED_PPM_MIN 66
+
 struct ptp_clock_nxp_enet_qos_config {
 	const struct device *enet_qos_dev;	/* device of the parent ENET QoSmodule */
 	const struct device *clock_dev;
@@ -132,19 +135,24 @@ static int ptp_clock_nxp_enet_qos_adjust(const struct device *dev, int increment
 	return 0;
 }
 
-static int ptp_clock_nxp_enet_qos_rate_adjust(const struct device *dev, double ratio)
+static int ptp_clock_nxp_enet_qos_adjust_rate(const struct device *dev, int64_t scaled_ppm)
 {
-	LOG_DBG("PTP rate adjust ratio: %f", ratio);
+	LOG_DBG("PTP rate adjust scaled ppm: %lld", (long long)scaled_ppm);
 
 	struct ptp_clock_nxp_enet_qos_data *data = dev->data;
 	uint32_t new_addend;
+	int ret;
 
-	/* No meaningful change */
-	if ((ratio > 1.0 && ratio - 1.0 < 1e-9) || (ratio < 1.0 && 1.0 - ratio < 1e-9)) {
+	/* No meaningful change, less than 1 ppb */
+	if ((scaled_ppm != 0) && (scaled_ppm > -PTP_CLOCK_NXP_ENET_QOS_SCALED_PPM_MIN) &&
+	    (scaled_ppm < PTP_CLOCK_NXP_ENET_QOS_SCALED_PPM_MIN)) {
 		return 0;
 	}
 
-	new_addend = (uint32_t)((double)data->nominal_addend * ratio);
+	ret = ptp_clock_adjust_by_scaled_ppm(data->nominal_addend, scaled_ppm, &new_addend);
+	if (ret != 0) {
+		return ret;
+	}
 
 	k_mutex_lock(&data->ptp_mutex, K_FOREVER);
 
@@ -194,13 +202,7 @@ static int ptp_clock_nxp_enet_qos_init(const struct device *dev)
 	 * nanosecond rollover in digital logic
 	 */
 	data->base->MAC_TIMESTAMP_CONTROL =
-		ENET_MAC_TIMESTAMP_CONTROL_TSENA_MASK | ENET_MAC_TIMESTAMP_CONTROL_TSIPV4ENA_MASK |
-		ENET_MAC_TIMESTAMP_CONTROL_TSIPV6ENA_MASK |
-		ENET_MAC_TIMESTAMP_CONTROL_TSENALL_MASK |
-		ENET_MAC_TIMESTAMP_CONTROL_TSEVNTENA_MASK |
-		ENET_MAC_TIMESTAMP_CONTROL_SNAPTYPSEL_MASK |
-		ENET_MAC_TIMESTAMP_CONTROL_TSCTRLSSR(1) |
-		ENET_MAC_TIMESTAMP_CONTROL_TSVER2ENA_MASK | ENET_MAC_TIMESTAMP_CONTROL_TSIPENA_MASK;
+		ENET_MAC_TIMESTAMP_CONTROL_TSENA_MASK | ENET_MAC_TIMESTAMP_CONTROL_TSCTRLSSR(1);
 
 	/* Step 2: initialize system time to zero (coarse mode — completes quickly) */
 	data->base->MAC_SYSTEM_TIME_NANOSECONDS_UPDATE = 0;
@@ -225,6 +227,19 @@ static int ptp_clock_nxp_enet_qos_init(const struct device *dev)
 	while (data->base->MAC_TIMESTAMP_CONTROL & ENET_MAC_TIMESTAMP_CONTROL_TSADDREG_MASK) {
 	}
 
+	/*
+	 * Program the packet timestamp filters after the fine-update timebase is ready.
+	 * Enabling them during coarse-mode initialization can leave RX capture inactive
+	 * even though MAC_TIMESTAMP_CONTROL reads back with the capture bits set.
+	 */
+	data->base->MAC_TIMESTAMP_CONTROL |=
+		ENET_MAC_TIMESTAMP_CONTROL_TSIPV4ENA_MASK |
+		ENET_MAC_TIMESTAMP_CONTROL_TSIPV6ENA_MASK |
+		ENET_MAC_TIMESTAMP_CONTROL_TSENALL_MASK |
+		ENET_MAC_TIMESTAMP_CONTROL_TSEVNTENA_MASK |
+		ENET_MAC_TIMESTAMP_CONTROL_SNAPTYPSEL_MASK |
+		ENET_MAC_TIMESTAMP_CONTROL_TSVER2ENA_MASK | ENET_MAC_TIMESTAMP_CONTROL_TSIPENA_MASK;
+
 	/* Allow the timestamp configuration to propagate to the MAC clock domain. */
 	k_busy_wait(10);
 
@@ -235,7 +250,7 @@ static DEVICE_API(ptp_clock, ptp_clock_nxp_enet_qos_api) = {
 	.set = ptp_clock_nxp_enet_qos_set,
 	.get = ptp_clock_nxp_enet_qos_get,
 	.adjust = ptp_clock_nxp_enet_qos_adjust,
-	.rate_adjust = ptp_clock_nxp_enet_qos_rate_adjust,
+	.adjust_rate = ptp_clock_nxp_enet_qos_adjust_rate,
 };
 
 #define PTP_CLOCK_NXP_ENET_QOS_INIT(n)                                                             \

@@ -140,37 +140,24 @@ static int cst8xx_process(const struct device *dev)
 	uint8_t event;
 	uint16_t row, col;
 	bool pressed;
-	uint16_t x;
-	uint16_t y;
+	uint8_t buf[6];
+	uint8_t *pos = &buf[2];
 
-#ifdef CONFIG_INPUT_CST8XX_EV_DEVICE
-	uint8_t gesture;
-
-	ret = i2c_burst_read_dt(&cfg->i2c, CST8XX_REG_GESTURE_ID, &gesture, sizeof(gesture));
+	/* Read the gesture, finger count, X and Y in one transfer so that all come from the same
+	 * sample
+	 */
+	ret = i2c_burst_read_dt(&cfg->i2c, CST8XX_REG_GESTURE_ID, buf, sizeof(buf));
 	if (ret < 0) {
-		LOG_ERR("Could not read gesture-ID data (%d)", ret);
+		LOG_ERR("Could not read position data (%d)", ret);
 		return ret;
 	}
-#endif
+	col = sys_get_be16(&pos[0]) & 0x0fff;
+	row = sys_get_be16(&pos[2]) & 0x0fff;
 
-	ret = i2c_burst_read_dt(&cfg->i2c, CST8XX_REG_XPOS_H, (uint8_t *)&x, sizeof(x));
-	if (ret < 0) {
-		LOG_ERR("Could not read x data (%d)", ret);
-		return ret;
-	}
+	event = pos[0] >> CST8XX_EVENT_BITS_POS;
+	pressed = (buf[1] != 0U) && ((event == EVENT_PRESS_DOWN) || (event == EVENT_CONTACT));
 
-	ret = i2c_burst_read_dt(&cfg->i2c, CST8XX_REG_YPOS_H, (uint8_t *)&y, sizeof(y));
-	if (ret < 0) {
-		LOG_ERR("Could not read y data (%d)", ret);
-		return ret;
-	}
-	col = sys_be16_to_cpu(x) & 0x0fff;
-	row = sys_be16_to_cpu(y) & 0x0fff;
-
-	event = (x & 0xff) >> CST8XX_EVENT_BITS_POS;
-	pressed = (event == EVENT_PRESS_DOWN) || (event == EVENT_CONTACT);
-
-	LOG_DBG("event: %d, row: %d, col: %d", event, row, col);
+	LOG_DBG("fingers: %d, event: %d, row: %d, col: %d", buf[1], event, row, col);
 
 	if (pressed) {
 		input_touchscreen_report_pos(dev, col, row, K_FOREVER);
@@ -184,10 +171,10 @@ static int cst8xx_process(const struct device *dev)
 	 * some applications may want to process it
 	 */
 
-	LOG_DBG("gesture: %d", gesture);
+	LOG_DBG("gesture: %d", buf[0]);
 
-	if (gesture != CST8XX_GESTURE_CODE_NONE) {
-		input_report(dev, INPUT_EV_DEVICE, (uint16_t)gesture, 0, true, K_FOREVER);
+	if (buf[0] != CST8XX_GESTURE_CODE_NONE) {
+		input_report(dev, INPUT_EV_DEVICE, (uint16_t)buf[0], 0, true, K_FOREVER);
 	}
 #endif
 
@@ -206,14 +193,14 @@ static void cst8xx_isr_handler(const struct device *dev, struct gpio_callback *c
 {
 	struct cst8xx_data *data = CONTAINER_OF(cb, struct cst8xx_data, int_gpio_cb);
 
-	k_work_submit(&data->work);
+	input_work_submit(&data->work);
 }
 #else
 static void cst8xx_timer_handler(struct k_timer *timer)
 {
 	struct cst8xx_data *data = CONTAINER_OF(timer, struct cst8xx_data, timer);
 
-	k_work_submit(&data->work);
+	input_work_submit(&data->work);
 }
 #endif
 

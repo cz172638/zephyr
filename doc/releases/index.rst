@@ -27,14 +27,16 @@ recommended starting point is either the **latest stable release** or the
    :reversed:
 
    release-notes-3.7
-   release-notes-4.[3-5]
+   release-notes-4.[4-5]
+   release-notes-draft
    migration-guide-3.7
-   migration-guide-4.[3-5]
+   migration-guide-4.[4-5]
+   migration-guide-draft
 
 .. note::
-   | The next planned release is **Zephyr 4.5**, targeted for **October 2026**.
-   | The working drafts of the associated :doc:`Release Notes <release-notes-4.5>`
-     and :doc:`Migration Guide <migration-guide-4.5>` are already available.
+   | The next planned release is **Zephyr 4.6**, targeted for **April 2027**.
+   | The working drafts of the associated :doc:`Release Notes <release-notes-draft>`
+     and :doc:`Migration Guide <migration-guide-draft>` are already available.
 
 .. list-table::
     :header-rows: 1
@@ -44,18 +46,18 @@ recommended starting point is either the **latest stable release** or the
       - EOL
       - Status
       - Supporting Documentation
+    * - `Zephyr 4.5.0`_
+      - 2026-10-28
+      - 2027-10-28
+      - Latest stable
+      - * :doc:`Release Notes <release-notes-4.5>`
+        * :doc:`Migration Guide <migration-guide-4.5>`
     * - `Zephyr 4.4.0`_
       - 2026-04-14
       - 2027-04-12
-      - Latest stable
+      - Stable
       - * :doc:`Release Notes <release-notes-4.4>`
         * :doc:`Migration Guide <migration-guide-4.4>`
-    * - `Zephyr 4.3.0`_
-      - 2025-11-14
-      - 2026-10-15
-      - Stable
-      - * :doc:`Release Notes <release-notes-4.3>`
-        * :doc:`Migration Guide <migration-guide-4.3>`
     * - `Zephyr 3.7.0 (LTS3)`_
       - 2024-07-26
       - 2029-07-27
@@ -162,28 +164,47 @@ following releases:
 
 For more information, see  :ref:`Security Vulnerability Reporting <reporting>`.
 
+.. _release_documentation:
+
 Release documentation
 *********************
 
-Each release includes two companion documents:
+Each release is documented in three related documents, each with a distinct purpose:
 
-- Release notes summarize changes made across the project during the release cycle.
-- Migration guides describe changes that require action when moving an application from one major
+- Release notes document the capabilities and the impact of the release.
+- Migration guides document the actions required when moving an application from one major
   release to the next.
+- The change inventory, generated from the tree and published as an appendix to the release notes,
+  documents the individual interface and configuration changes.
+
+During the development cycle, contributors add to the working drafts for the next release,
+:zephyr_file:`doc/releases/release-notes-draft.rst` and
+:zephyr_file:`doc/releases/migration-guide-draft.rst`, in the same pull request as the change
+they describe. An entry that misses a release stays in the draft and targets the next one.
+
+.. _release_notes_guidelines:
 
 Release Notes
 =============
 
-Release notes contain a list of changes that have been made to the different
-areas of the project during the development cycle of the release.
-Changes that require the user to modify their own application to support the new
-release may be mentioned in the release notes, but the details regarding *what*
-needs to be changed are to be detailed in the release's migration guide.
+Release notes provide a concise, curated summary of the significant changes in a release, focusing
+on new capabilities, major improvements, and changes that materially affect users and developers.
+They explain what changed and why it matters, rather than provide an exhaustive inventory of new
+APIs, Kconfig options, devicetree bindings, drivers, or other implementation details.
+
+Individual changes are included only when they introduce meaningful functionality, affect existing
+behavior, or require user awareness. Related changes are grouped and summarized, with links to the
+detailed documentation where appropriate. Breaking changes, deprecations, and required upgrade
+actions belong in the migration guide, while comprehensive lists of interface and configuration
+changes are maintained separately in the change inventory. The goal is to communicate the
+significance and impact of a release, not to reproduce its development history.
 
 Updates to the release notes post release cycle is permitted but limited to
 style, typographical fixes and to upmerge the notes from maintenance release
 branches with the sole purpose of keeping the latest documentation consistent
 with the changes in the project.
+
+.. _migration_guide_guidelines:
 
 Migration Guides
 ================
@@ -209,10 +230,29 @@ Each entry in the migration guide must include a brief explanation of the change
 as well as refer to the Pull Request that introduced it, in order for the user
 to be able to understand the context of the change.
 
+.. _change_inventory_guidelines:
+
+Change Inventory
+================
+
+The change inventory lists every board, shield, SoC, devicetree binding, Kconfig option, C API,
+code sample and module that was added, removed, deprecated or changed since the previous release,
+each linked to its documentation. It is generated from the tree by
+:zephyr_file:`scripts/release/gen_change_inventory.py`, which compares two revisions, and is never
+edited by hand: contributors do not list new or removed items in the release notes, they make sure
+the item is documented where the inventory links to, such as the binding description, the Kconfig
+help text, the API documentation or the board page.
+
+The release manager regenerates the inventory for each release candidate and for the release,
+for example::
+
+   scripts/release/gen_change_inventory.py --title "Zephyr 4.6 change inventory" \
+       v4.5.0 v4.6.0-rc1 doc/releases/change-inventory-4.6
+
 .. _`GitHub repository`: https://github.com/zephyrproject-rtos/zephyr
 .. _`GitHub tagged releases`: https://github.com/zephyrproject-rtos/zephyr/tags
 .. _`Zephyr 1.14.1 (LTS1)`: https://docs.zephyrproject.org/1.14.1/
 .. _`Zephyr 2.7.6 (LTS2)`: https://docs.zephyrproject.org/2.7.6/
 .. _`Zephyr 3.7.0 (LTS3)`: https://docs.zephyrproject.org/3.7.0/
-.. _`Zephyr 4.3.0`: https://docs.zephyrproject.org/4.3.0/
 .. _`Zephyr 4.4.0`: https://docs.zephyrproject.org/4.4.0/
+.. _`Zephyr 4.5.0`: https://docs.zephyrproject.org/4.5.0/

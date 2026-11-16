@@ -6,26 +6,9 @@
 /dts-v1/;
 
 #include <arm64/rockchip/rk3588.dtsi>
-#include <common/mem.h>
+#include "../common/rk3588_rock_5b_common.dtsi"
 
 / {
-	model = "Radxa ROCK 5B+";
 	compatible = "radxa,rock-5b-plus", "rockchip,rk3588";
-
-	chosen {
-		zephyr,console = &uart2;
-		zephyr,shell-uart = &uart2;
-		zephyr,sram = &dram;
-	};
-
-	dram: memory@10000000 {
-		compatible = "mmio-sram";
-		device_type = "memory";
-		reg = <0x10000000 DT_SIZE_M(128)>;
-	};
-};
-
-&uart2 {
-	status = "okay";
-	current-speed = <1500000>;
+	model = "Radxa ROCK 5B+";
 };

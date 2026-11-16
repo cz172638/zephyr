@@ -1,4 +1,4 @@
-# Copyright 2022 NXP
+# SPDX-FileCopyrightText: Copyright 2022, 2026 NXP
 # SPDX-License-Identifier: Apache-2.0
 
 zephyr_library()
@@ -14,6 +14,10 @@ zephyr_library_sources_ifdef(CONFIG_SAM_SDMMC sam_sdmmc.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_AMBIQ sdhc_ambiq.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_AMEBA sdhc_ameba.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_BFLB sdhc_bflb.c)
+zephyr_library_sources_ifdef(CONFIG_SDHC_COMMON sdhc_common.c)
+zephyr_library_sources_ifdef(CONFIG_SDHC_EMUL emul/sdhc_emul_core.c emul/sdhc_emul.c)
+zephyr_library_sources_ifdef(CONFIG_SDHC_EMUL_CARD emul/sdhc_emul_core.c emul/sdhc_emul_card.c)
+zephyr_library_sources_ifdef(CONFIG_SDHC_EMUL_CONTROLLER emul/sdhc_emul_controller.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_ESP32 sdhc_esp32.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_INFINEON_CAT1_PDL sdhc_infineon.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_LITEX_LITESDCARD sdhc_litex_litesdcard.c)
@@ -21,6 +25,7 @@ zephyr_library_sources_ifdef(CONFIG_SDHC_MAX32 sdhc_max32.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_MCHP_G1 sdhc_mchp_g1.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_NUMAKER sdhc_numaker.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_RENESAS_RA sdhc_renesas_ra.c)
+zephyr_library_sources_ifdef(CONFIG_SDHC_STANDARD_CORE sdhc_standard_core.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_STM32_SDMMC sdhc_stm32.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_TI_AM654 sdhc_ti_am654.c)
 zephyr_library_sources_ifdef(CONFIG_SDHC_XENON sdhc_xenon.c)

@@ -123,9 +123,33 @@ static bool should_enable_ldro(enum lora_datarate sf, enum lora_signal_bandwidth
 	return symbol_time_us > 16380;
 }
 
-static int sx126x_validate_config(const struct lora_modem_config *config)
+static int sx126x_validate_config(const struct device *dev, const struct lora_modem_config *config)
 {
 	uint8_t bw_reg;
+	const struct sx126x_hal_config *hal_config = dev->config;
+
+	/* Check modulation parameters for LLCC68 */
+	if (DT_HAS_COMPAT_STATUS_OKAY(semtech_llcc68) && hal_config->variant == SX126X_LLCC68) {
+		if (config->bandwidth == BW_125_KHZ) {
+			if (config->datarate > SF_9) {
+				LOG_ERR("Invalid datarate for LLCC68");
+				return -EINVAL;
+			}
+		} else if (config->bandwidth == BW_250_KHZ) {
+			if (config->datarate > SF_10) {
+				LOG_ERR("Invalid datarate for LLCC68");
+				return -EINVAL;
+			}
+		} else if (config->bandwidth == BW_500_KHZ) {
+			if (config->datarate > SF_11) {
+				LOG_ERR("Invalid datarate for LLCC68");
+				return -EINVAL;
+			}
+		} else {
+			LOG_ERR("Invalid bandwidth for LLCC68");
+			return -EINVAL;
+		}
+	}
 
 	if (bandwidth_to_reg(config->bandwidth, &bw_reg) < 0) {
 		LOG_ERR("Unsupported bandwidth: %d kHz", config->bandwidth);
@@ -602,12 +626,9 @@ static void sx126x_dio1_callback(const struct device *dev)
 
 static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
 {
-	const struct sx126x_hal_config *config = dev->config;
-
 	sx126x_hal_set_antenna_enable(dev, enable);
-	if (!config->dio2_tx_enable) {
-		sx126x_hal_set_rf_switch(dev, enable, tx);
-	}
+	/* GPIOs may control external amplifiers even when DIO2 controls the RF switch. */
+	sx126x_hal_set_rf_switch(dev, enable, tx);
 }
 
 #ifdef CONFIG_PM_DEVICE
@@ -870,7 +891,8 @@ static void sx126x_irq_work_handler(struct k_work *work)
 	}
 }
 
-static int sx126x_set_configured_packet_params(const struct device *dev, uint8_t payload_len)
+static int sx126x_set_configured_packet_params(const struct device *dev, uint8_t payload_len,
+				  bool adjust_len_implicit)
 {
 	struct sx126x_data *data = dev->data;
 
@@ -878,10 +900,23 @@ static int sx126x_set_configured_packet_params(const struct device *dev, uint8_t
 		return sx126x_set_gfsk_packet_params(dev, &data->gfsk_config, payload_len);
 	}
 
-	return sx126x_set_packet_params(
-		dev, data->config.preamble_len, SX126X_LORA_HEADER_EXPLICIT, payload_len,
-		data->config.packet_crc_disable ? SX126X_LORA_CRC_OFF : SX126X_LORA_CRC_ON,
-		data->config.iq_inverted ? SX126X_LORA_IQ_INVERTED : SX126X_LORA_IQ_STANDARD);
+	if (data->config.explicit_header_disable &&
+		!adjust_len_implicit &&
+		payload_len != data->config.implicit_packet_length) {
+		return -EINVAL;
+	}
+
+	return sx126x_set_packet_params(dev,
+				data->config.preamble_len,
+				data->config.explicit_header_disable ?
+				SX126X_LORA_HEADER_IMPLICIT : SX126X_LORA_HEADER_EXPLICIT,
+				data->config.explicit_header_disable ?
+				data->config.implicit_packet_length : payload_len,
+				data->config.packet_crc_disable ?
+				SX126X_LORA_CRC_OFF : SX126X_LORA_CRC_ON,
+				data->config.iq_inverted ?
+				SX126X_LORA_IQ_INVERTED :
+				SX126X_LORA_IQ_STANDARD);
 }
 
 int sx126x_config_begin(const struct device *dev)
@@ -932,7 +967,7 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
 	bool ldro;
 	int ret;
 
-	ret = sx126x_validate_config(config);
+	ret = sx126x_validate_config(dev, config);
 	if (ret < 0) {
 		return ret;
 	}
@@ -1054,7 +1089,7 @@ static int sx126x_lora_send_async(const struct device *dev,
 	k_msgq_purge(&data->tx_msgq);
 
 	/* Set packet parameters */
-	ret = sx126x_set_configured_packet_params(dev, data_len);
+	ret = sx126x_set_configured_packet_params(dev, data_len, false);
 	if (ret < 0) {
 		goto out_error;
 	}
@@ -1147,7 +1182,7 @@ static int sx126x_lora_recv(const struct device *dev, uint8_t *data_buf,
 	k_msgq_purge(&data->rx_msgq);
 
 	/* Set packet parameters for variable length reception */
-	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN);
+	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN, true);
 	if (ret < 0) {
 		sx126x_set_sleep(dev);
 		k_mutex_unlock(&data->lock);
@@ -1239,7 +1274,7 @@ static int sx126x_lora_recv_async(const struct device *dev,
 	data->rx_cb_user_data = user_data;
 
 	/* Set packet parameters */
-	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN);
+	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN, true);
 	if (ret < 0) {
 		data->rx_cb = NULL;
 		sx126x_set_sleep(dev);
@@ -1328,7 +1363,7 @@ static int sx126x_duty_cycle_start(const struct device *dev,
 	data->duty_cycle.sleep_period = SX126X_MS_TO_TIMEOUT(
 		k_ticks_to_ms_ceil32(sleep_period.ticks));
 
-	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN);
+	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN, true);
 	if (ret < 0) {
 		goto out_error;
 	}
@@ -1465,7 +1500,7 @@ static uint32_t sx126x_lora_airtime(const struct device *dev, uint32_t data_len)
 {
 	struct sx126x_data *data = dev->data;
 	uint32_t t_preamble_us, t_payload_us, t_sym_us, n_payload, bw_hz;
-	uint8_t sf, cr;
+	uint8_t sf, cr, hdr_len;
 	int32_t tmp;
 	bool de, crc;
 	int ret;
@@ -1507,8 +1542,9 @@ static uint32_t sx126x_lora_airtime(const struct device *dev, uint32_t data_len)
 	de = should_enable_ldro(sf, data->config.bandwidth, dev->config);
 	crc = !data->config.packet_crc_disable;
 	cr = data->config.coding_rate;
+	hdr_len = data->config.explicit_header_disable ? 0 : 20;
 
-	tmp = 8 * data_len - 4 * sf + 28 + 16 * crc;
+	tmp = 8 * data_len - 4 * sf + 8 + hdr_len + 16 * crc;
 	if (tmp < 0) {
 		tmp = 0;
 	}
@@ -1683,49 +1719,38 @@ static int sx126x_init(const struct device *dev)
  */
 #ifdef CONFIG_LORA_SX126X_NATIVE_STANDALONE
 
-#define SX126X_INIT(inst, is_1261)						\
-	static struct sx126x_data sx126x_data_##inst;				\
-										\
-	static const struct sx126x_hal_config sx126x_config_##inst = {		\
-		.spi = SPI_DT_SPEC_INST_GET(inst,				\
-					    SPI_WORD_SET(8) | SPI_TRANSFER_MSB), \
-		.reset = GPIO_DT_SPEC_INST_GET(inst, reset_gpios),		\
-		.busy = GPIO_DT_SPEC_INST_GET(inst, busy_gpios),		\
-		.dio1 = GPIO_DT_SPEC_INST_GET(inst, dio1_gpios),		\
-		.is_sx1261 = is_1261,						\
-		.antenna_enable = GPIO_DT_SPEC_INST_GET_OR(inst,		\
-							   antenna_enable_gpios, \
-							   {0}),		\
-		.tx_enable = GPIO_DT_SPEC_INST_GET_OR(inst, tx_enable_gpios,	\
-						      {0}),			\
-		.rx_enable = GPIO_DT_SPEC_INST_GET_OR(inst, rx_enable_gpios,	\
-						      {0}),			\
-		.dio2_tx_enable = DT_INST_PROP(inst, dio2_tx_enable),		\
-		.dio3_tcxo_enable = DT_INST_NODE_HAS_PROP(inst, dio3_tcxo_voltage), \
-		.dio3_tcxo_voltage = DT_INST_PROP_OR(inst, dio3_tcxo_voltage, 0), \
-		.tcxo_startup_delay_ms = DT_INST_PROP_OR(inst,			\
-						tcxo_power_startup_delay_ms, 10), \
-		.rx_boosted = DT_INST_PROP(inst, rx_boosted),			\
-		.regulator_ldo = DT_INST_PROP(inst, regulator_ldo),		\
-		.force_ldro = DT_INST_PROP(inst, force_ldro),			\
-	};									\
-										\
-	PM_DEVICE_DT_INST_DEFINE(inst, sx126x_pm_action);			\
-										\
-	DEVICE_DT_INST_DEFINE(inst, sx126x_init,				\
-			      PM_DEVICE_DT_INST_GET(inst),			\
-			      &sx126x_data_##inst, &sx126x_config_##inst,	\
-			      POST_KERNEL, CONFIG_LORA_INIT_PRIORITY,		\
-			      &sx126x_lora_api);
+#define SX126X_INIT(node_id, variant_in)							\
+	static struct sx126x_data sx126x_data_##node_id;					\
+												\
+	static const struct sx126x_hal_config sx126x_config_##node_id = {			\
+		.spi = SPI_DT_SPEC_GET(node_id, SPI_WORD_SET(8) | SPI_TRANSFER_MSB),		\
+		.reset = GPIO_DT_SPEC_GET(node_id, reset_gpios),				\
+		.busy = GPIO_DT_SPEC_GET(node_id, busy_gpios),					\
+		.dio1 = GPIO_DT_SPEC_GET(node_id, dio1_gpios),					\
+		.variant = variant_in,								\
+		.antenna_enable = GPIO_DT_SPEC_GET_OR(node_id, antenna_enable_gpios, {0}),	\
+		.tx_enable = GPIO_DT_SPEC_GET_OR(node_id, tx_enable_gpios, {0}),		\
+		.rx_enable = GPIO_DT_SPEC_GET_OR(node_id, rx_enable_gpios, {0}),		\
+		.dio2_tx_enable = DT_PROP(node_id, dio2_tx_enable),				\
+		.dio3_tcxo_enable = DT_NODE_HAS_PROP(node_id, dio3_tcxo_voltage),		\
+		.dio3_tcxo_voltage = DT_PROP_OR(node_id, dio3_tcxo_voltage, 0),			\
+		.tcxo_startup_delay_ms = DT_PROP_OR(node_id, tcxo_power_startup_delay_ms, 10),	\
+		.rx_boosted = DT_PROP(node_id, rx_boosted),					\
+		.regulator_ldo = DT_PROP(node_id, regulator_ldo),				\
+		.force_ldro = DT_PROP(node_id, force_ldro),					\
+	};											\
+												\
+	PM_DEVICE_DT_DEFINE(node_id, sx126x_pm_action);						\
+												\
+	DEVICE_DT_DEFINE(node_id, sx126x_init, PM_DEVICE_DT_GET(node_id),			\
+			 &sx126x_data_##node_id, &sx126x_config_##node_id,			\
+			 POST_KERNEL, CONFIG_LORA_INIT_PRIORITY,				\
+			 &sx126x_lora_api);
 
-#define DT_DRV_COMPAT semtech_sx1262
-DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, false)
-
-#undef DT_DRV_COMPAT
-#define DT_DRV_COMPAT semtech_sx1261
-DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, true)
-
-#undef DT_DRV_COMPAT
+DT_FOREACH_STATUS_OKAY_VARGS(semtech_sx1262, SX126X_INIT, SX126X_SX1262)
+DT_FOREACH_STATUS_OKAY_VARGS(semtech_sx1261, SX126X_INIT, SX126X_SX1261)
+DT_FOREACH_STATUS_OKAY_VARGS(semtech_sx1268, SX126X_INIT, SX126X_SX1268)
+DT_FOREACH_STATUS_OKAY_VARGS(semtech_llcc68, SX126X_INIT, SX126X_LLCC68)
 
 #endif /* CONFIG_LORA_SX126X_NATIVE_STANDALONE */
 
@@ -1747,6 +1772,7 @@ DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, true)
 		.pa_output = SX126X_STM32WL_PA_OUTPUT(inst),			\
 		.rfo_lp_max_power = DT_INST_PROP(inst, rfo_lp_max_power),	\
 		.rfo_hp_max_power = DT_INST_PROP(inst, rfo_hp_max_power),	\
+		.variant = SX126X_STM32WL,					\
 		.antenna_enable = GPIO_DT_SPEC_INST_GET_OR(inst,		\
 							   antenna_enable_gpios, \
 							   {0}),		\

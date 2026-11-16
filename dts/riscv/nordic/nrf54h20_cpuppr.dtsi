@@ -29,8 +29,8 @@ cpusys_vevif: &cpusys_vevif_tx {};
 / {
 	soc {
 		compatible = "simple-bus";
-		interrupt-parent = <&cpuppr_clic>;
 		ranges;
+		interrupt-parent = <&cpuppr_clic>;
 
 		stmesp: memory@ae000000 {
 			compatible = "arm,stmesp";
@@ -42,6 +42,10 @@ cpusys_vevif: &cpusys_vevif_tx {};
 &cpuppr_private {
 	compatible = "simple-bus";
 	ranges;
+};
+
+&cpuppr_vpr {
+	status = "okay";
 };
 
 &cpuppr_clic {

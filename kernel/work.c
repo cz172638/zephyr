@@ -135,18 +135,18 @@ static void finalize_cancel_locked(struct k_work *work)
 	 */
 	flag_clear(&work->flags, K_WORK_CANCELING_BIT);
 
-	/* Search for and remove the matching container, and release
+	/* Search for and remove matching containers, and release
 	 * what's waiting for the completion.  The same work item can
 	 * appear multiple times in the list if multiple threads
-	 * attempt to cancel it.
+	 * attempt to cancel it; each waiter must be woken.
 	 */
 	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&pending_cancels, wc, tmp, node) {
 		if (wc->work == work) {
 			sys_slist_remove(&pending_cancels, prev, &wc->node);
 			k_sem_give(&wc->sem);
-			break;
+		} else {
+			prev = &wc->node;
 		}
-		prev = &wc->node;
 	}
 }
 
@@ -1128,6 +1128,7 @@ static inline bool unschedule_locked(struct k_work_delayable *dwork,
 	if (flag_test_and_clear(&work->flags, K_WORK_DELAYED_BIT)) {
 		while (z_try_abort_timeout(&dwork->timeout) == -EAGAIN) {
 			k_spin_unlock(&work_lock, *key);
+			z_timeout_wait_inflight(&dwork->timeout);
 			*key = k_spin_lock(&work_lock);
 		}
 		ret = true;

@@ -78,9 +78,6 @@ static int netc_eth_vsi_set_config(const struct device *dev, struct net_if *ifac
 	switch (type) {
 	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
 		memcpy(data->mac_addr, config->mac_address.addr, sizeof(data->mac_addr));
-		/* Only update the local MAC address; the PSI owner manages the HW filter. */
-		net_if_set_link_addr(data->iface, data->mac_addr, sizeof(data->mac_addr),
-				     NET_LINK_ETHERNET);
 		break;
 	case ETHERNET_CONFIG_TYPE_FILTER:
 		return netc_eth_vsi_set_mac_filter(dev, &config->filter);
@@ -578,7 +575,7 @@ static enum ethernet_hw_caps netc_eth_vsi_get_capabilities(const struct device *
 	return netc_eth_get_capabilities(dev, iface) | ETHERNET_HW_FILTERING;
 }
 
-static const struct ethernet_api netc_eth_vsi_api = {
+static DEVICE_API(ethernet, netc_eth_vsi_api) = {
 	.iface_api.init = netc_eth_vsi_iface_init,
 	.get_capabilities = netc_eth_vsi_get_capabilities,
 #if defined(CONFIG_NET_STATISTICS_ETHERNET)

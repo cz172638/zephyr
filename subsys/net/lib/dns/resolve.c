@@ -200,6 +200,18 @@ static void dns_query_fail_pending_servers(struct dns_pending_query *pending_que
 	}
 }
 
+/* Length of the query name without the trailing dot of an absolute name */
+static size_t dns_query_name_len(const char *query)
+{
+	size_t len = strlen(query);
+
+	if (len > 1U && query[len - 1U] == '.') {
+		len--;
+	}
+
+	return len;
+}
+
 static bool dns_query_is_mdns(const char *query)
 {
 	if (query == NULL) {
@@ -207,9 +219,12 @@ static bool dns_query_is_mdns(const char *query)
 	}
 
 	if (IS_ENABLED(CONFIG_MDNS_RESOLVER)) {
-		const char *ptr = strrchr(query, '.');
+		static const char suffix[] = ".local";
+		const size_t suffix_len = sizeof(suffix) - 1U;
+		size_t len = dns_query_name_len(query);
 
-		return ptr != NULL && strcmp(ptr, ".local") == 0;
+		return len >= suffix_len &&
+		       strncmp(&query[len - suffix_len], suffix, suffix_len) == 0;
 	}
 
 	return false;
@@ -222,7 +237,10 @@ static bool dns_query_is_llmnr(const char *query)
 	}
 
 	if (IS_ENABLED(CONFIG_LLMNR_RESOLVER)) {
-		return strchr(query, '.') == NULL;
+		size_t len = dns_query_name_len(query);
+
+		/* A single label, relative ("host") or absolute ("host.") */
+		return len > 0U && memchr(query, '.', len) == NULL;
 	}
 
 	return false;
@@ -914,6 +932,8 @@ static int dns_resolve_init_locked(struct dns_resolve_context *ctx,
 					(int)server_len, servers[i]);
 				break;
 			}
+
+			ctx->servers[idx].if_index = 0;
 		}
 
 		ctx->servers[idx].source = source;
@@ -985,6 +1005,8 @@ static int dns_resolve_init_locked(struct dns_resolve_context *ctx,
 
 			net_if_get_name(net_if_get_by_index(ctx->servers[idx].if_index),
 					iface_str, sizeof(iface_str));
+		} else {
+			ctx->servers[idx].if_index = 0;
 		}
 
 		dns_postprocess_server(ctx, idx);
@@ -2086,7 +2108,6 @@ static int set_ttl_hop_limit(int sock, int level, int option, int new_limit)
 	return zsock_setsockopt(sock, level, option, &new_limit, sizeof(new_limit));
 }
 
-#if defined(CONFIG_DNS_RESOLVER_RANDOMIZE_SOURCE_PORT)
 /* True when no query is still waiting to hear from this server, so its socket
  * can be replaced without losing an answer that is on its way.
  */
@@ -2253,7 +2274,6 @@ static void dns_randomize_source_port(struct dns_resolve_context *ctx,
 		server->sock = -1;
 	}
 }
-#endif /* CONFIG_DNS_RESOLVER_RANDOMIZE_SOURCE_PORT */
 
 /* Must be invoked with context lock held */
 static int dns_write(struct dns_resolve_context *ctx,
@@ -2849,14 +2869,10 @@ try_resolve:
 	 * For mDNS the id should be set to 0, see RFC 6762 ch. 18.1 for
 	 * details.
 	 */
-	if (IS_ENABLED(CONFIG_MDNS_RESOLVER)) {
-		const char *ptr = strrchr(query, '.');
+	if (dns_query_is_mdns(query)) {
+		mdns_query = true;
 
-		if (ptr != NULL && strcmp(ptr, ".local") == 0) {
-			mdns_query = true;
-
-			ctx->queries[i].id = 0;
-		}
+		ctx->queries[i].id = 0;
 	}
 
 	/* Do this immediately after calculating the Id so that the unit
@@ -2921,6 +2937,7 @@ int dns_resolve_name(struct dns_resolve_context *ctx,
 static int dns_server_close(struct dns_resolve_context *ctx,
 			    int server_idx)
 {
+	struct net_sockaddr_storage server_addr = { 0 };
 	struct net_if *iface;
 	int closed_sock;
 
@@ -2939,28 +2956,29 @@ static int dns_server_close(struct dns_resolve_context *ctx,
 
 	(void)dns_dispatcher_unregister(&ctx->servers[server_idx].dispatcher);
 
-	if (ctx->servers[server_idx].dns_server_addr.ss_family == NET_AF_INET6) {
-		iface = net_if_ipv6_select_src_iface(
-			&net_sin6(net_sad(&ctx->servers[server_idx].dns_server_addr))->sin6_addr);
-	} else {
-		iface = net_if_ipv4_select_src_iface(
-			&net_sin(net_sad(&ctx->servers[server_idx].dns_server_addr))->sin_addr);
-	}
-
-	if (IS_ENABLED(CONFIG_NET_MGMT_EVENT_INFO)) {
-		net_mgmt_event_notify_with_info(
-			NET_EVENT_DNS_SERVER_DEL,
-			iface,
-			(void *)&ctx->servers[server_idx].dns_server_addr,
-			sizeof(ctx->servers[server_idx].dns_server_addr));
-	} else {
-		net_mgmt_event_notify(NET_EVENT_DNS_SERVER_DEL, iface);
-	}
+	server_addr = ctx->servers[server_idx].dns_server_addr;
 
 	zsock_close(closed_sock);
 
 	ctx->servers[server_idx].sock = -1;
 	ctx->servers[server_idx].dns_server_addr.ss_family = 0;
+
+	if (server_addr.ss_family == NET_AF_INET6) {
+		iface = net_if_ipv6_select_src_iface(&net_sin6(net_sad(&server_addr))->sin6_addr);
+	} else {
+		iface = net_if_ipv4_select_src_iface(&net_sin(net_sad(&server_addr))->sin_addr);
+	}
+
+	/* Emitted last so listeners only see the remaining servers */
+	if (IS_ENABLED(CONFIG_NET_MGMT_EVENT_INFO)) {
+		net_mgmt_event_notify_with_info(
+			NET_EVENT_DNS_SERVER_DEL,
+			iface,
+			(void *)&server_addr,
+			sizeof(server_addr));
+	} else {
+		net_mgmt_event_notify(NET_EVENT_DNS_SERVER_DEL, iface);
+	}
 
 	return 0;
 }
@@ -3034,6 +3052,53 @@ bool dns_resolve_is_active(struct dns_resolve_context *ctx)
 	k_mutex_unlock(&ctx->lock);
 
 	return active;
+}
+
+uint32_t dns_resolve_get_server_families(struct dns_resolve_context *ctx, int if_index)
+{
+	uint32_t families = 0U;
+
+	if (ctx == NULL) {
+		return 0U;
+	}
+
+	k_mutex_lock(&lock, K_FOREVER);
+
+	if (ctx->state == DNS_RESOLVE_CONTEXT_UNINITIALIZED) {
+		goto unlock;
+	}
+
+	k_mutex_lock(&ctx->lock, K_FOREVER);
+
+	if (ctx->state != DNS_RESOLVE_CONTEXT_ACTIVE) {
+		goto unlock_ctx;
+	}
+
+	for (int i = 0; i < SERVER_COUNT; i++) {
+		const struct dns_server_info *server = &ctx->servers[i];
+		net_sa_family_t family = server->dns_server_addr.ss_family;
+
+		/* Ignore inactive and multicast */
+		if (server->sock < 0 || server->is_mdns || server->is_llmnr) {
+			continue;
+		}
+
+		/* Filter by interface */
+		if (MAX(server->if_index, 0) != if_index) {
+			continue;
+		}
+
+		if (family == NET_AF_INET || family == NET_AF_INET6) {
+			families |= BIT(family);
+		}
+	}
+
+unlock_ctx:
+	k_mutex_unlock(&ctx->lock);
+unlock:
+	k_mutex_unlock(&lock);
+
+	return families;
 }
 
 static bool dns_server_exists(struct dns_resolve_context *ctx,

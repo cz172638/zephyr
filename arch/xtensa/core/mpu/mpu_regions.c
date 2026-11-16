@@ -26,6 +26,8 @@ extern char _heap_end[];
 extern char _heap_start[];
 
 /**
+ * @brief Memory regions mapped at MPU initialization.
+ *
  * Static definition of all code and data memory regions of the
  * current Zephyr image. This information must be available and
  * need to be processed upon MPU initialization.
@@ -64,6 +66,14 @@ __weak const struct xtensa_mpu_range xtensa_mpu_ranges[] = {
 		.access_rights = XTENSA_MPU_ACCESS_P_RW_U_NA,
 	},
 #endif
+	/* Mark gcov BSS section user read / write accessible */
+#if defined(CONFIG_COVERAGE_GCOV) && defined(CONFIG_USERSPACE)
+	{
+		.start = (uint32_t)&__gcov_bss_start,
+		.end   = (uint32_t)&__gcov_bss_end,
+		.access_rights = XTENSA_MPU_ACCESS_P_RW_U_RW,
+	},
+#endif /* CONFIG_COVERAGE_GCOV && CONFIG_USERSPACE */
 	/* Mark text segment cacheable, read only and executable */
 	{
 		.start = (uintptr_t)__text_region_start,
@@ -78,9 +88,12 @@ __weak const struct xtensa_mpu_range xtensa_mpu_ranges[] = {
 	},
 };
 
+/** Number of entries in xtensa_mpu_ranges. */
 __weak const unsigned int xtensa_mpu_ranges_num = ARRAY_SIZE(xtensa_mpu_ranges);
 
-/*
+/**
+ * @brief Memory type of address ranges.
+ *
  * By default whole memory has the same type.
  * Override this in SoC or board layer if needed.
  */
@@ -92,4 +105,5 @@ __weak const struct xtensa_mpu_mem_type_region xtensa_mpu_mem_type_ranges[] = {
 	},
 };
 
+/** Number of entries in xtensa_mpu_mem_type_ranges. */
 __weak const unsigned int xtensa_mpu_mem_type_ranges_num = ARRAY_SIZE(xtensa_mpu_mem_type_ranges);

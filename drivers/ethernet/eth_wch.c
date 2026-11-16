@@ -159,11 +159,10 @@ static void setup_mac_filter(ETH_TypeDef *eth)
 	);
 }
 
-static void set_mac_addr(ETH_TypeDef *eth, uint8_t mac[NET_ETH_ADDR_LEN], struct net_if *iface)
+static void set_mac_addr(ETH_TypeDef *eth, uint8_t mac[NET_ETH_ADDR_LEN])
 {
 	eth->MACA0HR = (mac[5] << 8) | mac[4];
 	eth->MACA0LR = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
-	net_if_set_link_addr(iface, mac, NET_ETH_ADDR_LEN, NET_LINK_ETHERNET);
 }
 
 static void init_tx_dma_desc(ETH_TypeDef *eth)
@@ -299,7 +298,7 @@ static struct net_pkt *eth_rx(const struct device *dev)
 			    ETH_DMARXDESC_FRAME_LENGTHSHIFT) -
 			   sizeof(uint32_t); /* This discards CRC (checked by hardware) */
 
-	pkt = net_pkt_rx_alloc_with_buffer(data->iface, total_len, AF_UNSPEC, 0, K_MSEC(100));
+	pkt = net_pkt_rx_alloc_with_buffer(data->iface, total_len, NET_AF_UNSPEC, 0, K_MSEC(100));
 	if (pkt == 0U) {
 		LOG_ERR("Failed to obtain RX buffer");
 		goto release_desc;
@@ -536,7 +535,8 @@ static void eth_wch_iface_init(struct net_if *iface)
 
 	/* Initialise interface with relevant hardware settings */
 	eth_mac_init(dev);
-	set_mac_addr(config->regs, data->mac_addr, iface);
+	set_mac_addr(config->regs, data->mac_addr);
+	net_if_set_link_addr(iface, data->mac_addr, NET_ETH_ADDR_LEN, NET_LINK_ETHERNET);
 	setup_mac_filter(config->regs);
 	ethernet_init(iface);
 
@@ -565,9 +565,6 @@ static enum ethernet_hw_caps eth_wch_get_capabilities(const struct device *dev _
 #if defined(CONFIG_NET_PROMISCUOUS_MODE)
 	       | ETHERNET_PROMISC_MODE
 #endif
-#if defined(CONFIG_NET_LLDP)
-	       | ETHERNET_LLDP
-#endif
 		;
 }
 
@@ -583,7 +580,7 @@ static int eth_wch_set_config(const struct device *dev,
 	switch (type) {
 	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
 		memcpy(data->mac_addr, config->mac_address.addr, 6);
-		set_mac_addr(eth, data->mac_addr, data->iface);
+		set_mac_addr(eth, data->mac_addr);
 		return 0;
 #if defined(CONFIG_NET_PROMISCUOUS_MODE)
 	case ETHERNET_CONFIG_TYPE_PROMISC_MODE:
@@ -696,7 +693,7 @@ static int eth_wch_init(const struct device *dev)
 	return 0;
 }
 
-static const struct ethernet_api eth_api = {
+static DEVICE_API(ethernet, eth_api) = {
 	.iface_api.init = eth_wch_iface_init,
 	.get_capabilities = eth_wch_get_capabilities,
 	.set_config = eth_wch_set_config,

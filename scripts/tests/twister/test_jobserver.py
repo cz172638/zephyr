@@ -8,6 +8,8 @@ Tests for jobserver.py classes' methods
 
 import functools
 import os
+import re
+import stat
 import sys
 from contextlib import nullcontext
 from errno import ENOENT
@@ -21,7 +23,14 @@ pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='JobServer only 
 if sys.platform == 'linux':
     from fcntl import F_GETFL
 
-    from twisterlib.jobserver import GNUMakeJobClient, GNUMakeJobServer, JobClient, JobHandle
+    from twisterlib.jobserver import (
+        GNUMakeJobClient,
+        GNUMakeJobServer,
+        JobClient,
+        JobHandle,
+        _tool_version,
+        fifo_supported,
+    )
 
 
 def test_jobhandle(capfd):
@@ -166,10 +175,10 @@ TESTDATA_3 = [
         ['Running in sequential mode (-j1)'],
         None,
         [None, 1],
-        {'internal_jobs': 1, 'makeflags': '-j1'}
+        {'internal_jobs': 1, 'makeflags': '-j1', 'fifo': None}
     ),
     (
-        {'MAKEFLAGS': 'n--jobserver-auth=0,1'},
+        {'MAKEFLAGS': 'n --jobserver-auth=0,1'},
         1,
         (True, True),
         [
@@ -187,7 +196,7 @@ TESTDATA_3 = [
         ['using GNU make jobserver'],
         None,
         [[0, 1], 0],
-        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=0,1'}
+        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=0,1', 'fifo': None}
     ),
     (
         {'MAKEFLAGS': '--jobserver-auth=123,321'},
@@ -196,7 +205,7 @@ TESTDATA_3 = [
         ['No file descriptors; ignoring GNU make jobserver'],
         None,
         [None, 0],
-        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=123,321'}
+        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=123,321', 'fifo': None}
     ),
     (
         {'MAKEFLAGS': '--jobserver-auth=0,1'},
@@ -205,7 +214,7 @@ TESTDATA_3 = [
         [f'FD 0 is not readable (flags=2); ignoring GNU make jobserver'],
         None,
         [None, 0],
-        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=0,1'}
+        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=0,1', 'fifo': None}
     ),
     (
         {'MAKEFLAGS': '--jobserver-auth=0,1'},
@@ -214,7 +223,74 @@ TESTDATA_3 = [
         [f'FD 1 is not writable (flags=2); ignoring GNU make jobserver'],
         None,
         [None, 0],
-        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=0,1'}
+        {'internal_jobs': 1, 'makeflags': '--jobserver-auth=0,1', 'fifo': None}
+    ),
+    (
+        {'MAKEFLAGS': ' -I/src/inc-j2 -- V=-j1 SAVED=--jobserver-auth=0,1'},
+        0,
+        (True, True),
+        [],
+        None,
+        [None, 0],
+        {
+            'internal_jobs': 1,
+            'makeflags': ' -I/src/inc-j2 -- V=-j1 SAVED=--jobserver-auth=0,1',
+            'fifo': None
+        }
+    ),
+    (
+        {'MAKEFLAGS': ' --eval=X\\ -j7\\ --jobserver-auth=0,1 -j3'},
+        0,
+        (True, True),
+        [],
+        None,
+        [None, 3],
+        {
+            'internal_jobs': 1,
+            'makeflags': ' --eval=X\\ -j7\\ --jobserver-auth=0,1 -j3',
+            'fifo': None
+        }
+    ),
+    (
+        {'MAKEFLAGS': '--jobserver-auth=fifo:/nonexistent/fifo --jobserver-auth=0,1'
+                      ' -- SAVED=--jobserver-auth=-2,-2'},
+        0,
+        (True, True),
+        ['using GNU make jobserver'],
+        None,
+        [[0, 1], 0],
+        {
+            'internal_jobs': 1,
+            'makeflags': '--jobserver-auth=fifo:/nonexistent/fifo --jobserver-auth=0,1'
+                         ' -- SAVED=--jobserver-auth=-2,-2',
+            'fifo': None
+        }
+    ),
+    (
+        {'MAKEFLAGS': '--jobserver-auth=fifo:/nonexistent/fifo'},
+        4,
+        (False, False),
+        ['-jN forced on command line; ignoring GNU make jobserver'],
+        None,
+        [None, 4],
+        {
+            'internal_jobs': 1,
+            'makeflags': '--jobserver-auth=fifo:/nonexistent/fifo',
+            'fifo': '/nonexistent/fifo'
+        }
+    ),
+    (
+        {'MAKEFLAGS': '--jobserver-auth=fifo:/nonexistent/fifo'},
+        0,
+        (False, False),
+        ['Cannot open /nonexistent/fifo'],
+        None,
+        [None, 0],
+        {
+            'internal_jobs': 1,
+            'makeflags': '--jobserver-auth=fifo:/nonexistent/fifo',
+            'fifo': '/nonexistent/fifo'
+        }
     ),
     (None, 0, (False, False), [], None, None, None),
 ]
@@ -225,7 +301,9 @@ TESTDATA_3 = [
     TESTDATA_3,
     ids=['env, no jobserver-auth', 'env, jobs, dry run', 'env, no jobs',
          'env, no jobs, oserror', 'env, no jobs, wrong read pipe',
-         'env, no jobs, wrong write pipe', 'environ, no makeflags']
+         'env, no jobs, wrong write pipe', 'env, variables', 'env, escaped blanks',
+         'env, last jobserver-auth', 'env, jobs, fifo', 'env, no jobs, missing fifo',
+         'environ, no makeflags']
 )
 def test_gnumakejobclient_from_environ(
     caplog,
@@ -280,6 +358,29 @@ def test_gnumakejobclient_from_environ(
         gmjc_init_mock.assert_called_once_with(*expected_args,
                                                **expected_kwargs)
 
+
+def test_gnumakejobclient_from_environ_fifo(tmp_path, caplog):
+    path = tmp_path / 'fifo'
+    os.mkfifo(path)
+    makeflags = f' -j4 --jobserver-auth=3,4 --jobserver-auth=fifo:{path}'
+
+    client = GNUMakeJobClient.from_environ(env={'MAKEFLAGS': makeflags})
+
+    assert 'using GNU make jobserver' in caplog.text
+    assert client.jobs == 4
+    assert client.env() == {'MAKEFLAGS': makeflags}
+    assert client.pass_fds() == []
+    read_fd, write_fd = client._inheritable_pipe
+    assert os.path.samestat(os.fstat(read_fd), os.stat(path))
+    assert os.path.samestat(os.fstat(write_fd), os.stat(path))
+
+    # The second job takes the token that the job server put into the named pipe
+    server_fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    os.write(server_fd, b'x')
+    with client.get_job(), client.get_job(), pytest.raises(BlockingIOError):
+        os.read(server_fd, 1)
+    assert os.read(server_fd, 2) == b'x'
+    os.close(server_fd)
 
 
 def test_gnumakejobclient_get_job():
@@ -454,3 +555,157 @@ def test_gnumakejobserver(jobs, expected_jobs):
         deleter()
 
     write_mock.assert_called_once_with(pipe[1], b'+' * expected_jobs)
+
+
+def install_tools(directory, tools):
+    """Create executables that answer --version with the given text."""
+    directory.mkdir(exist_ok=True)
+    for name, version_output in tools.items():
+        tool = directory / name
+        tool.write_text(f"#!/bin/sh\necho '{version_output}'\n")
+        tool.chmod(0o755)
+
+
+def test_tool_version(tmp_path, monkeypatch):
+    first = tmp_path / 'first'
+    second = tmp_path / 'second'
+    install_tools(first, {'ninja': '1.13.2', 'odd': 'no version here'})
+    install_tools(second, {'ninja-build': '1.11.1.git.kitware.jobserver-1'})
+    (first / 'broken').write_text('#!/bin/sh\nexit 1\n')
+    (first / 'broken').chmod(0o755)
+    monkeypatch.setenv('PATH', f'{first}{os.pathsep}{second}')
+
+    # Like CMake, take the first directory that has any of the names
+    assert _tool_version(('ninja-build', 'ninja'), r'(\d+)\.(\d+)') == (1, 13)
+    assert _tool_version(('ninja-build',), r'(\d+)\.(\d+)') == (1, 11)
+    assert _tool_version(('odd',), r'(\d+)\.(\d+)') == (0, 0)
+    assert _tool_version(('broken',), r'(\d+)\.(\d+)') == (0, 0)
+    assert _tool_version(('missing',), r'(\d+)\.(\d+)') is None
+
+
+TESTDATA_7 = [
+    ({'ninja': '1.13.2', 'make': 'GNU Make 4.4.1'}, True, True),
+    ({'ninja': '1.13.2', 'make': 'GNU Make 4.3'}, False, False),
+    ({'ninja': '1.13.2', 'make': 'GNU Make 4.4.1', 'gmake': 'GNU Make 4.3'}, False, False),
+    ({'ninja': '1.13.2', 'make': 'bmake 20240108'}, False, False),
+    ({'ninja': '1.13.2'}, True, False),
+    ({'ninja': '1.12.1', 'make': 'GNU Make 4.4.1'}, False, True),
+    ({'ninja': '1.11.1.git.kitware.jobserver-1', 'make': 'GNU Make 4.4.1'}, False, True),
+    ({'make': 'GNU Make 4.4.1'}, False, True),
+    ({}, False, False),
+]
+
+@pytest.mark.parametrize(
+    'tools, expected_ninja, expected_make',
+    TESTDATA_7,
+    ids=['recent tools', 'old make', 'old gmake', 'other make', 'no make', 'old ninja',
+         'kitware ninja', 'no ninja', 'no tools']
+)
+def test_fifo_supported(tmp_path, monkeypatch, tools, expected_ninja, expected_make):
+    install_tools(tmp_path, tools)
+    monkeypatch.setenv('PATH', str(tmp_path))
+
+    assert fifo_supported('ninja') == expected_ninja
+    assert fifo_supported('make') == expected_make
+
+
+TESTDATA_8 = [
+    (['CONFIG_ASSERT=y'], {}, True),
+    (['MAKE=/opt/make-4.3/bin/make'], {}, False),
+    (['CMAKE_MAKE_PROGRAM:FILEPATH=/opt/ninja'], {}, False),
+    (['CMAKE_PROGRAM_PATH=/opt/bin'], {}, False),
+    ([], {'CMAKE_PROGRAM_PATH': '/opt/bin'}, False),
+    (['platform:native_sim:MAKE=/opt/make-4.3/bin/make'], {}, False),
+    (['platform:native_sim:EXTRA_CFLAGS=-DMAKE=1'], {}, True),
+]
+
+@pytest.mark.parametrize(
+    'cmake_args, environment, expected',
+    TESTDATA_8,
+    ids=['unrelated argument', 'make', 'build tool', 'program path', 'program path variable',
+         'conditional make', 'conditional unrelated argument']
+)
+def test_fifo_supported_selected_tools(tmp_path, monkeypatch, cmake_args, environment, expected):
+    install_tools(tmp_path, {'ninja': '1.13.2', 'make': 'GNU Make 4.4.1'})
+    monkeypatch.setenv('PATH', str(tmp_path))
+    monkeypatch.delenv('CMAKE_PROGRAM_PATH', raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    assert fifo_supported('ninja', cmake_args) == expected
+
+
+def test_gnumakejobserver_fifo():
+    jobs = 3
+    server = GNUMakeJobServer(jobs=jobs, fifo=True)
+    fifo_dir = server._fifo_dir
+    if fifo_dir is None:
+        pytest.skip('MAKEFLAGS cannot carry the name of the temporary directory')
+    path = os.path.join(fifo_dir, 'fifo')
+
+    assert stat.S_ISFIFO(os.stat(path).st_mode)
+    assert server.env() == {'MAKEFLAGS': f' -j{jobs} --jobserver-auth=fifo:{path}'}
+    assert server.pass_fds() == []
+
+    def tokens():
+        """Take every token a client can get from the named pipe, and put them back."""
+        client_fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        try:
+            taken = os.read(client_fd, jobs + 1)
+        except BlockingIOError:
+            taken = b''
+        os.write(client_fd, taken)
+        os.close(client_fd)
+        return taken
+
+    assert tokens() == b'+' * jobs
+    with server.get_job():
+        assert tokens() == b'+' * (jobs - 1)
+    assert tokens() == b'+' * jobs
+
+    del server
+    assert not os.path.exists(fifo_dir)
+
+
+@pytest.mark.parametrize('name', ['with space', 'with$dollar', 'back\\slash', "quo'te"])
+def test_gnumakejobserver_fifo_unusable_tmpdir(tmp_path, monkeypatch, name):
+    tmpdir = tmp_path / name
+    tmpdir.mkdir()
+    monkeypatch.setattr('tempfile.tempdir', str(tmpdir))
+
+    server = GNUMakeJobServer(jobs=2, fifo=True)
+
+    read_fd, write_fd = server.pass_fds()
+    assert server.env() == {'MAKEFLAGS': f' -j2 --jobserver-auth={read_fd},{write_fd}'}
+    assert os.listdir(tmpdir) == []
+
+
+def test_gnumakejobserver_fifo_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr('tempfile.tempdir', str(tmp_path))
+    if not re.fullmatch(r'[\w./+-]+', str(tmp_path)):
+        pytest.skip('MAKEFLAGS cannot carry the name of the temporary directory')
+
+    with mock.patch('os.mkfifo', side_effect=PermissionError()), \
+         pytest.raises(PermissionError):
+        GNUMakeJobServer(jobs=2, fifo=True)
+
+    assert os.listdir(tmp_path) == []
+
+    opened = []
+    real_open = os.open
+
+    def open_reader_only(path, flags, *args, **kwargs):
+        if flags & os.O_ACCMODE == os.O_WRONLY:
+            raise PermissionError()
+        fd = real_open(path, flags, *args, **kwargs)
+        if os.path.basename(path) == 'fifo':
+            opened.append(fd)
+        return fd
+
+    with mock.patch('os.open', open_reader_only), pytest.raises(PermissionError):
+        GNUMakeJobServer(jobs=2, fifo=True)
+
+    assert os.listdir(tmp_path) == []
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])

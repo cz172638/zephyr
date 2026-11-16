@@ -18,9 +18,9 @@
 		#size-cells = <0>;
 
 		cpu0: cpu@0 {
-			device_type = "cpu";
 			compatible = "arm,cortex-m23";
 			reg = <0>;
+			device_type = "cpu";
 			#address-cells = <1>;
 			#size-cells = <1>;
 
@@ -35,6 +35,14 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 
+		hwinfo: device_id@a0071e0 {
+			compatible = "microchip,hwinfo-g1";
+			reg = <0x0a0071e0 0x4>,
+			      <0x0a0071e4 0x4>,
+			      <0x0a0071e8 0x4>,
+			      <0x0a0071ec 0x4>;
+		};
+
 		sram0: memory@20000000 {
 			compatible = "mmio-sram";
 			#address-cells = <1>;
@@ -44,6 +52,7 @@
 		nvmctrl: flash-controller@44002000 {
 			compatible = "microchip,nvmctrl-g3";
 			reg = <0x44002000 0x6c>, <0x44004000 0x80>;
+			ranges;
 			reg-names = "fcr", "fcw";
 			clock-parent = <&clock>;
 			clocks = <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_FCW_AHB>,
@@ -53,7 +62,6 @@
 			interrupt-names = "fcr", "fcw";
 			#address-cells = <1>;
 			#size-cells = <1>;
-			ranges;
 			status = "okay";
 
 			flash0: flash@8000000 {
@@ -137,12 +145,38 @@
 			status = "disabled";
 		};
 
+		can0: can@4402e000 {
+			compatible = "microchip,mcan-g1";
+			reg = <0x4402e000 0x100>, <0x4402e100 0x200>;
+			reg-names = "wrapper", "m_can";
+			interrupts = <35 0>, <36 0>, <37 0>;
+			interrupt-names = "int0", "int1", "berr";
+			clocks = <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_CAN0>,
+				 <&gclkperiph CLOCK_MCHP_GCLKPERIPH_ID_CAN0>;
+			clock-names = "mclk", "gclk";
+			bosch,mram-cfg = <0x0 8 8 8 0 0 4 4>;
+			status = "disabled";
+		};
+
+		can1: can@44030000 {
+			compatible = "microchip,mcan-g1";
+			reg = <0x44030000 0x100>, <0x44030100 0x200>;
+			reg-names = "wrapper", "m_can";
+			interrupts = <38 0>, <39 0>, <40 0>;
+			interrupt-names = "int0", "int1", "berr";
+			clocks = <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_CAN1>,
+				 <&gclkperiph CLOCK_MCHP_GCLKPERIPH_ID_CAN1>;
+			clock-names = "mclk", "gclk";
+			bosch,mram-cfg = <0x0 8 8 8 0 0 4 4>;
+			status = "disabled";
+		};
+
 		pinctrl: pinctrl@44800000 {
 			compatible = "microchip,port-g1-pinctrl";
-			#address-cells = <1>;
-			#size-cells = <1>;
 			reg = <0x44800000 0x200>;
 			ranges = <0x44800000 0x44800000 0x200>;
+			#address-cells = <1>;
+			#size-cells = <1>;
 
 			porta: gpio@44800000 {
 				compatible = "microchip,port-g1-gpio";
@@ -258,6 +292,11 @@
 				 <&gclkperiph CLOCK_MCHP_GCLKPERIPH_ID_SERCOM5_CORE>;
 			clock-names = "mclk", "gclk";
 			status = "disabled";
+		};
+
+		rstc: rstc@45004000 {
+			compatible = "microchip,rstc-g1-reset";
+			reg = <0x45004000 0x8>;
 		};
 	};
 };

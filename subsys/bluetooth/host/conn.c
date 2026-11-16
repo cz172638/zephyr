@@ -69,6 +69,10 @@ K_FIFO_DEFINE(free_tx);
 #if defined(CONFIG_BT_CONN_TX_NOTIFY_WQ)
 static struct k_work_q conn_tx_workq;
 static K_KERNEL_STACK_DEFINE(conn_tx_workq_thread_stack, CONFIG_BT_CONN_TX_NOTIFY_WQ_STACK_SIZE);
+
+/* See the same check for the RX workqueue in hci_core.c */
+BUILD_ASSERT(CONFIG_BT_CONN_TX_NOTIFY_WQ_PRIO < CONFIG_NUM_COOP_PRIORITIES,
+	     "The Bluetooth connection TX notify workqueue needs a cooperative priority");
 #endif /* CONFIG_BT_CONN_TX_NOTIFY_WQ */
 
 static void tx_free(struct bt_conn_tx *tx);
@@ -827,29 +831,57 @@ static bool acl_has_data(struct bt_conn *conn)
 }
 #endif	/* defined(CONFIG_BT_CONN) */
 
+/* Whether c is an ACL connection that can send and holds as many packets in
+ * the controller as conn or fewer, so that conn gives way to it
+ */
+static bool can_take_turn(struct bt_conn *conn, struct bt_conn *c)
+{
+	struct k_sem *pkts;
+
+	if ((c == conn) || !is_acl_conn(c) || (c->state != BT_CONN_CONNECTED) ||
+	    (c->has_data == NULL) || !c->has_data(c) ||
+	    atomic_test_bit(c->flags, BT_CONN_TX_FAILED)) {
+		return false;
+	}
+
+	pkts = bt_conn_get_pkts(c);
+
+	return (pkts != NULL) && (k_sem_count_get(pkts) > 0U) &&
+	       (atomic_get(&c->in_ll) <= atomic_get(&conn->in_ll));
+}
+
 /* Connection "Scheduler" of sorts:
  *
  * Will try to get the optimal number of queued buffers for the connection.
  *
- * Partitions the controller's buffers to each connection according to some
- * heuristic. This is made to be tunable, fairness, simplicity, throughput etc.
- *
- * In the future, this will be a hook exposed to the application.
+ * Decides when to move on to the next connection. How the controller's
+ * buffers are shared between connections is up to get_conn_ready().
  */
 static bool should_stop_tx(struct bt_conn *conn)
 {
+	struct bt_conn *c;
+
 	LOG_DBG("%p", conn);
 
 	if (conn->state != BT_CONN_CONNECTED) {
 		return true;
 	}
 
-	/* TODO: This function should be overridable by the application: they
-	 * should be able to provide their own heuristic.
-	 */
 	if (!conn->has_data(conn)) {
 		LOG_DBG("No more data for %p", conn);
 		return true;
+	}
+
+	/* Give way to another ACL connection that can send and holds as many
+	 * packets in the controller or fewer. Otherwise a connection whose
+	 * packets complete quickly keeps its place at the head of the list.
+	 * ISO channels do not take part.
+	 */
+	SYS_SLIST_FOR_EACH_CONTAINER(&bt_dev.le.conn_ready, c, _conn_ready) {
+		if (is_acl_conn(conn) && can_take_turn(conn, c)) {
+			LOG_DBG("%p gives way to %p", conn, c);
+			return true;
+		}
 	}
 
 	/* Queue only 3 buffers per-conn for now */
@@ -952,10 +984,101 @@ __maybe_unused static bool dont_have_methods(struct bt_conn *conn)
 		(conn->has_data == NULL);
 }
 
+/* The ACL buffer pools of the controller: one for LE, and one for BR/EDR if it
+ * is enabled. Any further pool is counted without caching.
+ */
+#define ACL_TX_POOLS (1U + (IS_ENABLED(CONFIG_BT_CLASSIC) ? 1U : 0U))
+
+/* The connections on a pool that have data queued or packets in flight,
+ * counted once per pass of the TX processor
+ */
+struct tx_pool_users {
+	struct k_sem *pkts;
+	unsigned int n;
+};
+
+#if defined(CONFIG_BT_CONN)
+static unsigned int tx_pool_users_count(struct k_sem *pkts)
+{
+	unsigned int n = 0U;
+
+	ARRAY_FOR_EACH_PTR(acl_conns, c) {
+		if (c->state != BT_CONN_CONNECTED || bt_conn_get_pkts(c) != pkts) {
+			continue;
+		}
+
+		if (atomic_get(&c->in_ll) > 0 || (c->has_data != NULL && c->has_data(c))) {
+			n++;
+		}
+	}
+
+	return n;
+}
+
+static unsigned int tx_pool_users_get(struct tx_pool_users *users, size_t len,
+				      struct k_sem *pkts)
+{
+	unsigned int n;
+	size_t i;
+
+	for (i = 0; i < len && users[i].pkts != NULL; i++) {
+		if (users[i].pkts == pkts) {
+			return users[i].n;
+		}
+	}
+
+	n = tx_pool_users_count(pkts);
+
+	/* Count without caching once every slot is taken */
+	if (i < len) {
+		users[i].pkts = pkts;
+		users[i].n = n;
+	}
+
+	return n;
+}
+#endif /* CONFIG_BT_CONN */
+
+/* Whether a connection holds fewer of its pool's buffers than its share. The
+ * share is the pool's buffers, or the TX contexts if there are fewer, split
+ * evenly between the connections on that pool that have data queued or
+ * packets in flight, and is at least 1.
+ */
+static bool below_tx_share(struct bt_conn *conn, struct tx_pool_users *users, size_t len)
+{
+#if defined(CONFIG_BT_CONN)
+	struct k_sem *pkts;
+	unsigned int total;
+	unsigned int n;
+
+	/* ISO channels have buffers of their own, so the share does not
+	 * hold them back
+	 */
+	if (!is_acl_conn(conn)) {
+		return true;
+	}
+
+	pkts = bt_conn_get_pkts(conn);
+	total = MIN(pkts->limit, ARRAY_SIZE(conn_tx));
+	n = MAX(tx_pool_users_get(users, len, pkts), 1U);
+
+	return atomic_get(&conn->in_ll) < MAX(total / n, 1U);
+#else
+	ARG_UNUSED(users);
+	ARG_UNUSED(len);
+
+	/* Only ISO channels, which are not shared */
+	return true;
+#endif /* CONFIG_BT_CONN */
+}
+
 static struct bt_conn *get_conn_ready(void)
 {
 	struct bt_conn *conn, *tmp;
+	struct bt_conn *first = NULL;
 	sys_snode_t *prev = NULL;
+	sys_snode_t *first_prev = NULL;
+	struct tx_pool_users users[ACL_TX_POOLS] = {0};
 
 	/* Called from the TX processor with the host lock held; the lock
 	 * serializes conn_ready list access against bt_conn_data_ready().
@@ -974,7 +1097,8 @@ static struct bt_conn *get_conn_ready(void)
 		__ASSERT_NO_MSG(tmp != conn);
 
 		/* Iterate over the list of connections that have data to send
-		 * and return the first one that can be sent.
+		 * and take the first one that can be sent and is below its share
+		 * of the controller's buffers, else the first one that can be sent.
 		 */
 
 		if (held_back_by_disable(conn)) {
@@ -1010,6 +1134,24 @@ static struct bt_conn *get_conn_ready(void)
 			continue;
 		}
 
+		if (below_tx_share(conn, users, ARRAY_SIZE(users))) {
+			break;
+		}
+
+		if (first == NULL) {
+			first = conn;
+			first_prev = prev;
+		}
+
+		prev = &conn->_conn_ready;
+	}
+
+	if (conn == NULL) {
+		conn = first;
+		prev = first_prev;
+	}
+
+	if (conn != NULL) {
 		if (should_stop_tx(conn)) {
 			/* Move reference off the list */
 			__ASSERT_NO_MSG(prev != &conn->_conn_ready);
@@ -1147,12 +1289,15 @@ void bt_conn_tx_processor(void)
 	 */
 	buf = conn->tx_data_pull(conn, conn_mtu(conn), &buf_len);
 	if (!buf) {
-		/* Either there is no more data, or the buffer is already in-use
-		 * by a view on it. In both cases, the TX processor will be
-		 * triggered again, either by the view's destroy callback, or by
-		 * the upper layer when it has more data.
-		 */
 		LOG_DBG("no buf returned");
+
+		/* A connection without data left leaves the list on the next pass:
+		 * run that pass now while the list holds connections, so that those
+		 * behind it are served without waiting for a completion or new data.
+		 */
+		if (!conn->has_data(conn) && !sys_slist_is_empty(&bt_dev.le.conn_ready)) {
+			goto raise_and_exit;
+		}
 
 		goto exit;
 	}
@@ -1209,6 +1354,11 @@ static void process_unack_tx(struct bt_conn *conn)
 {
 	LOG_DBG("%p", conn);
 
+	/* What was sent in part is not continued on the object's next
+	 * connection: a central CIS keeps its object, without it being zeroed.
+	 */
+	conn->next_is_frag = false;
+
 	/* Return any unacknowledged packets */
 	while (1) {
 		struct bt_conn_tx *tx;
@@ -1225,6 +1375,7 @@ static void process_unack_tx(struct bt_conn *conn)
 
 		conn_tx_destroy(conn, tx);
 		k_sem_give(bt_conn_get_pkts(conn));
+		atomic_dec(&conn->in_ll);
 	}
 }
 
@@ -1711,6 +1862,18 @@ struct net_buf *bt_conn_create_pdu_timeout(struct net_buf_pool *pool,
 	if (!K_TIMEOUT_EQ(timeout, K_NO_WAIT) &&
 	    k_current_get() == k_work_queue_thread_get(&k_sys_work_q)) {
 		LOG_WRN("Timeout discarded. No blocking in syswq.");
+		timeout = K_NO_WAIT;
+	}
+
+	/*
+	 * Only K_FOREVER is forced to K_NO_WAIT here: it is the only timeout
+	 * that blocks bt_workq indefinitely, since bt_workq is also what
+	 * releases the buffers. Bounded timeouts (e.g. BT_L2CAP_RTX_TIMEOUT)
+	 * only stall RX processing briefly and are intentionally left
+	 * untouched.
+	 */
+	if (K_TIMEOUT_EQ(timeout, K_FOREVER) && bt_is_work_thread()) {
+		LOG_DBG("Timeout K_FOREVER discarded. No blocking in bt_workq.");
 		timeout = K_NO_WAIT;
 	}
 
@@ -4132,7 +4295,7 @@ int bt_conn_le_create_auto(const struct bt_conn_le_create_param *create_param,
 		return -EINVAL;
 	}
 
-	if (!bt_id_scan_random_addr_check()) {
+	if (!bt_id_conn_random_addr_check()) {
 		return -EINVAL;
 	}
 
@@ -4223,7 +4386,7 @@ static int conn_le_create_common_checks(const bt_addr_le_t *peer,
 		return -EALREADY;
 	}
 
-	if (!bt_id_scan_random_addr_check()) {
+	if (!bt_id_conn_random_addr_check()) {
 		LOG_DBG("Conn check failed: invalid random address.");
 		return -EINVAL;
 	}

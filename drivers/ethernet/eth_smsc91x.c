@@ -707,7 +707,7 @@ static int eth_tx(const struct device *dev, struct net_pkt *pkt)
 }
 
 static int eth_smsc_set_config(const struct device *dev,
-			       struct net_if *iface __unused
+			       struct net_if *iface __unused,
 			       enum ethernet_config_type type,
 			       const struct ethernet_config *config)
 {
@@ -770,7 +770,7 @@ static void eth_initialize(struct net_if *iface)
 	}
 }
 
-static const struct ethernet_api api_funcs = {
+static DEVICE_API(ethernet, api_funcs) = {
 	.iface_api.init   = eth_initialize,
 	.get_capabilities = eth_smsc_get_caps,
 	.get_phy          = eth_get_phy,

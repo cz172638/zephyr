@@ -6,11 +6,13 @@ target_sources(
   kernel PRIVATE
   futex.c
   mem_domain.c
+  thread_user.c
   userspace_handler.c
   userspace.c
   )
 zephyr_sources(
-  mutex.c
   user_work.c
   sem.c
 )
+zephyr_sources_ifdef(CONFIG_SYS_MUTEX_IMPL_K_MUTEX mutex_kernel.c)
+zephyr_sources_ifdef(CONFIG_SYS_MUTEX_IMPL_FUTEX mutex_futex.c)

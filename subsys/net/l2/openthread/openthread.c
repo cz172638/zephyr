@@ -124,6 +124,10 @@ static void ot_l2_state_changed_handler(uint32_t flags, void *context)
 		NET_DBG("Ipv6 address added");
 	}
 
+	if (flags & (OT_CHANGED_THREAD_ML_ADDR | OT_CHANGED_IP6_ADDRESS_ADDED)) {
+		update_ml_prefix_onlink(ot_context);
+	}
+
 	if (flags & OT_CHANGED_IP6_MULTICAST_UNSUBSCRIBED) {
 		rm_ipv6_maddr_from_zephyr(ot_context);
 		NET_DBG("Ipv6 multicast address removed");
@@ -186,7 +190,6 @@ static void ot_receive_handler(otMessage *message, void *context)
 			"Packet not compliant with forwarding rules!");
 		goto out;
 	}
-	openthread_border_router_remove_checksums_for_eth_offloading_ipv6(pkt);
 #endif /* CONFIG_OPENTHREAD_ZEPHYR_BORDER_ROUTER */
 
 	NET_DBG("Injecting IPv6 packet to Zephyr net stack");

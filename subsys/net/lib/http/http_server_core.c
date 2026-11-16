@@ -43,13 +43,20 @@ BUILD_ASSERT(CONFIG_HTTP_SERVER_VERSION > 0,
 
 #define INACTIVITY_TIMEOUT K_SECONDS(CONFIG_HTTP_SERVER_CLIENT_INACTIVITY_TIMEOUT)
 
+#if (defined(CONFIG_HTTP_SERVER_VERSION_1) || defined(CONFIG_HTTP_SERVER_VERSION_2)) &&            \
+	defined(CONFIG_HTTP_SERVER_VERSION_3)
+#define HTTP_SERVER_SOCKETS_PER_SERVICE 2
+#else
+#define HTTP_SERVER_SOCKETS_PER_SERVICE 1
+#endif
 #define HTTP_SERVER_MAX_SERVICES CONFIG_HTTP_SERVER_NUM_SERVICES
 #define HTTP_SERVER_MAX_CLIENTS  CONFIG_HTTP_SERVER_MAX_CLIENTS
-#define HTTP_SERVER_SOCK_COUNT (1 + HTTP_SERVER_MAX_SERVICES + \
-				HTTP_SERVER_MAX_CLIENTS  + HTTP3_SERVER_MAX_STREAMS)
+#define HTTP_SERVER_SOCK_COUNT                                                                     \
+	(1 + HTTP_SERVER_SOCKETS_PER_SERVICE * HTTP_SERVER_MAX_SERVICES +                          \
+	 HTTP_SERVER_MAX_CLIENTS + HTTP3_SERVER_MAX_STREAMS)
 struct http_server_ctx {
-	int listen_fds; /* max value of 1 + MAX_SERVICES */
-	int client_fds; /* max value of 1 + MAX_CLIENTS */
+	int listen_fds; /* max value of 1 + SOCKETS_PER_SERVICE * MAX_SERVICES */
+	int client_fds; /* max value of listen_fds + MAX_CLIENTS */
 
 	/* First pollfd is eventfd that can be used to stop the server,
 	 * then we have the server listen sockets,
@@ -84,6 +91,7 @@ static int get_h3_stream_slot(const struct http_client_ctx *client, int stream_f
 static void reset_h3_stream_slot(struct http_client_ctx *client, int slot);
 static void restore_h3_stream_state(struct http_client_ctx *client, int slot);
 static void store_h3_stream_state(struct http_client_ctx *client, int slot);
+static void close_all_sockets(struct http_server_ctx *ctx);
 
 HTTP_SERVER_CONTENT_TYPE(html, "text/html")
 HTTP_SERVER_CONTENT_TYPE(css, "text/css")
@@ -290,10 +298,10 @@ out:
 
 int http_server_init(struct http_server_ctx *ctx)
 {
-	int failed = 0, count = 0;
+	int count = 0;
 	int svc_count;
 	net_socklen_t len;
-	int fd, af, i;
+	int fd, af, i, required_fds;
 	bool h3 = false, h2 = false, h1 = false;
 	struct net_sockaddr_storage addr_storage;
 	const union {
@@ -369,7 +377,6 @@ int http_server_init(struct http_server_ctx *ctx)
 			addr.addr4->sin_port = net_htons(*svc->port);
 		} else {
 			LOG_ERR("Neither IPv4 nor IPv6 is enabled");
-			failed++;
 			break;
 		}
 
@@ -417,9 +424,7 @@ int http_server_init(struct http_server_ctx *ctx)
 
 		if (h1 || h2) {
 			fd = setup_h1_h2_socket(svc, af, addr.addr, len);
-			if (fd < 0) {
-				failed++;
-			} else {
+			if (fd >= 0) {
 				if (IS_ENABLED(CONFIG_NET_HTTP_SERVER_LOG_LEVEL_DBG)) {
 					char ver_str[sizeof("/1.1/2")] = {0};
 
@@ -446,9 +451,7 @@ int http_server_init(struct http_server_ctx *ctx)
 
 		if (h3 && IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_3)) {
 			fd = setup_h3_socket(svc, af, addr.addr, len);
-			if (fd < 0) {
-				failed++;
-			} else {
+			if (fd >= 0) {
 				LOG_DBG("Initialized HTTP%s Service %s:%u", "/3",
 					svc->host ? svc->host : "<any>", *svc->port);
 
@@ -460,8 +463,8 @@ int http_server_init(struct http_server_ctx *ctx)
 		}
 	}
 
-	if (failed >= svc_count) {
-		LOG_ERR("All services failed (%d)", failed);
+	if (count == 1) {
+		LOG_ERR("All services failed");
 		/* Close eventfd socket */
 		zsock_close(ctx->fds[0].fd);
 		return -ESRCH;
@@ -470,10 +473,13 @@ int http_server_init(struct http_server_ctx *ctx)
 	ctx->listen_fds = count;
 	ctx->client_fds = ctx->listen_fds + HTTP_SERVER_MAX_CLIENTS;
 
-	if (!IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_3) &&
-	    ctx->client_fds > ARRAY_SIZE(ctx->fds)) {
+	required_fds = ctx->client_fds + HTTP3_SERVER_MAX_STREAMS;
+	if (required_fds > ARRAY_SIZE(ctx->fds)) {
 		LOG_ERR("HTTP server fd table size mismatch: %d slots required, %zu allocated",
-			ctx->client_fds, ARRAY_SIZE(ctx->fds));
+			required_fds, ARRAY_SIZE(ctx->fds));
+		/* Close sockets */
+		close_all_sockets(ctx);
+		return -ENOMEM;
 	}
 
 	return 0;
@@ -493,6 +499,13 @@ static int accept_new_client(int server_fd)
 		new_socket = -errno;
 		LOG_DBG("[%d] accept failed (%d)", server_fd, new_socket);
 		return new_socket;
+	}
+
+	if (IS_ENABLED(CONFIG_HTTP_SERVER_TCP_NODELAY)) {
+		if (zsock_setsockopt(new_socket, NET_IPPROTO_TCP, ZSOCK_TCP_NODELAY,
+				     &(int){1}, sizeof(int)) < 0) {
+			LOG_DBG("[%d] failed to set TCP_NODELAY (%d)", new_socket, errno);
+		}
 	}
 
 	const char * const addrstr =
@@ -741,6 +754,7 @@ static void init_client_ctx(struct http_client_ctx *client, const struct http_se
 	client->server_state = HTTP_SERVER_PREFACE_STATE;
 	client->has_upgrade_header = false;
 	client->preface_sent = false;
+	client->settings_acked = false;
 	client->window_size = HTTP_SERVER_INITIAL_WINDOW_SIZE;
 
 	if (IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_3)) {
@@ -1625,7 +1639,7 @@ static int compare_strings(const char *path, const char *resource)
 	return 1; /* Strings are not equal */
 }
 
-static int path_len_without_query(const char *path)
+int http_server_path_len_without_query(const char *path)
 {
 	int len = 0;
 
@@ -1636,12 +1650,8 @@ static int path_len_without_query(const char *path)
 	return len;
 }
 
-static bool skip_this(struct http_resource_desc *resource, bool is_websocket)
+static bool skip_this(const struct http_resource_detail *detail, bool is_websocket)
 {
-	struct http_resource_detail *detail;
-
-	detail = (struct http_resource_detail *)resource->detail;
-
 	if (is_websocket) {
 		if (detail->type != HTTP_RESOURCE_TYPE_WEBSOCKET) {
 			return true;
@@ -1655,16 +1665,25 @@ static bool skip_this(struct http_resource_desc *resource, bool is_websocket)
 	return false;
 }
 
-/* Resolves '.' / '..' in the path portion of the URL (everything before the first '?' or '#')
- * so the caller-visible buffer holds a canonical form. The query/fragment portion is preserved
- * unchanged. The output is always shorter or equal in length, so the in-place rewrite is safe.
+/* Drops a fragment, which is not part of a request target (RFC 9112 section 3.2.1), and resolves
+ * '.' / '..' in the path portion of the URL (everything before the first '?') so the
+ * caller-visible buffer holds a canonical form. The query portion is preserved unchanged. The
+ * output is always shorter or equal in length, so the in-place rewrite is safe.
  */
 void http_server_remove_dot_segments(char *path)
 {
+	char *fragment = strchr(path, '#');
 	char *in = path;
 	char *out = path;
-	char *query = strpbrk(path, "?#");
-	size_t qtail_len = (query != NULL) ? strlen(query) : 0;
+	char *query;
+	size_t qtail_len;
+
+	if (fragment != NULL) {
+		*fragment = '\0';
+	}
+
+	query = strchr(path, '?');
+	qtail_len = (query != NULL) ? strlen(query) : 0;
 
 	while ((*in != '\0') && (in != query)) {
 		if (in[0] == '.') {
@@ -1732,7 +1751,7 @@ struct http_resource_detail *get_resource_detail(const struct http_service_desc 
 						 const char *path, int *path_len, bool is_websocket)
 {
 	HTTP_SERVICE_FOREACH_RESOURCE(service, resource) {
-		if (skip_this(resource, is_websocket)) {
+		if (skip_this(resource->detail, is_websocket)) {
 			continue;
 		}
 
@@ -1748,20 +1767,20 @@ struct http_resource_detail *get_resource_detail(const struct http_service_desc 
 		HTTP_SERVICE_FOREACH_RESOURCE(service, resource) {
 			int ret;
 
-			if (skip_this(resource, is_websocket)) {
+			if (skip_this(resource->detail, is_websocket)) {
 				continue;
 			}
 
 			ret = fnmatch(resource->resource, path, (FNM_PATHNAME | FNM_LEADING_DIR));
 			if (ret == 0) {
-				*path_len = path_len_without_query(path);
+				*path_len = http_server_path_len_without_query(path);
 				return resource->detail;
 			}
 		}
 	}
 
-	if (service->res_fallback != NULL) {
-		*path_len = path_len_without_query(path);
+	if (service->res_fallback != NULL && !skip_this(service->res_fallback, is_websocket)) {
+		*path_len = http_server_path_len_without_query(path);
 		return service->res_fallback;
 	}
 
@@ -1835,7 +1854,7 @@ return_filename:
 void http_server_get_content_type_from_extension(char *url, char *content_type,
 						 size_t content_type_size)
 {
-	size_t url_len = strlen(url);
+	size_t url_len = http_server_path_len_without_query(url);
 
 	HTTP_SERVER_CONTENT_TYPE_FOREACH(ct) {
 		char *ext;
@@ -1955,6 +1974,28 @@ bool http_response_is_provided(struct http_response_ctx *rsp)
 {
 	if (rsp->status != 0 || rsp->header_count > 0 || rsp->body_len > 0) {
 		return true;
+	}
+
+	return false;
+}
+
+bool http_server_is_connection_specific_header(const char *name)
+{
+	/* Connection-specific fields that HTTP/2 and HTTP/3 forbid
+	 * (RFC 9113, Section 8.2.2 and RFC 9114, Section 4.2).
+	 */
+	static const char *const fields[] = {
+		"connection",
+		"keep-alive",
+		"proxy-connection",
+		"transfer-encoding",
+		"upgrade",
+	};
+
+	ARRAY_FOR_EACH(fields, i) {
+		if (strcasecmp(name, fields[i]) == 0) {
+			return true;
+		}
 	}
 
 	return false;

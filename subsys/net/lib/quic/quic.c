@@ -329,9 +329,9 @@ enum quic_stream_states {
 
 ZTESTABLE_STATIC int quic_put_varint(uint8_t *buf, size_t buf_len, uint64_t val);
 static struct quic_context *quic_find_context(struct quic_endpoint *ep);
-static struct quic_stream *quic_find_stream(struct quic_context *ctx,
-					    struct quic_endpoint *ep,
-					    uint64_t stream_id);
+ZTESTABLE_STATIC struct quic_stream *quic_find_stream(struct quic_context *ctx,
+						      struct quic_endpoint *ep,
+						      uint64_t stream_id);
 static struct quic_stream *quic_create_stream_from_peer(struct quic_context *ctx,
 							struct quic_endpoint *ep,
 							uint64_t stream_id);
@@ -388,10 +388,10 @@ static int quic_send_packet_with_pn(struct quic_endpoint *ep,
 				    const uint8_t *payload,
 				    size_t payload_len,
 				    uint64_t *sent_pn_out);
-static int quic_send_packet(struct quic_endpoint *ep,
-			    enum quic_secret_level level,
-			    const uint8_t *payload,
-			    size_t payload_len);
+ZTESTABLE_STATIC int quic_send_packet(struct quic_endpoint *ep,
+				      enum quic_secret_level level,
+				      const uint8_t *payload,
+				      size_t payload_len);
 static int quic_send_stop_sending(struct quic_endpoint *ep,
 				  uint64_t stream_id,
 				  uint64_t error_code);
@@ -971,6 +971,21 @@ static int pollfd_try_add(net_sa_family_t family, int sock)
 }
 
 /*
+ * Report a failed key import. Running out of PSA key slots is a
+ * configuration problem that is otherwise hard to tell from the log, so
+ * name it.
+ */
+static void quic_log_key_import_failure(const char *what, psa_status_t status)
+{
+	if (status == PSA_ERROR_INSUFFICIENT_MEMORY) {
+		NET_ERR("Failed to import %s key: no free PSA key slot, "
+			"see CONFIG_MBEDTLS_PSA_KEY_SLOT_COUNT", what);
+	} else {
+		NET_ERR("Failed to import %s key: %d", what, status);
+	}
+}
+
+/*
  * Cleanup helper to call when destroying context or switching keys.
  * Destroys all PSA keys and clears sensitive data.
  */
@@ -1006,6 +1021,17 @@ ZTESTABLE_STATIC void quic_crypto_context_destroy(struct quic_crypto_context *ct
 	}
 
 	ctx->initialized = false;
+}
+
+/*
+ * Discard the keys of one encryption level for the rest of the connection
+ * (RFC 9001 ch. 4.9). Unlike a plain destroy this is remembered, so the
+ * level is not set up again and late packets for it are dropped.
+ */
+static void quic_crypto_context_discard(struct quic_crypto_context *ctx)
+{
+	quic_crypto_context_destroy(ctx);
+	ctx->discarded = true;
 }
 
 /*
@@ -1591,8 +1617,7 @@ static int quic_hkdf_expand_label_ex(psa_algorithm_t hash_alg,
 
 	status = psa_import_key(&attributes, secret, secret_len, &key_id);
 	if (status != PSA_SUCCESS) {
-		NET_DBG("psa_import_key failed: status=%d, hash_alg=0x%x, secret_len=%zu",
-			status, hash_alg, secret_len);
+		quic_log_key_import_failure("HKDF", status);
 		return -EIO;
 	}
 
@@ -1762,6 +1787,7 @@ static bool quic_hp_setup(struct quic_hp_cipher *hp_cipher, int hash_algo,
 	crypto_zero(hp_key, sizeof(hp_key));
 
 	if (status != PSA_SUCCESS) {
+		quic_log_key_import_failure("HP", status);
 		return false;
 	}
 
@@ -1848,6 +1874,7 @@ static bool quic_pp_setup(struct quic_pp_cipher *pp_cipher, int hash_algo,
 	crypto_zero(pp_key, sizeof(pp_key));
 
 	if (status != PSA_SUCCESS) {
+		quic_log_key_import_failure("PP", status);
 		memset(pp_cipher->iv, 0, sizeof(pp_cipher->iv));
 		return false;
 	}
@@ -1959,7 +1986,7 @@ static bool quic_hp_setup_ex(struct quic_hp_cipher *hp_cipher,
 	crypto_zero(hp_key, sizeof(hp_key));
 
 	if (status != PSA_SUCCESS) {
-		NET_ERR("Failed to import HP key:  %d", status);
+		quic_log_key_import_failure("HP", status);
 		return false;
 	}
 
@@ -2051,7 +2078,7 @@ static bool quic_pp_setup_ex(struct quic_pp_cipher *pp_cipher,
 	crypto_zero(pp_key, sizeof(pp_key));
 
 	if (status != PSA_SUCCESS) {
-		NET_ERR("Failed to import PP key:  %d", status);
+		quic_log_key_import_failure("PP", status);
 		memset(pp_cipher->iv, 0, sizeof(pp_cipher->iv));
 		return false;
 	}
@@ -3039,6 +3066,38 @@ static int quic_context_ref(struct quic_context *ctx)
 	return ref + 1;
 }
 
+/*
+ * Take a reference only if the context is still alive. Its reference count
+ * drops to zero before its teardown takes contexts_lock, so finding it on the
+ * context list does not make it alive. Returns true when a reference was
+ * taken.
+ */
+#if defined(CONFIG_QUIC_LOG_LEVEL_DBG)
+static bool quic_context_ref_unless_zero_debug(struct quic_context *ctx, const char *caller,
+					       int line)
+#define quic_context_ref_unless_zero(ctx)                                      \
+	quic_context_ref_unless_zero_debug(ctx, __func__, __LINE__)
+#else
+static bool quic_context_ref_unless_zero(struct quic_context *ctx)
+#endif
+{
+	atomic_val_t ref;
+
+	do {
+		ref = atomic_get(&ctx->refcount);
+		if (ref == 0) {
+			return false;
+		}
+	} while (!atomic_cas(&ctx->refcount, ref, ref + 1));
+
+#if defined(CONFIG_QUIC_LOG_LEVEL_DBG)
+	NET_DBG("[CO:%p/%d] Context ref %ld (%s():%d)", ctx, quic_get_by_conn(ctx),
+		ref + 1, caller, line);
+#endif
+
+	return true;
+}
+
 #if defined(CONFIG_QUIC_LOG_LEVEL_DBG)
 static int quic_context_unref_debug(struct quic_context *ctx, const char *caller, int line)
 #define quic_context_unref(ctx) quic_context_unref_debug(ctx, __func__, __LINE__)
@@ -3182,6 +3241,7 @@ static int quic_stream_unref_debug(struct quic_stream *stream, const char *calle
 static int quic_stream_unref(struct quic_stream *stream)
 #endif
 {
+	struct quic_context *conn;
 	struct quic_endpoint *ep;
 	atomic_val_t ref;
 
@@ -3258,13 +3318,22 @@ static int quic_stream_unref(struct quic_stream *stream)
 		quic_endpoint_unref(ep);
 	}
 
-	if (stream->conn != NULL) {
-		k_mutex_lock(&streams_lock, K_FOREVER);
-		sys_slist_find_and_remove(&stream->conn->streams, &stream->node);
-		k_mutex_unlock(&streams_lock);
+	/* The accept hand-over moves a stream to another context under
+	 * streams_lock, so the context whose reference the stream holds is
+	 * read and the stream detached from it under the same lock.
+	 */
+	k_mutex_lock(&streams_lock, K_FOREVER);
 
-		quic_context_unref(stream->conn);
+	conn = stream->conn;
+	if (conn != NULL) {
+		sys_slist_find_and_remove(&conn->streams, &stream->node);
 		stream->conn = NULL;
+	}
+
+	k_mutex_unlock(&streams_lock);
+
+	if (conn != NULL) {
+		quic_context_unref(conn);
 	}
 
 	if (stream->sock >= 0) {
@@ -3288,6 +3357,48 @@ static int quic_stream_unref(struct quic_stream *stream)
 	}
 
 	return 0;
+}
+
+/* The streams whose last reference was dropped where they cannot be released */
+static K_FIFO_DEFINE(quic_stream_release_q);
+
+static void quic_stream_release_work_handler(struct k_work *work)
+{
+	struct quic_stream *stream;
+
+	ARG_UNUSED(work);
+
+	stream = k_fifo_get(&quic_stream_release_q, K_NO_WAIT);
+	while (stream != NULL) {
+		(void)quic_stream_unref(stream);
+		stream = k_fifo_get(&quic_stream_release_q, K_NO_WAIT);
+	}
+}
+
+ZTESTABLE_STATIC K_WORK_DEFINE(quic_stream_release_work, quic_stream_release_work_handler);
+
+/*
+ * Drop a reference while holding ep->recovery.lock. The release of a stream
+ * can send MAX_STREAMS, which takes ep->send_lock, and a sender holds that
+ * lock while it records the packet under ep->recovery.lock. The last
+ * reference is therefore dropped from the QUIC recovery work queue, which
+ * has the stack of the QUIC service thread. A stream with
+ * one reference is on no accept queue, as the queue holds a reference of its
+ * own, so its fifo word is free.
+ */
+ZTESTABLE_STATIC void quic_stream_unref_deferred(struct quic_stream *stream)
+{
+	atomic_val_t ref;
+
+	do {
+		ref = atomic_get(&stream->refcount);
+		if (ref == 1) {
+			k_fifo_put(&quic_stream_release_q, stream);
+			(void)k_work_submit_to_queue(&quic_recovery_work_q,
+						     &quic_stream_release_work);
+			return;
+		}
+	} while (!atomic_cas(&stream->refcount, ref, ref - 1));
 }
 
 static bool quic_endpoint_is_used(struct quic_endpoint *ep)
@@ -4040,6 +4151,24 @@ static void quic_recovery_discard_pn_space(struct quic_endpoint *ep, int pn_spac
 	k_mutex_unlock(&ep->recovery.lock);
 }
 
+/*
+ * Discard the keys of the Initial or the Handshake level for the rest of
+ * the connection (RFC 9001 ch. 4.9), together with the loss recovery state
+ * of the packets sent with them. Those packets can no longer be
+ * acknowledged, so they must not stay counted as in flight or keep the probe
+ * timer armed (RFC 9002 ch. 6.4).
+ */
+ZTESTABLE_STATIC void quic_endpoint_discard_keys(struct quic_endpoint *ep,
+						 enum quic_secret_level level)
+{
+	__ASSERT_NO_MSG(level == QUIC_SECRET_LEVEL_INITIAL ||
+			level == QUIC_SECRET_LEVEL_HANDSHAKE);
+
+	quic_crypto_context_discard(level == QUIC_SECRET_LEVEL_INITIAL ?
+				    &ep->crypto.initial : &ep->crypto.handshake);
+	quic_recovery_discard_pn_space(ep, level_to_pn_space(level));
+}
+
 ZTESTABLE_STATIC void quic_recovery_init(struct quic_endpoint *ep)
 {
 	k_mutex_init(&ep->recovery.lock);
@@ -4416,7 +4545,14 @@ static void quic_stream_advance_tx_acked(struct quic_endpoint *ep,
 {
 	struct quic_stream *stream = quic_find_stream_by_id(ep, stream_id);
 
+	if (stream == NULL) {
+		return;
+	}
+
 	quic_stream_advance_tx_acked_for_stream(stream, acked_start, acked_end);
+
+	/* Called under ep->recovery.lock */
+	quic_stream_unref_deferred(stream);
 }
 
 /*
@@ -4613,6 +4749,7 @@ static void quic_retransmit_stream_frame(struct quic_endpoint *ep,
 	if (lost->stream_data_len > sizeof(quic_retransmit_payload)) {
 		NET_WARN("[EP:%p/%d] Lost frame too large to retransmit (%u)",
 			 ep, quic_get_by_ep(ep), lost->stream_data_len);
+		quic_stream_unref(stream);
 		return;
 	}
 
@@ -4625,6 +4762,7 @@ static void quic_retransmit_stream_frame(struct quic_endpoint *ep,
 	if (lost->stream_offset < tx->base_offset) {
 		k_mutex_unlock(&stream->tx_lock);
 		k_mutex_unlock(&quic_retransmit_lock);
+		quic_stream_unref(stream);
 		return; /* already ACKed */
 	}
 
@@ -4632,6 +4770,7 @@ static void quic_retransmit_stream_frame(struct quic_endpoint *ep,
 	if (buf_off + lost->stream_data_len > tx->len) {
 		k_mutex_unlock(&stream->tx_lock);
 		k_mutex_unlock(&quic_retransmit_lock);
+		quic_stream_unref(stream);
 		NET_WARN("[EP:%p/%d] Lost frame not in TX buffer",
 			 ep, quic_get_by_ep(ep));
 		return;
@@ -4641,6 +4780,9 @@ static void quic_retransmit_stream_frame(struct quic_endpoint *ep,
 	memcpy(quic_retransmit_payload, &tx->data[buf_off], payload_len);
 
 	k_mutex_unlock(&stream->tx_lock);
+
+	/* The rest only needs the copy of the payload */
+	quic_stream_unref(stream);
 
 	/* Build STREAM frame header into the small stack buffer */
 	frame_type = QUIC_FRAME_TYPE_STREAM_BASE | 0x04 | 0x02;
@@ -5832,6 +5974,30 @@ fail:
 	return ret;
 }
 
+#if defined(CONFIG_NET_TEST)
+/* Let tests drop a reference to a context that no socket stands for */
+void quic_test_context_unref(struct quic_context *ctx)
+{
+	(void)quic_context_unref(ctx);
+}
+
+/* Let tests drop the last reference of a stream */
+void quic_test_stream_unref(struct quic_stream *stream)
+{
+	(void)quic_stream_unref(stream);
+}
+
+/* Let tests hold off the accept hand-over and stream release */
+void quic_test_streams_lock(bool lock)
+{
+	if (lock) {
+		k_mutex_lock(&streams_lock, K_FOREVER);
+	} else {
+		k_mutex_unlock(&streams_lock);
+	}
+}
+#endif /* CONFIG_NET_TEST */
+
 static struct quic_context *quic_context_init(struct quic_context *ctx)
 {
 	k_fifo_init(&ctx->pending.accept_q);
@@ -5855,6 +6021,7 @@ static struct quic_context *quic_context_init(struct quic_context *ctx)
 	 * closes fd 0.
 	 */
 	ctx->sock = -1;
+	ctx->accept_closed = false;
 	ctx->error_code = 0;
 
 #if defined(CONFIG_NET_STATISTICS_QUIC)
@@ -5935,9 +6102,17 @@ static struct quic_stream *quic_stream_init(struct quic_stream *stream)
 	return stream;
 }
 
-static struct quic_stream *quic_get_stream(struct quic_context *conn)
+ZTESTABLE_STATIC struct quic_stream *quic_get_stream(struct quic_context *conn)
 {
 	struct quic_stream *stream = NULL;
+
+	/* The stream holds a reference to its context. A context whose
+	 * count already reached zero is being released, and a stream added
+	 * to it would keep pointing at it after its slot is reused.
+	 */
+	if (!quic_context_ref_unless_zero(conn)) {
+		return NULL;
+	}
 
 	k_mutex_lock(&streams_lock, K_FOREVER);
 
@@ -5953,11 +6128,14 @@ static struct quic_stream *quic_get_stream(struct quic_context *conn)
 		sys_slist_prepend(&conn->streams, &stream->node);
 
 		stream->conn = conn;
-		quic_context_ref(conn);
 		break;
 	}
 
 	k_mutex_unlock(&streams_lock);
+
+	if (stream == NULL) {
+		quic_context_unref(conn);
+	}
 
 	return stream;
 }
@@ -6523,6 +6701,7 @@ ZTESTABLE_STATIC int quic_mark_rejected_early_data(struct quic_endpoint *ep)
 		stream = quic_find_stream_by_id(ep, info->stream_id);
 		if (stream != NULL) {
 			stream->replay_fin_pending = true;
+			quic_stream_unref_deferred(stream);
 		}
 	}
 
@@ -6612,18 +6791,24 @@ static int derive_application_secrets(struct quic_tls_context *ctx)
 				"Server app traffic secret:");
 	}
 
-	/* Notify QUIC layer of new secrets */
+	/* Notify QUIC layer of new secrets. Without the keys the connection
+	 * cannot be used, so a failure here must end the handshake.
+	 */
 	if (ctx->secret_cb != NULL) {
 		if (ctx->ep->is_server) {
-			ctx->secret_cb(ctx->user_data, QUIC_SECRET_LEVEL_APPLICATION,
-				       ctx->ks.client_ap_traffic_secret,
-				       ctx->ks.server_ap_traffic_secret,
-				       ctx->ks.hash_len);
+			ret = ctx->secret_cb(ctx->user_data, QUIC_SECRET_LEVEL_APPLICATION,
+					     ctx->ks.client_ap_traffic_secret,
+					     ctx->ks.server_ap_traffic_secret,
+					     ctx->ks.hash_len);
 		} else {
-			ctx->secret_cb(ctx->user_data, QUIC_SECRET_LEVEL_APPLICATION,
-				       ctx->ks.server_ap_traffic_secret,
-				       ctx->ks.client_ap_traffic_secret,
-				       ctx->ks.hash_len);
+			ret = ctx->secret_cb(ctx->user_data, QUIC_SECRET_LEVEL_APPLICATION,
+					     ctx->ks.server_ap_traffic_secret,
+					     ctx->ks.client_ap_traffic_secret,
+					     ctx->ks.hash_len);
+		}
+
+		if (ret != 0) {
+			return ret;
 		}
 	}
 
@@ -6957,21 +7142,33 @@ ZTESTABLE_STATIC int parse_peer_transport_params(struct quic_endpoint *ep)
  * Creates a new quic_context for the connection, migrates the endpoint
  * into it, and enqueues it in the listening context's pending.accept_q.
  */
-static void quic_connection_accept_enqueue(struct quic_endpoint *child_ep)
+ZTESTABLE_STATIC void quic_connection_accept_enqueue(struct quic_endpoint *child_ep)
 {
 	struct quic_context *listen_ctx;
 	struct quic_context *child_ctx;
 	struct quic_stream *stream, *tmp;
 	struct quic_stream *queued_streams[ARRAY_SIZE(streams)];
 	size_t queued_stream_count = 0U;
+	size_t migrated = 0U;
 
 	/* Only server child endpoints should be enqueued */
 	if (!child_ep->is_server || child_ep->parent == NULL) {
 		return;
 	}
 
-	/* Find the listening context via the parent (listening) endpoint */
+	/* Find the listening context via the parent (listening) endpoint, and
+	 * hold it until the connection has been handed over: closing the
+	 * listening socket at the same time could release it otherwise.
+	 */
+	k_mutex_lock(&contexts_lock, K_FOREVER);
+
 	listen_ctx = quic_find_context(child_ep->parent);
+	if (listen_ctx != NULL && !quic_context_ref_unless_zero(listen_ctx)) {
+		listen_ctx = NULL;
+	}
+
+	k_mutex_unlock(&contexts_lock);
+
 	if (listen_ctx == NULL) {
 		NET_ERR("[EP:%p/%d] Cannot find listening context for parent ep %d [%p]",
 			child_ep, quic_get_by_ep(child_ep),
@@ -6984,12 +7181,44 @@ static void quic_connection_accept_enqueue(struct quic_endpoint *child_ep)
 	if (child_ctx == NULL) {
 		NET_ERR("[EP:%p/%d] Cannot allocate context for accepted connection",
 			child_ep, quic_get_by_ep(child_ep));
+		quic_context_unref(listen_ctx);
 		return;
 	}
 
-	/* Migrate the child endpoint from the listening context to the new one */
+	child_ctx->listen = NULL;
+	child_ctx->stream_id_counter = 0ULL;
+	child_ctx->id = connection_ids++;
+	child_ctx->is_listening = false;
+
+	/* Migrate the child endpoint from the listening context to the new one.
+	 * streams_lock is taken as well: a stream whose last reference is
+	 * dropped meanwhile reads its context and leaves it under that lock,
+	 * so it either leaves the listening context first and is not moved,
+	 * or is moved first and then leaves the connection context.
+	 */
 	k_mutex_lock(&contexts_lock, K_FOREVER);
 	k_mutex_lock(&endpoints_lock, K_FOREVER);
+	k_mutex_lock(&streams_lock, K_FOREVER);
+
+	/* A listening socket that is closed accepts nothing any more. The
+	 * endpoint stays on the listening context and is closed with it.
+	 * The close sets accept_closed and takes the connections still
+	 * waiting for accept under contexts_lock, and the connection is
+	 * queued under the same lock below, so a connection is either not
+	 * handed over or taken by the close.
+	 */
+	if (listen_ctx->accept_closed) {
+		k_mutex_unlock(&streams_lock);
+		k_mutex_unlock(&endpoints_lock);
+		k_mutex_unlock(&contexts_lock);
+
+		NET_DBG("[EP:%p/%d] Listening socket closed, connection not accepted",
+			child_ep, quic_get_by_ep(child_ep));
+
+		quic_context_unref(child_ctx);
+		quic_context_unref(listen_ctx);
+		return;
+	}
 
 	sys_slist_find_and_remove(&listen_ctx->endpoints, &child_ep->node);
 	sys_slist_prepend(&child_ctx->endpoints, &child_ep->node);
@@ -7019,6 +7248,10 @@ static void quic_connection_accept_enqueue(struct quic_endpoint *child_ep)
 		sys_slist_find_and_remove(&listen_ctx->streams, &stream->node);
 		sys_slist_prepend(&child_ctx->streams, &stream->node);
 
+		/* The stream holds a reference to its context */
+		quic_context_ref(child_ctx);
+		migrated++;
+
 		stream->conn = child_ctx;
 		stream->ep = child_ep;
 	}
@@ -7042,6 +7275,9 @@ static void quic_connection_accept_enqueue(struct quic_endpoint *child_ep)
 				sys_slist_find_and_remove(&listen_ctx->streams, &stream->node);
 				sys_slist_prepend(&child_ctx->streams, &stream->node);
 
+				quic_context_ref(child_ctx);
+				migrated++;
+
 				stream->conn = child_ctx;
 				stream->ep = child_ep;
 			}
@@ -7054,14 +7290,6 @@ static void quic_connection_accept_enqueue(struct quic_endpoint *child_ep)
 		}
 	}
 
-	k_mutex_unlock(&endpoints_lock);
-	k_mutex_unlock(&contexts_lock);
-
-	/* Inherit the listening endpoint reference so stream getsockopt works */
-	child_ctx->listen = NULL;
-	child_ctx->stream_id_counter = 0ULL;
-	child_ctx->id = connection_ids++;
-	child_ctx->is_listening = false;
 	quic_stats_merge_endpoint(child_ctx, child_ep);
 #if defined(CONFIG_NET_STATISTICS_QUIC)
 	quic_stats_set_context_metadata(child_ctx, child_ep);
@@ -7076,6 +7304,20 @@ static void quic_connection_accept_enqueue(struct quic_endpoint *child_ep)
 	/* Make the child context reachable to accept() */
 	k_fifo_put(&listen_ctx->pending.accept_q, child_ctx);
 	k_sem_give(&listen_ctx->pending.accept_sem);
+
+	k_mutex_unlock(&streams_lock);
+	k_mutex_unlock(&endpoints_lock);
+	k_mutex_unlock(&contexts_lock);
+
+	/* The migrated streams no longer hold the listening context, and the
+	 * handover is done
+	 */
+	while (migrated > 0U) {
+		quic_context_unref(listen_ctx);
+		migrated--;
+	}
+
+	quic_context_unref(listen_ctx);
 
 	k_yield();
 }
@@ -7144,6 +7386,14 @@ static int quic_handshake_complete(struct quic_endpoint *ep)
 
 	quic_recovery_discard_pn_space(ep, level_to_pn_space(QUIC_SECRET_LEVEL_INITIAL));
 	quic_recovery_discard_pn_space(ep, level_to_pn_space(QUIC_SECRET_LEVEL_HANDSHAKE));
+
+	if (ep->handshake_confirmed) {
+		/* RFC 9001 ch. 4.9.2: the server has confirmed the handshake
+		 * and has no further use for the Handshake keys. The client
+		 * does the same when it receives HANDSHAKE_DONE.
+		 */
+		quic_endpoint_discard_keys(ep, QUIC_SECRET_LEVEL_HANDSHAKE);
+	}
 
 	quic_endpoint_handshake_complete(ep);
 
@@ -7628,11 +7878,13 @@ ooo_flow_control_error:
 }
 
 /*
- * Find an existing stream by ID
+ * Find an existing stream by ID. The stream is returned with a reference,
+ * which the caller drops with quic_stream_unref(), so that the stream cannot
+ * be released while the caller uses it.
  */
-static struct quic_stream *quic_find_stream(struct quic_context *ctx,
-					    struct quic_endpoint *ep,
-					    uint64_t stream_id)
+ZTESTABLE_STATIC struct quic_stream *quic_find_stream(struct quic_context *ctx,
+						      struct quic_endpoint *ep,
+						      uint64_t stream_id)
 {
 	struct quic_stream *stream, *tmp, *found = NULL;
 
@@ -7640,11 +7892,23 @@ static struct quic_stream *quic_find_stream(struct quic_context *ctx,
 	k_mutex_lock(&contexts_lock, K_FOREVER);
 
 	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&ctx->streams, stream, tmp, node) {
-		/* Stream found, verify it belongs to this connection */
-		if (stream->id == stream_id && stream->conn == ctx) {
-			found = stream;
-			break;
+		/* A stream ID is only unique within one connection. The
+		 * streams of all connections that are not accepted yet are
+		 * kept in the listening context, so the endpoint has to
+		 * match too, or data would be delivered to a stream of
+		 * another peer that happens to use the same ID.
+		 */
+		if (stream->id != stream_id || stream->conn != ctx ||
+		    stream->ep != ep) {
+			continue;
 		}
+
+		if (!quic_stream_ref_if_used(stream)) {
+			continue;
+		}
+
+		found = stream;
+		break;
 	}
 
 	k_mutex_unlock(&contexts_lock);
@@ -7652,7 +7916,9 @@ static struct quic_stream *quic_find_stream(struct quic_context *ctx,
 	return found;
 }
 
-/* Find stream by ID using only endpoint (searches all contexts) */
+/* Find stream by ID using only endpoint (searches all contexts). The stream is
+ * returned with a reference, as quic_find_stream() does.
+ */
 static struct quic_stream *quic_find_stream_by_id(struct quic_endpoint *ep,
 						  uint64_t stream_id)
 {
@@ -7669,7 +7935,8 @@ static struct quic_stream *quic_find_stream_by_id(struct quic_endpoint *ep,
 		}
 
 		SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&ctx->streams, stream, tmp, node) {
-			if (stream->id == stream_id && stream->ep == ep) {
+			if (stream->id == stream_id && stream->ep == ep &&
+			    quic_stream_ref_if_used(stream)) {
 				found = stream;
 				goto out;
 			}
@@ -7958,6 +8225,21 @@ static void process_pkt(struct quic_pkt *pkt)
 /* This is called by Quic handler thread and it will decrypt the header and process
  * the packet further.
  */
+/*
+ * Restart the idle timer of an endpoint for a packet that was received and
+ * authenticated (RFC 9000 ch. 10.1). It must be the endpoint the packet is
+ * for, not the one that owns the UDP socket, which a server shares between
+ * all of its connections. And it must not be done for a packet that failed
+ * to decrypt, or anyone who knows the addresses and the connection ID could
+ * keep the connection from ever timing out.
+ */
+static void quic_endpoint_restart_idle_timer(struct quic_endpoint *ep)
+{
+	if (!ep->idle.idle_timeout_disabled) {
+		ep->idle.last_rx_time = k_uptime_get();
+	}
+}
+
 static bool process_long_header_msg(struct quic_pkt *pkt)
 {
 	enum quic_packet_type ptype = pkt->ptype;
@@ -7979,6 +8261,18 @@ static bool process_long_header_msg(struct quic_pkt *pkt)
 
 	if (IS_ENABLED(CONFIG_QUIC_TXRX_DEBUG)) {
 		NET_HEXDUMP_DBG(buf, pkt->total_len, "Msg:");
+	}
+
+	if ((ptype == QUIC_PACKET_TYPE_INITIAL && ep->crypto.initial.discarded) ||
+	    (ptype == QUIC_PACKET_TYPE_HANDSHAKE && ep->crypto.handshake.discarded)) {
+		/* The keys of this level are gone (RFC 9001 ch. 4.9). A late
+		 * or retransmitted packet cannot be read any more and is of
+		 * no use, drop it and leave the connection alone.
+		 */
+		NET_DBG("[EP:%p/%d] Dropping packet for a discarded key level",
+			ep, quic_get_by_ep(ep));
+		QUIC_EP_STAT_INC(ep, drop_rx);
+		goto fail;
 	}
 
 	if (ptype == QUIC_PACKET_TYPE_INITIAL) {
@@ -8069,13 +8363,32 @@ static bool process_long_header_msg(struct quic_pkt *pkt)
 	if (ret != 0) {
 		NET_DBG("[EP:%p/%d] Packet decryption failed (%d)", ep,
 			quic_get_by_ep(ep), ret);
+
+		if ((ptype == QUIC_PACKET_TYPE_INITIAL && ep->crypto.initial.discarded) ||
+		    (ptype == QUIC_PACKET_TYPE_HANDSHAKE && ep->crypto.handshake.discarded)) {
+			/* The keys were discarded while this packet was being
+			 * handled, which is not an error of the connection.
+			 */
+			goto fail;
+		}
+
 		goto free_ep;
 	}
+
+	quic_endpoint_restart_idle_timer(ep);
 
 	pkt->pkt_num = decrypted.packet_number;
 
 	if (ptype == QUIC_PACKET_TYPE_HANDSHAKE) {
 		quic_endpoint_validate_address(ep);
+
+		if (ep->is_server && !ep->crypto.initial.discarded) {
+			/* RFC 9001 ch. 4.9.1: a server discards the Initial
+			 * keys when it first successfully processes a
+			 * Handshake packet.
+			 */
+			quic_endpoint_discard_keys(ep, QUIC_SECRET_LEVEL_INITIAL);
+		}
 	}
 
 	NET_DBG("[EP:%p/%d] Decrypted packet %" PRIu64 ", payload %zu bytes", ep,
@@ -8086,7 +8399,7 @@ static bool process_long_header_msg(struct quic_pkt *pkt)
 				"Decrypted payload:");
 	}
 
-	if (!ep->crypto.initial.initialized) {
+	if (!ep->crypto.initial.initialized && !ep->crypto.initial.discarded) {
 		if (!quic_conn_init_setup(ep, ep->peer_orig_dcid,
 					  ep->peer_orig_dcid_len)) {
 			NET_ERR("[EP:%p/%d] Failed to setup Initial crypto for new endpoint",
@@ -8174,6 +8487,8 @@ static bool process_short_header_msg(struct quic_pkt *pkt)
 		NET_ERR("Failed to decrypt short header packet: %d", ret);
 		return false;
 	}
+
+	quic_endpoint_restart_idle_timer(ep);
 
 	NET_DBG("[EP:%p/%d] Decrypted short header packet %" PRIu64 ", payload %zu bytes",
 		ep, quic_get_by_ep(ep), decrypted.packet_number, decrypted.payload_len);
@@ -8597,6 +8912,25 @@ ZTESTABLE_STATIC int process_long_header(struct quic_endpoint *ep,
 		struct quic_endpoint *new_ep;
 		bool token_validated = false;
 
+		/* Only an Initial packet starts a connection, and the address
+		 * validation and the datagram size check below are applied to
+		 * Initial packets only. Any other long header packet that
+		 * matches no connection is dropped (RFC 9000 ch. 5.2.2):
+		 * creating an endpoint for it would let anyone fill the
+		 * endpoint table with packets that pass none of those checks.
+		 * 0-RTT packets that arrive ahead of their Initial packet are
+		 * not buffered, the client sends that data again.
+		 */
+		if (ptype != QUIC_PACKET_TYPE_INITIAL) {
+			NET_DBG("[EP:%p/%d] Dropping long header packet type %d "
+				"for an unknown connection",
+				ep, quic_get_by_ep(ep), ptype);
+			QUIC_EP_STAT_INC(ep, peer_not_found);
+			QUIC_EP_STAT_INC(ep, drop_rx);
+			ret = 1;
+			goto out;
+		}
+
 		/* Make sure that the initial packet's UDP datagram is at least
 		 * 1200 bytes long (RFC 9000 Section 14.1) to prevent
 		 * amplification attacks.
@@ -8733,11 +9067,6 @@ ZTESTABLE_STATIC int process_long_header(struct quic_endpoint *ep,
 		QUIC_EP_STAT_INC(existing_ep, drop_rx);
 		ret = -ENOBUFS;
 		goto out;
-	}
-
-	/* Update idle timer on ANY received packet */
-	if (!existing_ep->idle.idle_timeout_disabled) {
-		existing_ep->idle.last_rx_time = k_uptime_get();
 	}
 
 	/*
@@ -8879,11 +9208,6 @@ static int process_short_header(struct quic_endpoint *ep,
 
 	quic_endpoint_note_unvalidated_rx(target_ep, len);
 
-	/* Update idle timer on ANY received packet */
-	if (!ep->idle.idle_timeout_disabled) {
-		ep->idle.last_rx_time = k_uptime_get();
-	}
-
 	pn_offset = 1 + target_ep->my_cid_len;
 
 	/* Get crypto context for APPLICATION level (1-RTT) */
@@ -8955,6 +9279,8 @@ static int process_short_header(struct quic_endpoint *ep,
 			target_ep, quic_get_by_ep(target_ep), ret);
 		goto out;
 	}
+
+	quic_endpoint_restart_idle_timer(target_ep);
 
 	NET_DBG("[EP:%p/%d] Short header packet %" PRIu64 ", payload %zu bytes",
 		target_ep, quic_get_by_ep(target_ep), decrypted.packet_number,

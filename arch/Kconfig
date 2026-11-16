@@ -3,6 +3,7 @@
 # Copyright (c) 2014-2015 Wind River Systems, Inc.
 # Copyright (c) 2015 Intel Corporation
 # Copyright (c) 2016 Cadence Design Systems, Inc.
+# Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com>
 # SPDX-License-Identifier: Apache-2.0
 
 # Include these first so that any properties (e.g. defaults) below can be
@@ -46,6 +47,7 @@ config ARM
 	select ARCH_HAS_SEMIHOST
 	select ARCH_HAS_ISR_TABLES_LOCAL_DECLARATION
 	select ARCH_SUPPORTS_ROM_OFFSET
+	select ARCH_HAS_IRQ_OFFLOAD_NESTED
 	select ARCH_HAS_CPU_IDLE_HOOKS if CPU_CORTEX_M
 	select ARCH_HAS_DIRECT_INTERRUPTS
 	help
@@ -115,6 +117,7 @@ config X86
 	bool
 	select ARCH_IS_SET
 	select ATOMIC_OPERATIONS_BUILTIN
+	select BARRIER_OPERATIONS_BUILTIN
 	select ARCH_SUPPORTS_COREDUMP
 	select ARCH_SUPPORTS_COREDUMP_PRIV_STACKS
 	select ARCH_SUPPORTS_ROM_START if !X86_64
@@ -136,9 +139,7 @@ config X86
 	select ARCH_HAS_THREAD_PRIV_STACK_SPACE_GET if USERSPACE
 	select ARCH_HAS_IRQ_OFFLOAD_NESTED
 	select ARCH_SUPPORTS_ROM_OFFSET
-	# Only the 32-bit (ia32) interrupt stub emits the ISR entry hook that
-	# closes the idle window; intel64 does not have one yet.
-	select ARCH_HAS_CPU_IDLE_HOOKS if !X86_64
+	select ARCH_HAS_CPU_IDLE_HOOKS
 	# Only the 32-bit (ia32) variant implements the direct interrupt hooks.
 	select ARCH_HAS_DIRECT_INTERRUPTS if !X86_64
 	help
@@ -185,6 +186,7 @@ config XTENSA
 	select ARCH_HAS_TIMING_FUNCTIONS
 	select ARCH_MEM_DOMAIN_DATA if USERSPACE
 	select THREAD_STACK_INFO
+	select ARCH_HAS_EXTRA_EXCEPTION_INFO
 	select ARCH_HAS_THREAD_PRIV_STACK_SPACE_GET if USERSPACE
 	select ARCH_SUPPORTS_COREDUMP_STACK_PTR if !SMP
 	select ARCH_HAS_USERSPACE if XTENSA_MMU || XTENSA_MPU
@@ -192,6 +194,10 @@ config XTENSA
 	select ARCH_HAS_IRQ_OFFLOAD_NESTED
 	select ARCH_HAS_SEMIHOST
 	select ARCH_HAS_CPU_IDLE_HOOKS
+	# XCC has no barrier builtins: it stubs __sync_synchronize() out to a
+	# compiler barrier and does not implement __atomic_thread_fence(), which
+	# is what <zephyr/sys/barrier.h> falls back to on its own.
+	select BARRIER_OPERATIONS_BUILTIN if "$(ZEPHYR_TOOLCHAIN_VARIANT)" != "xcc"
 	help
 	  Xtensa architecture
 
@@ -235,6 +241,15 @@ config HEXAGON
 	select ATOMIC_OPERATIONS_BUILTIN
 	select ARCH_HAS_CUSTOM_BUSY_WAIT
 	select ARCH_HAS_THREAD_LOCAL_STORAGE
+	select ARCH_HAS_STACK_PROTECTION
+	select ARCH_HAS_USERSPACE if HEXAGON_MMU
+	select ARCH_MEM_DOMAIN_DATA if USERSPACE
+	select ARCH_MEM_DOMAIN_SUPPORTS_DEINIT if USERSPACE
+	select ARCH_MEM_DOMAIN_SUPPORTS_ISOLATED_STACKS if USERSPACE
+	select ARCH_MEM_DOMAIN_SYNCHRONOUS_API if USERSPACE
+	select MEM_DOMAIN_HAS_THREAD_LIST if USERSPACE
+	select THREAD_LOCAL_STORAGE if USERSPACE
+	select CPU_HAS_MMU
 	select USE_SWITCH
 	select USE_SWITCH_SUPPORTED
 	help
@@ -295,7 +310,6 @@ config SRAM_DEPRECATED_KCONFIG_SET
 	bool
 	default y if SRAM_SIZE != $(dt_chosen_reg_size_int,$(DT_CHOSEN_Z_SRAM),0,K)
 	default y if SRAM_BASE_ADDRESS != $(dt_chosen_reg_addr_hex,$(DT_CHOSEN_Z_SRAM))
-	default n
 	select DEPRECATED
 	help
 	  Indicates that either `CONFIG_SRAM_SIZE` or `CONFIG_SRAM_BASE_ADDRESS` have been
@@ -613,11 +627,16 @@ config ISR_TABLES_LOCAL_DECLARATION
 
 config DYNAMIC_INTERRUPTS
 	bool "Installation of IRQs at runtime"
+	depends on !GEN_SW_ISR_TABLE_SWITCH
 	select SRAM_SW_ISR_TABLE
 	help
 	  Enable installation of interrupts at runtime, which will move some
 	  interrupt-related data structures to RAM instead of ROM, and
 	  on some architectures increase code size.
+
+	  This requires a software ISR table that can be written to, so it is
+	  unavailable with CONFIG_GEN_SW_ISR_TABLE_SWITCH, where the table is
+	  a generated switch statement instead of an array.
 
 config SHARED_INTERRUPTS
 	bool "Set this to enable support for shared interrupts [EXPERIMENTAL]"
@@ -890,6 +909,9 @@ config ARCH_HAS_EXECUTABLE_PAGE_BIT
 config ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	bool
 
+config ARCH_HAS_NOCACHE_MEM_PARTITION_SUPPORT
+	bool
+
 config ARCH_HAS_RAMFUNC_SUPPORT
 	bool
 
@@ -1085,6 +1107,16 @@ config ARCH_HAS_PMU
 	  counters usable by the Zephyr PMU API (<zephyr/arch/pmu.h>). For AArch64,
 	  Cortex-A profiles select this option; enable CONFIG_ARM64_PMUV3 to build
 	  the ARMv8-A PMUv3 driver backend.
+
+config PMU_MAX_COUNTERS
+	int "Maximum number of PMU event counters"
+	depends on ARCH_HAS_PMU
+	default 8
+	range 1 32
+	help
+	  Upper bound on the number of logical event counters the PMU API
+	  can describe, used to size per-counter configuration arrays. A
+	  backend may implement fewer hardware counters.
 
 #
 # Hidden CPU family configs

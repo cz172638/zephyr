@@ -13,73 +13,65 @@ LOG_MODULE_REGISTER(net_eth_bridge_input, CONFIG_NET_ETHERNET_BRIDGE_LOG_LEVEL);
 #endif
 #include <zephyr/net/net_log.h>
 
+#include "bridge_internal.h"
+
 #if defined(CONFIG_NET_ETHERNET_BRIDGE_FDB)
 #include <zephyr/net/ethernet_bridge_fdb.h>
 
-struct eth_bridge_fdb_forward_data {
-	struct net_if *bridge;
-	struct net_if *orig_iface;
-	struct net_pkt *pkt;
-	bool match;
-};
-
-static void eth_bridge_fdb_forward_handler(struct eth_bridge_fdb_entry *entry, void *user_data)
-{
-	struct eth_bridge_fdb_forward_data *data = (struct eth_bridge_fdb_forward_data *)user_data;
-	struct net_if *bridge = data->bridge;
-	struct net_if *orig_iface = data->orig_iface;
-	struct net_pkt *pkt = data->pkt;
-	struct net_eth_addr *dst_addr = (struct net_eth_addr *)(net_pkt_lladdr_dst(pkt)->addr);
-	struct net_pkt *out_pkt;
-
-	/* Check if the entry is matched */
-	if (memcmp(&entry->mac, dst_addr, sizeof(struct net_eth_addr)) != 0) {
-		return;
-	}
-
-	if (net_eth_get_bridge(net_if_l2_data(entry->iface)) != bridge) {
-		return;
-	}
-
-	data->match = true;
-
-	/* Forward per FDB entry, unless the switch did */
-	if (!net_if_flag_is_set(entry->iface, NET_IF_UP)) {
-		return;
-	}
-#if defined(CONFIG_NET_DSA)
-	if (dsa_port_fwd_offloaded(orig_iface, entry->iface)) {
-		return;
-	}
-#endif
-
-	out_pkt = net_pkt_clone(pkt, K_NO_WAIT);
-	if (out_pkt == NULL) {
-		NET_ERR("No enough memory for pkt clone");
-		return;
-	}
-
-	NET_DBG("FDB forwarding pkt %p (orig %p): iface %d -> iface %d", out_pkt, pkt,
-		net_if_get_by_iface(orig_iface), net_if_get_by_iface(entry->iface));
-
-	net_pkt_set_l2_bridged(out_pkt, true);
-	net_pkt_set_iface(out_pkt, entry->iface);
-	net_pkt_set_orig_iface(out_pkt, orig_iface);
-	net_if_queue_tx(entry->iface, out_pkt);
-}
-
+/* Send pkt out of the ports the FDB has for its destination. Returns false
+ * when the FDB has no entry, so that the caller floods the frame.
+ */
 static bool eth_bridge_fdb_forward(struct net_if *bridge, struct net_if *orig_iface,
 				   struct net_pkt *pkt)
 {
-	struct eth_bridge_fdb_forward_data data = {0};
+	struct net_eth_addr *dst_addr = (struct net_eth_addr *)(net_pkt_lladdr_dst(pkt)->addr);
+	struct net_if *ports[NET_ETHERNET_BRIDGE_ETH_INTERFACE_COUNT];
+	struct net_pkt *out_pkt;
+	size_t count;
 
-	data.bridge = bridge;
-	data.orig_iface = orig_iface;
-	data.pkt = pkt;
+	count = eth_bridge_fdb_lookup(bridge, dst_addr, ports, ARRAY_SIZE(ports));
+	if (count == 0) {
+		return false;
+	}
 
-	eth_bridge_fdb_foreach(&eth_bridge_fdb_forward_handler, (void *)&data);
+	/* A bridge has at most one entry per port and MAC address */
+	count = MIN(count, ARRAY_SIZE(ports));
 
-	return data.match;
+	for (size_t i = 0; i < count; i++) {
+		/* The destination is on the segment the frame came from: filter it */
+		if (ports[i] == orig_iface) {
+			continue;
+		}
+
+		if (!net_if_flag_is_set(ports[i], NET_IF_UP) ||
+		    !eth_bridge_port_is_forwarding(ports[i])) {
+			continue;
+		}
+#if defined(CONFIG_NET_DSA)
+		/* The switch forwarded it already */
+		if (dsa_port_fwd_offloaded(orig_iface, ports[i])) {
+			continue;
+		}
+#endif
+
+		out_pkt = net_pkt_clone(pkt, K_NO_WAIT);
+		if (out_pkt == NULL) {
+			NET_ERR("No enough memory for pkt clone");
+			continue;
+		}
+
+		NET_DBG("FDB forwarding pkt %p (orig %p): iface %d -> iface %d", out_pkt, pkt,
+			net_if_get_by_iface(orig_iface), net_if_get_by_iface(ports[i]));
+
+		net_pkt_set_l2_bridged(out_pkt, true);
+		/* The frame keeps the checksums of its sender */
+		net_pkt_set_chksum_done(out_pkt, true);
+		net_pkt_set_iface(out_pkt, ports[i]);
+		net_pkt_set_orig_iface(out_pkt, orig_iface);
+		net_if_queue_tx(ports[i], out_pkt);
+	}
+
+	return true;
 }
 #endif /* CONFIG_NET_ETHERNET_BRIDGE_FDB */
 
@@ -93,6 +85,8 @@ static int eth_bridge_forward(struct net_if *bridge, struct net_if *orig_iface, 
 	}
 
 	net_pkt_set_l2_bridged(out_pkt, true);
+	/* The frame keeps the checksums of its sender */
+	net_pkt_set_chksum_done(out_pkt, true);
 	net_pkt_set_iface(out_pkt, bridge);
 	net_pkt_set_orig_iface(out_pkt, orig_iface);
 
@@ -124,6 +118,9 @@ static enum net_verdict eth_bridge_handle_locally(struct net_if *bridge, struct 
 	return l2->recv(bridge, pkt);
 }
 
+/* The reserved addresses 01-80-C2-00-00-00 to 01-80-C2-00-00-0F, which a
+ * MAC Bridge never forwards (IEEE Std 802.1Q-2014 8.6.3, Table 8-1)
+ */
 static inline bool is_link_local_addr(struct net_eth_addr *addr)
 {
 	if (addr->addr[0] == 0x01 &&
@@ -131,7 +128,7 @@ static inline bool is_link_local_addr(struct net_eth_addr *addr)
 	    addr->addr[2] == 0xc2 &&
 	    addr->addr[3] == 0x00 &&
 	    addr->addr[4] == 0x00 &&
-	    (addr->addr[5] & 0x0f) == 0x00) {
+	    (addr->addr[5] & 0xf0) == 0x00) {
 		return true;
 	}
 
@@ -147,25 +144,59 @@ enum net_verdict eth_bridge_input_process(struct net_if *iface, struct net_pkt *
 	struct net_linkaddr *bridge_lladdr = net_if_get_link_addr(bridge);
 	struct net_eth_addr *bridge_addr;
 	enum net_verdict verdict = NET_DROP;
+	enum eth_bridge_port_state state;
 
 	NET_ASSERT(bridge_lladdr != NULL);
 
 	bridge_addr = (struct net_eth_addr *)bridge_lladdr->addr;
 
-	/* Lookup FDB table to forward */
+	/* BPDUs are for the spanning tree protocol of the bridge, on every
+	 * port whatever its state, and are neither learned from nor forwarded.
+	 */
+	if (IS_ENABLED(CONFIG_NET_ETHERNET_BRIDGE_STP) &&
+	    eth_bridge_stp_input(bridge, iface, pkt)) {
+		return NET_DROP;
+	}
+
+	/* A frame to a reserved address is for a protocol of the port it was
+	 * received on, such as gPTP, LLDP or 802.1X, and is never forwarded,
+	 * whatever the FDB has for the address.
+	 */
+	if (is_link_local_addr(dst_addr)) {
+		NET_DBG("Link-local frame handled by iface %d", net_if_get_by_iface(iface));
+		return NET_CONTINUE;
+	}
+
+	state = eth_bridge_port_get_state(iface);
+
+	/* Learn where the sender is, on a learning or forwarding port */
+	if (IS_ENABLED(CONFIG_NET_ETHERNET_BRIDGE_FDB_LEARNING) &&
+	    state != ETH_BRIDGE_PORT_STATE_DISCARDING) {
+		eth_bridge_fdb_learn(bridge, (struct net_eth_addr *)net_pkt_lladdr_src(pkt)->addr,
+				     iface);
+	}
+
+	if (state != ETH_BRIDGE_PORT_STATE_FORWARDING) {
+		/* gPTP runs on every port whatever its forwarding state */
+		if (net_ntohs(NET_ETH_HDR(pkt)->type) == NET_ETH_PTYPE_PTP) {
+			return NET_CONTINUE;
+		}
+
+		NET_DBG("DROP: iface %d not forwarding", net_if_get_by_iface(iface));
+		return NET_DROP;
+	}
+
+	/* Lookup FDB table to forward. A frame for the bridge itself is
+	 * delivered locally whatever the FDB has for its address.
+	 */
 #if defined(CONFIG_NET_ETHERNET_BRIDGE_FDB)
-	if (eth_bridge_fdb_forward(bridge, iface, pkt)) {
+	if (memcmp(bridge_addr, dst_addr, NET_ETH_ADDR_LEN) != 0 &&
+	    eth_bridge_fdb_forward(bridge, iface, pkt)) {
 		LOG_DBG("FDB handled forwarding pkt %p from iface %p to bridge %p",
 			pkt, iface, bridge);
 			return NET_DROP;
 	}
 #endif
-
-	/* Drop all link-local packets for now. */
-	if (is_link_local_addr(dst_addr)) {
-		NET_DBG("DROP: lladdr");
-		return NET_DROP;
-	}
 
 	/* gPTP frame should be handled by original interface via gPTP bridge stack */
 	if (net_ntohs(NET_ETH_HDR(pkt)->type) == NET_ETH_PTYPE_PTP) {

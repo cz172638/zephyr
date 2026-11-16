@@ -17,6 +17,7 @@
 #include <zephyr/linker/sections.h>
 #include <hexagon_vm.h>
 #include <switch_frame.h>
+#include <offsets_short.h>
 
 GTEXT(z_hexagon_arch_switch)
 GTEXT(z_hexagon_thread_start)
@@ -68,6 +69,20 @@ SECTION_FUNC(TEXT, z_hexagon_arch_switch)
 	}
 #endif
 
+#ifdef CONFIG_USERSPACE
+	/*
+	 * Save GOSP (G2): HVM swaps it with r29 on every user<->guest
+	 * transition, so a switch from a nested mid-syscall interrupt would
+	 * otherwise lose whichever thread's user SP was sitting in G2.
+	 */
+	{
+		r2 = g2
+	}
+	{
+		memw(r29+#SWITCH_GOSP) = r2
+	}
+#endif
+
 	/* Store current stack pointer as switch handle for old thread */
 	{
 		memw(r1) = r29
@@ -77,6 +92,31 @@ SECTION_FUNC(TEXT, z_hexagon_arch_switch)
 	{
 		r29 = r0
 	}
+
+#ifdef CONFIG_HW_STACK_PROTECTION
+	{
+		r2 = ##_kernel
+	}
+	{
+		r2 = add(r2, #___kernel_t_cpus_OFFSET)
+	}
+	{
+		r2 = memw(r2+#___cpu_t_current_OFFSET)
+	}
+	{
+		r3 = memub(r2+#_thread_offset_to_arch_flags)
+		r4 = memw(r2+#_thread_offset_to_framelimit)
+	}
+	{
+		p0 = tstbit(r3, #2)
+	}
+	{
+		if (!p0) r4 = #0
+	}
+	{
+		c16 = r4
+	}
+#endif
 
 	/* Restore callee-saved registers from new thread's stack */
 	{
@@ -106,6 +146,16 @@ SECTION_FUNC(TEXT, z_hexagon_arch_switch)
 	}
 #endif
 
+#ifdef CONFIG_USERSPACE
+	/* Restore GOSP (G2) -- see the save side above */
+	{
+		r2 = memw(r29+#SWITCH_GOSP)
+	}
+	{
+		g2 = r2
+	}
+#endif
+
 	/* Pop frame and return to saved LR */
 	{
 		r29 = add(r29, #SWITCH_FRAME_SIZE)
@@ -126,6 +176,18 @@ SECTION_FUNC(TEXT, z_hexagon_arch_switch)
  * and ARM thread start trampolines.
  */
 SECTION_FUNC(TEXT, z_hexagon_thread_start)
+#ifdef CONFIG_USERSPACE
+	/* Install this thread's hardware memory-domain map, if needed. */
+	{
+		call ##z_hexagon_mem_domain_switch
+	}
+#endif
+#ifdef CONFIG_USERSPACE
+	/* Install this thread's hardware memory-domain map, if needed. */
+	{
+		call ##z_hexagon_mem_domain_switch
+	}
+#endif
 	/* Enable interrupts for the new thread (vmsetie(1)) */
 	{
 		r0 = #1

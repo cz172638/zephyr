@@ -8,6 +8,14 @@
 	status = "disabled";
 };
 
+&gclkperiph {
+	sercom6 {
+		subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_SERCOM6_CORE>;
+		gclkperiph-src = "gclk0";
+		gclkperiph-en = <1>;
+	};
+};
+
 &sercom6 {
 	compatible = "microchip,sercom-g1-spi";
 	/* Internally connect MOSI to MISO for loop-back operation */
@@ -18,6 +26,12 @@
 	/* Configure DMA */
 	dmas = <&dmac 0 0x10>, <&dmac 1 0x11>;
 	dma-names = "rx", "tx";
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-0 = <&sercom6_spi_default>;
+	pinctrl-names = "default";
+	status = "okay";
 
 	slow@0 {
 		compatible = "test-spi-loopback-slow";
@@ -30,12 +44,6 @@
 		reg = <0>;
 		spi-max-frequency = <24000000>;
 	};
-
-	#address-cells = <1>;
-	#size-cells = <0>;
-	pinctrl-0 = <&sercom6_spi_default>;
-	pinctrl-names = "default";
-	status = "okay";
 };
 
 &pinctrl {

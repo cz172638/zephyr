@@ -14,10 +14,11 @@
 #include "xg26_dk2608a-pinctrl.dtsi"
 
 / {
-	model = "Silicon Labs EFR32xG26 Dev Kit (xG26-DK2608A)";
 	compatible = "silabs,xg26_dk2608a", "silabs,efr32mg26";
+	model = "Silicon Labs EFR32xG26 Dev Kit (xG26-DK2608A)";
 
 	chosen {
+		zephyr,bt-c2h-uart = &usart0;
 		zephyr,bt-hci = &bt_hci_silabs;
 		zephyr,code-partition = &slot0_partition;
 		zephyr,console = &usart0;
@@ -225,9 +226,9 @@
 	pinctrl-names = "default";
 	status = "okay";
 
-	si7021: si7021@40 {
-		compatible = "silabs,si7006";
-		reg = <0x40>;
+	veml6035: veml6035@29 {
+		compatible = "vishay,veml7700";
+		reg = <0x29>;
 		vin-supply = <&sensor_enable>;
 	};
 
@@ -237,9 +238,9 @@
 		vin-supply = <&sensor_enable>;
 	};
 
-	veml6035: veml6035@29 {
-		compatible = "vishay,veml7700";
-		reg = <0x29>;
+	si7021: si7021@40 {
+		compatible = "silabs,si7006";
+		reg = <0x40>;
 		vin-supply = <&sensor_enable>;
 	};
 };
@@ -293,9 +294,9 @@
 };
 
 &ieee802154 {
-	status = "okay";
 	hfxo = <&hfxo>;
 	sleep-clock = <&lfxo>;
+	status = "okay";
 };
 
 &protimer {

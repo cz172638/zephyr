@@ -247,6 +247,11 @@ ZTEST_USER(userspace, test_userspace_write_control)
 	set_fault(K_ERR_CPU_EXCEPTION);
 
 	__asm__ volatile("rsr.ps %0" : "=r" (ps));
+#elif defined(CONFIG_HEXAGON)
+	set_fault(K_ERR_CPU_EXCEPTION);
+
+	/* GSR is a guest-supervisor-only register */
+	__asm__ volatile("gsr = %0" : : "r"(0));
 #else
 #error "Not implemented for this architecture"
 	zassert_unreachable("Write to control register did not fault");
@@ -362,6 +367,11 @@ ZTEST_USER(userspace, test_userspace_disable_mmu_mpu)
 	}
 #endif
 
+#elif defined(CONFIG_HEXAGON)
+	set_fault(K_ERR_CPU_EXCEPTION);
+
+	/* GPTR (G3) holds the guest page table base */
+	__asm__ volatile("g3 = %0" : : "r"(0));
 #else
 #error "Not implemented for this architecture"
 #endif
@@ -588,6 +598,8 @@ ZTEST_USER(userspace, test_userspace_read_priv_stack)
 #elif defined(CONFIG_ARM) || defined(CONFIG_X86) || defined(CONFIG_RISCV) || \
 	defined(CONFIG_ARM64) || defined(CONFIG_XTENSA)
 	/* priv_stack_ptr set by test_main() */
+#elif defined(CONFIG_HEXAGON)
+	priv_stack_ptr = (char *)k_current_get()->arch.priv_stack;
 #else
 #error "Not implemented for this architecture"
 #endif
@@ -628,6 +640,8 @@ ZTEST_USER(userspace, test_userspace_write_priv_stack)
 #elif defined(CONFIG_ARM) || defined(CONFIG_X86) || defined(CONFIG_RISCV) || \
 	defined(CONFIG_ARM64) || defined(CONFIG_XTENSA)
 	/* priv_stack_ptr set by test_main() */
+#elif defined(CONFIG_HEXAGON)
+	priv_stack_ptr = (char *)k_current_get()->arch.priv_stack;
 #else
 #error "Not implemented for this architecture"
 #endif
@@ -925,6 +939,51 @@ ZTEST(userspace, test_userspace_user_mode_enter)
 
 	k_thread_user_mode_enter(umode_enter_func,
 				 NULL, NULL, NULL);
+}
+
+static void never_run_entry(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+}
+
+/**
+ * @brief Verify that k_thread_is_user_thread() tells user threads apart.
+ *
+ * @ingroup kernel_memprotect_tests
+ *
+ * @details
+ * Whether a thread is a user thread is a property of the thread, not of the
+ * mode the CPU happens to be in: it must be readable for any thread, from
+ * supervisor mode, including threads that have not run yet.
+ *
+ * Test steps:
+ * - Query the supervisor thread running the test.
+ * - Create a thread with K_USER without starting it and query it.
+ * - Create a thread without K_USER without starting it and query it.
+ *
+ * Expected result:
+ * - Only the thread created with K_USER is reported as a user thread.
+ *
+ * @see k_thread_is_user_thread()
+ */
+ZTEST(userspace, test_userspace_thread_is_user_thread)
+{
+	zassert_false(k_thread_is_user_thread(k_current_get()),
+		      "supervisor thread reported as a user thread");
+
+	k_thread_create(&test_thread, test_stack, STACKSIZE, never_run_entry, NULL, NULL, NULL,
+			K_PRIO_PREEMPT(1), K_USER, K_FOREVER);
+	zassert_true(k_thread_is_user_thread(&test_thread),
+		     "thread created with K_USER not reported as a user thread");
+	k_thread_abort(&test_thread);
+
+	k_thread_create(&test_thread, test_stack, STACKSIZE, never_run_entry, NULL, NULL, NULL,
+			K_PRIO_PREEMPT(1), 0, K_FOREVER);
+	zassert_false(k_thread_is_user_thread(&test_thread),
+		      "thread created without K_USER reported as a user thread");
+	k_thread_abort(&test_thread);
 }
 
 /* Define and initialize pipe. */

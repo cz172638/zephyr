@@ -1952,7 +1952,7 @@ function(zephyr_linker_sources location)
     file(RELATIVE_PATH relpath ${ZEPHYR_BASE}/include ${path})
 
     # Create strings to be written into the file
-    set (include_str "/* Sort key: \"${SORT_KEY}\" */#include \"${relpath}\"")
+    set(include_str "/* Sort key: \"${SORT_KEY}\" */#include <${relpath}>")
 
     # Remove line from other snippet file, if already used
     get_property(old_path GLOBAL PROPERTY "snippet_files_used_${relpath}")
@@ -2113,10 +2113,13 @@ function(zephyr_code_relocate)
   # using set_property(APPEND) to produce a ";"-separated CMake list. This way,
   # each directive can embed multiple CMake lists, representing flags and files,
   # the latter of which can come from generator expressions.
+  # This metadata-only target is never linked. Use a native generator-expression
+  # property without source-file semantics: the File API resolves INTERFACE_SOURCES
+  # as file paths, while custom properties do not recursively evaluate expressions.
   get_property(code_rel_str TARGET code_data_relocation_target
-    PROPERTY INTERFACE_SOURCES)
+    PROPERTY INTERFACE_LINK_OPTIONS)
   set_property(TARGET code_data_relocation_target
-    PROPERTY INTERFACE_SOURCES
+    PROPERTY INTERFACE_LINK_OPTIONS
     "${code_rel_str}\n${CODE_REL_LOCATION}:${flag_list}:${file_list},${CODE_REL_FILTER}")
 endfunction()
 

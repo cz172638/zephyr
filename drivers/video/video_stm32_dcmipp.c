@@ -299,7 +299,27 @@ static const struct stm32_dcmipp_input_fmt {
 	INPUT_FMT(SGRBG14P, RAW14, 14, RAW14), INPUT_FMT(SRGGB14P, RAW14, 14, RAW14),
 	INPUT_FMT(RGB565, RGB565, 8, RGB565),
 	INPUT_FMT(YUYV, YUV422, 8, YUV422_8),
+	INPUT_FMT(RGB24, RGB888, 8, RGB888),
 };
+
+#if defined(STM32_DCMIPP_HAS_PIXEL_PIPES)
+static uint32_t stm32_dcmipp_to_hal_bayer_type(uint32_t pixelformat)
+{
+	uint32_t hal_fmt;
+
+	if (VIDEO_FMT_IS_BAYER_BGGR(pixelformat)) {
+		hal_fmt = DCMIPP_RAWBAYER_BGGR;
+	} else if (VIDEO_FMT_IS_BAYER_RGGB(pixelformat)) {
+		hal_fmt = DCMIPP_RAWBAYER_RGGB;
+	} else if (VIDEO_FMT_IS_BAYER_GBRG(pixelformat)) {
+		hal_fmt = DCMIPP_RAWBAYER_GBRG;
+	} else {
+		hal_fmt = DCMIPP_RAWBAYER_GRBG;
+	}
+
+	return hal_fmt;
+}
+#endif
 
 static const struct stm32_dcmipp_input_fmt *stm32_dcmipp_get_input_info(uint32_t pixelformat)
 {
@@ -419,6 +439,8 @@ static int stm32_dcmipp_conf_csi(const struct device *dev, uint32_t dcmipp_csi_b
 	}
 
 	phy_bitrate /= MHZ(1);
+	/* CSI use DDR hence each lane bitrate is twice the frequency */
+	phy_bitrate *= 2;
 
 	for (i = 0; i < ARRAY_SIZE(stm32_dcmipp_bitrate); i++) {
 		if (stm32_dcmipp_bitrate[i].rate >= phy_bitrate) {
@@ -1101,6 +1123,23 @@ static int stm32_dcmipp_stream_enable(const struct device *dev)
 		}
 
 		if (VIDEO_FMT_IS_BAYER(dcmipp->source_fmt.pixelformat)) {
+			DCMIPP_RawBayer2RGBConfTypeDef raw_bayer_cfg;
+
+			HAL_DCMIPP_PIPE_GetISPRawBayer2RGBConfig(&dcmipp->hdcmipp, DCMIPP_PIPE1,
+								 &raw_bayer_cfg);
+			raw_bayer_cfg.RawBayerType =
+				stm32_dcmipp_to_hal_bayer_type(dcmipp->source_fmt.pixelformat);
+
+			/* Configure demosaicing */
+			hal_ret = HAL_DCMIPP_PIPE_SetISPRawBayer2RGBConfig(&dcmipp->hdcmipp,
+									   DCMIPP_PIPE1,
+									   &raw_bayer_cfg);
+			if (hal_ret != HAL_OK) {
+				LOG_ERR("Failed to configure demosaicing");
+				ret = -EIO;
+				goto out;
+			}
+
 			/* Enable demosaicing if input format is Bayer */
 			hal_ret = HAL_DCMIPP_PIPE_EnableISPRawBayer2RGB(&dcmipp->hdcmipp,
 									DCMIPP_PIPE1);
