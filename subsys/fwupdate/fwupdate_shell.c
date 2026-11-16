@@ -50,28 +50,53 @@ int fwupdate_program_external(const void *img, size_t len, uint32_t *crc);
 #include <zephyr/net/socket.h>
 #endif
 
-#if defined(CONFIG_FWUPDATE_BOOT_DISK)
-#include <zephyr/storage/disk_access.h>
-#define FW_BDISK CONFIG_FWUPDATE_BOOT_DISK_NAME
-#define FW_NAME  CONFIG_FWUPDATE_BOOT_DISK_NAME " boot area"
-#define FW_SIZE  CONFIG_FWUPDATE_BOOT_DISK_SIZE
-#elif PARTITION_EXISTS(fwupdate_partition)
+#if PARTITION_EXISTS(fwupdate_partition)
 #define FW_LABEL fwupdate_partition
 #elif PARTITION_EXISTS(boot_partition)
 #define FW_LABEL boot_partition
-#else
+#elif !defined(CONFIG_FWUPDATE_BOOT_DISK)
 #error "fwupdate needs a fwupdate_partition or boot_partition node label"
 #endif
 
-#if !defined(CONFIG_FWUPDATE_BOOT_DISK)
-#define FW_ID   PARTITION_ID(FW_LABEL)
-#define FW_SIZE PARTITION_SIZE(FW_LABEL)
-#define FW_NAME "partition " STRINGIFY(FW_LABEL)
+#if defined(FW_LABEL)
+#define FW_FLASH 1
+#define FW_ID    PARTITION_ID(FW_LABEL)
+#define FW_FSIZE PARTITION_SIZE(FW_LABEL)
+#define FW_FNAME "partition " STRINGIFY(FW_LABEL)
+#else
+#define FW_FLASH 0
+#define FW_FSIZE 0
+#define FW_FNAME "flash"
+#endif
+
+#if defined(CONFIG_FWUPDATE_BOOT_DISK)
+/*
+ * The boot area of a disk; with a flash partition too, it is the target only
+ * when the partition's flash is missing (a board variant without SPI NOR).
+ */
+#include <zephyr/storage/disk_access.h>
+#define FW_BDISK CONFIG_FWUPDATE_BOOT_DISK_NAME
+#define FW_SIZE  MAX(CONFIG_FWUPDATE_BOOT_DISK_SIZE, FW_FSIZE)
+#define FW_NAME  (fw_use_disk() ? CONFIG_FWUPDATE_BOOT_DISK_NAME " boot area" : FW_FNAME)
+#else
+#define FW_SIZE  FW_FSIZE
+#define FW_NAME  FW_FNAME
 #endif
 
 /* Marvell TIM header: version, then "TIMH" (little endian) */
 #define TIM_MAGIC_OFFSET 4
 #define TIM_MAGIC        0x54494d48
+
+static inline bool fw_use_disk(void)
+{
+#if !defined(CONFIG_FWUPDATE_BOOT_DISK)
+	return false;
+#elif !FW_FLASH
+	return true;
+#else
+	return !device_is_ready(PARTITION_DEVICE(FW_LABEL));
+#endif
+}
 
 static uint8_t fw_buf[FW_SIZE] __noinit __aligned(8);
 
@@ -240,8 +265,8 @@ static int fw_check(const struct shell *sh, size_t len)
 	return 0;
 }
 
-#if defined(CONFIG_FWUPDATE_BOOT_DISK)
-/* the flash partition path is not built */
+#if !FW_FLASH
+/* no flash partition, the boot disk only */
 #elif defined(CONFIG_FWUPDATE_PROGRAM_EXTERNAL)
 static int fw_program_flash(const struct shell *sh, size_t len)
 {
@@ -541,8 +566,24 @@ static int fw_program_bootdisk(const struct shell *sh, size_t len)
 static int fw_program(const struct shell *sh, size_t len)
 {
 #if defined(CONFIG_FWUPDATE_BOOT_DISK)
-	return fw_program_bootdisk(sh, len);
-#else
+	/* a disk image starts with an MBR; a flash image going to the disk, or the
+	 * other way round, would not boot */
+	bool mbr = len >= 512 && fw_buf[510] == 0x55 && fw_buf[511] == 0xaa;
+
+	if (fw_use_disk()) {
+		if (!mbr) {
+			FW_ERR(sh, "no MBR: not a disk boot image (this board boots from %s)",
+			       FW_BDISK);
+			return -EINVAL;
+		}
+		return fw_program_bootdisk(sh, len);
+	}
+	if (mbr) {
+		FW_ERR(sh, "MBR: a disk boot image, but %s is the target", FW_FNAME);
+		return -EINVAL;
+	}
+#endif
+#if FW_FLASH
 	if (fw_is_sata(len)) {
 #if defined(CONFIG_FWUPDATE_DISK)
 		return fw_program_disk(sh, len);
@@ -552,13 +593,19 @@ static int fw_program(const struct shell *sh, size_t len)
 		return -ENOTSUP;
 #endif
 	}
+	if (len > FW_FSIZE) {
+		FW_ERR(sh, "%zu bytes > %s (%u KiB)", len, FW_FNAME, (unsigned int)(FW_FSIZE / 1024));
+		return -EFBIG;
+	}
 	return fw_program_flash(sh, len);
+#else
+	return -ENODEV;
 #endif
 }
 
 static const char *fw_where(void)
 {
-	if (IS_ENABLED(CONFIG_FWUPDATE_BOOT_DISK)) {
+	if (fw_use_disk()) {
 		return FW_NAME;
 	}
 	return fw_is_sata(fw.received) ? "SATA boot partition (boot jumpers on SATA)" : "flash";
@@ -720,7 +767,7 @@ static void fw_worker(void *p1, void *p2, void *p3)
 		shell_error(sh, "%s: %s (%d)", fw.xmodem ? "xmodem" : "ymodem",
 			    ret == -ECANCELED   ? "cancelled"
 			    : ret == -ETIMEDOUT ? "timeout"
-			    : ret == -EFBIG     ? "file larger than the " FW_NAME
+			    : ret == -EFBIG     ? "file larger than the target"
 			    : ret == 0          ? "no file"
 						: "error",
 			    ret);
