@@ -26,3 +26,10 @@
 &uart2 {
 	status = "okay";
 };
+
+/* The micro SD slot is the debug port, as on the Cortex-A images. */
+&sd_jtag {
+	ap-jtag;
+	mcu-jtag;
+	status = "okay";
+};

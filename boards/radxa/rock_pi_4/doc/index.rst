@@ -90,3 +90,29 @@ example from U-Boot:
 .. code-block:: console
 
    tftp 0x00200000 zephyr.bin; go 0x00200000
+
+Debug port
+==========
+
+The micro SD slot is the debug port: all targets enable ``sd_jtag``
+(``rockchip,rk3399-sd-jtag``), which muxes the AP (Cortex-A) and MCU
+(Cortex-M0) SWD pairs to the SD pins at boot. The SD host stays disabled.
+With a micro SD breakout and a CMSIS-DAP probe:
+
+=============  ================  ================  ===============
+Probe          RK3399            SD signal         micro SD pin
+=============  ================  ================  ===============
+SWCLK          APJTAG_TCK        DAT2              1
+SWDIO          APJTAG_TMS        DAT3/CD           2
+GND            VSS               VSS               6
+SWCLK (M0)     MCUJTAG_TCK       CLK               5
+SWDIO (M0)     MCUJTAG_TMS       CMD               3
+=============  ================  ================  ===============
+
+.. code-block:: console
+
+   openocd -f interface/cmsis-dap.cfg -c "transport select swd" \
+           -f target/rk3399.cfg
+
+For an SD card instead, disable ``sd_jtag`` and enable ``sdmmc`` and
+``sdmmc_disk`` in an overlay.

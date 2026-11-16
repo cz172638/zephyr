@@ -72,6 +72,12 @@
 			reg-shift = <2>;
 			status = "disabled";
 		};
+
+		sd_jtag: sd-jtag@4777e024 {
+			compatible = "rockchip,rk3399-sd-jtag";
+			reg = <0x4777e024 0x4>, <0x4777e21c 0x4>;
+			status = "disabled";
+		};
 	};
 };
 
