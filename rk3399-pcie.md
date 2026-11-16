@@ -1,6 +1,6 @@
 # RK3399 (ROCK Pi 4): PCIe RC/EP jako u ESPRESSObinu, Zephyr z TF-A, boot a úložiště na eMMC
 
-Větev `rk3399` (z `espressobin`), commity `c9eb648da` (PCIe ovladače), `43c64204b` (image skript), `28817904e` (pinctrl, CRU), `fc4cfc915` (SPI, SD) `4a3afa951` (role v settings, FAT na SD), `0c8c25e9d` (JTAG ve slotu SD), `a0e6614b9` (eMMC, `emmc update`) a `ef03ba389` (image 153). TF-A je ve větvi `rk3399-m0-ns`, commit `e09b846ea`. U-Boot je ve větvi `rk3399-perilp-m0`, beze změn v defconfigu.
+Větev `epc` (sloučené `espressobin` a `rk3399`), commity `c9eb648da` (PCIe ovladače), `43c64204b` (image skript), `28817904e` (pinctrl, CRU), `fc4cfc915` (SPI, SD) `4a3afa951` (role v settings, FAT na SD), `0c8c25e9d` (JTAG ve slotu SD), `a0e6614b9` (eMMC, `emmc update`) `ef03ba389` (image 153). Další image vydává CI jako `lab-build-<n>` (od 154) se společným číslem pro všechny desky. TF-A je ve větvi `rk3399-m0-ns`, commit `e09b846ea`. U-Boot je ve větvi `rk3399-perilp-m0`, beze změn v defconfigu.
 
 ## 1. Co je hotové
 
@@ -100,29 +100,31 @@ make O=../uboot-build-rp4 CROSS_COMPILE=aarch64-linux-gnu- BL31=.../bl31.elf
 west build -b rock_pi_4/rk3399/a53 samples/boards/rockchip/rk3399/pcie_shell
 # image
 scripts/rockchip/rk3399-image.pl --bl31 .../bl31.elf --zephyr build/zephyr/zephyr.elf \
-    --uboot ../uboot-build-rp4 --installer -o 153-rp4
+    --uboot ../uboot-build-rp4 --installer -o 153-rock_pi_4
 ```
 
 Oprava v TF-A (`e09b846ea`): M0 Makefile předával linker script přes `-Wl,-T`. Gcc ze Zephyr SDK má výchozí specs s picolibc a přidal k němu i svůj script. Výsledek: `.text` na `0x10000000`, `rk3399m0pmu.bin` o velikosti 256 MiB a přetečení PMUSRAM. Oprava je `-T`.
 
-## 6. Image 153: jen eMMC (152 byla SPI + SD)
+## 6. Image od 153: jen eMMC (152 byla SPI + SD)
+
+Jména souborů jsou `<n>-rock_pi_4-<co>` (153–155 se ještě jmenovaly `<n>-rp4-…`). `<n>` je číslo buildu `lab-build-<n>`.
 
 Obě ROCK Pi 4 mají eMMC, takže je jediné boot médium i úložiště. Slot micro SD slouží jen k instalaci a pro JTAG breakout.
 
 | Soubor | Obsah | Použití |
 |---|---|---|
-| `153-rp4-emmc.bin` (48 MiB) | MBR, `idbloader.img` na sektoru 64, FIT na sektoru 16384, FAT16 32 MiB od sektoru 32768 | eMMC od sektoru 0 |
-| `153-rp4-sd-install.bin` (80 MiB) | stejný boot, na FAT (64 MiB) leží `153-rp4-emmc.bin` | instalační karta |
+| `<n>-rock_pi_4-emmc.bin` (48 MiB) | MBR, `idbloader.img` na sektoru 64, FIT na sektoru 16384, FAT16 32 MiB od sektoru 32768 | eMMC od sektoru 0 |
+| `<n>-rock_pi_4-sd-install.bin` (80 MiB) | stejný boot, na FAT (64 MiB) leží `<n>-rock_pi_4-emmc.bin` | instalační karta |
 
 BootROM i U-Boot SPL čtou eMMC a SD stejně (sektor 64 / 16384). Proto `-emmc.bin` nabootuje i z karty a instalační karta je jen tentýž image s větší FAT.
 
 **Instalace na eMMC bez Linuxu i bez U-Boot:**
 
 ```
-$ dd if=153-rp4-sd-install.bin of=/dev/sdX bs=1M conv=fsync
+$ dd if=<n>-rock_pi_4-sd-install.bin of=/dev/sdX bs=1M conv=fsync
 # karta do slotu; eMMC prázdná nebo s naším image (BootROM: SPI → eMMC → SD)
 uart:~$ fs ls /SD:
-uart:~$ emmc update /SD:/153-rp4-emmc.bin
+uart:~$ emmc update /SD:/<n>-rock_pi_4-emmc.bin
 ................................................
 done: 50331648 bytes written and verified; remove the card (or put the JTAG breakout back) and reset
 ```
