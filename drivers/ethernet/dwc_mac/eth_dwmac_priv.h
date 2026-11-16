@@ -139,6 +139,8 @@ struct dwmac_priv {
 	uint8_t mac_addr[6];
 
 	uint32_t feature0;
+	/* 1000 core: normal (not enhanced/alternate) DMA descriptors */
+	bool normal_desc;
 #ifdef CONFIG_ETH_DWC_ETHER_QOS_CORE
 	uint32_t feature1;
 	uint32_t feature2;
