@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <zephyr/sys/barrier.h>
 #include <zephyr/sys/math_extras.h>
 #include <zephyr/sys/util.h>
 
@@ -177,6 +178,15 @@ void cdns_ep_ob_program(const struct cdns_ep_core *core, uint8_t fn, uint32_t re
 		cdns_ep_write(core, CDNS_AT_OB_CPU_ADDR1(off, region),
 			      (uint32_t)(cpu_addr >> 32));
 	}
+
+	/*
+	 * The window is a different slave than the AT registers: with both
+	 * mapped Device, a write through the window right after this can get
+	 * to the controller before the region does (SLVERR). Read back, then
+	 * wait for completion.
+	 */
+	(void)cdns_ep_read(core, CDNS_AT_OB_DESC0(off, region));
+	barrier_dsync_fence_full();
 }
 
 void cdns_ep_ob_clear(const struct cdns_ep_core *core, uint32_t region)
