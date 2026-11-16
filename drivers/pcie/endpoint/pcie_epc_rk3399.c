@@ -542,8 +542,13 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 		d->irq_pci_addr = base;
 		d->irq_pci_fn = func;
 	}
-	sys_write16(data, d->irq_va + (mm_reg_t)(pci_addr & 0xffU));
-	barrier_dsync_fence_full(); /* normal NC mapping: push the MSI write out */
+	/*
+	 * One DWORD with the message data in the low half, as an MSI write is
+	 * on the link: the outbound AXI slave answers a 16-bit write to the
+	 * Device mapped window with SLVERR (SError).
+	 */
+	sys_write32(data, d->irq_va + (mm_reg_t)(pci_addr & 0xfcU));
+	barrier_dsync_fence_full(); /* push the MSI write out */
 	k_spin_unlock(&d->lock, key);
 	return 0;
 }
