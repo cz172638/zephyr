@@ -162,6 +162,24 @@ static int cmd_epmem(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "");
 	return 0;
 }
+#ifdef CONFIG_RK3399_NOC_ERRLOG
+#include <rk3399_noc.h>
+#include <zephyr/fatal.h>
+#include <zephyr/logging/log_ctrl.h>
+
+/* show what the interconnect logged (SErrors through the PCIe window) */
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
+{
+	ARG_UNUSED(esf);
+	LOG_PANIC();
+	rk3399_noc_errlog_dump();
+	printk("Halting system (reason %u)\n", reason);
+	(void)arch_irq_lock();
+	for (;;) {
+	}
+}
+#endif
+
 SHELL_CMD_ARG_REGISTER(epmem, NULL,
 		       "<offset> [words] [value]: BAR carveout (PF 0, VF n at n*4M); value writes "
 		       "the first word",
