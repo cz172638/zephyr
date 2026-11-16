@@ -170,6 +170,27 @@
 			};
 		};
 
+		/omit-if-no-ref/ rgmii_pins: rgmii-pins {
+			group {
+				/* txclk, txen, txd0..3 at 13 mA */
+				pinmux = <RK_PINMUX_DRV(3, RK_PC1, 1, RK_PULL_NONE, RK_DRV_13MA)>,
+					 <RK_PINMUX_DRV(3, RK_PB4, 1, RK_PULL_NONE, RK_DRV_13MA)>,
+					 <RK_PINMUX_DRV(3, RK_PA4, 1, RK_PULL_NONE, RK_DRV_13MA)>,
+					 <RK_PINMUX_DRV(3, RK_PA5, 1, RK_PULL_NONE, RK_DRV_13MA)>,
+					 <RK_PINMUX_DRV(3, RK_PA0, 1, RK_PULL_NONE, RK_DRV_13MA)>,
+					 <RK_PINMUX_DRV(3, RK_PA1, 1, RK_PULL_NONE, RK_DRV_13MA)>,
+					 <RK_PINMUX(3, RK_PB6, 1, RK_PULL_NONE)>,	/* rxclk */
+					 <RK_PINMUX(3, RK_PB1, 1, RK_PULL_NONE)>,	/* rxdv */
+					 <RK_PINMUX(3, RK_PA6, 1, RK_PULL_NONE)>,	/* rxd0 */
+					 <RK_PINMUX(3, RK_PA7, 1, RK_PULL_NONE)>,	/* rxd1 */
+					 <RK_PINMUX(3, RK_PA2, 1, RK_PULL_NONE)>,	/* rxd2 */
+					 <RK_PINMUX(3, RK_PA3, 1, RK_PULL_NONE)>,	/* rxd3 */
+					 <RK_PINMUX(3, RK_PB0, 1, RK_PULL_NONE)>,	/* mdc */
+					 <RK_PINMUX(3, RK_PB5, 1, RK_PULL_NONE)>,	/* mdio */
+					 <RK_PINMUX(3, RK_PB3, 1, RK_PULL_NONE)>;	/* clkin */
+			};
+		};
+
 		/omit-if-no-ref/ sdmmc_pins: sdmmc-pins {
 			group {
 				pinmux = <RK_PINMUX(4, RK_PB0, 1, RK_PULL_UP)>,	/* d0 */
@@ -180,6 +201,29 @@
 					 <RK_PINMUX(4, RK_PB5, 1, RK_PULL_UP)>,	/* cmd */
 					 <RK_PINMUX(0, RK_PA7, 1, RK_PULL_UP)>;	/* cd */
 			};
+		};
+	};
+
+	gmac: ethernet@fe300000 {
+		compatible = "rockchip,rk3399-gmac", "snps,dwmac";
+		reg = <0xfe300000 0x10000>;
+		interrupts = <GIC_SPI 12 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&cru_clk SCLK_MAC>, <&cru_clk SCLK_MACREF>, <&cru_clk SCLK_MAC_RX>,
+			 <&cru_clk SCLK_MAC_TX>, <&cru_clk ACLK_GMAC_PRE>, <&cru_clk PCLK_GMAC_PRE>,
+			 <&cru_clk ACLK_GMAC>, <&cru_clk ACLK_GMAC_NOC>, <&cru_clk PCLK_GMAC>,
+			 <&cru_clk PCLK_GMAC_NOC>;
+		resets = <&cru_rst SRST_A_GMAC>;
+		rockchip,grf = <&grf>;
+		rockchip,cru = <&cru>;
+		/* CSR clock below 250 MHz: MDC = CSR / 102 */
+		snps,clk-csr = <4>;
+		status = "disabled";
+
+		gmac_mdio: mdio {
+			compatible = "snps,dwmac-mdio";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 	};
 

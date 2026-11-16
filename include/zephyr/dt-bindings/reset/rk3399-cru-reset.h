@@ -20,6 +20,8 @@
 #define SRST_PCIE_PIPE		133
 #define SRST_PCIE_PM		134
 #define SRST_PCIEPHY		135
+#define SRST_A_GMAC_NOC		136
+#define SRST_A_GMAC		137
 #define SRST_CM0S_NOC		177
 #define SRST_CM0S		178
 #define SRST_CM0S_DBG		179
