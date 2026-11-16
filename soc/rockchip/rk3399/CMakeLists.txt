@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 zephyr_include_directories(.)
+zephyr_sources_ifdef(CONFIG_RK3399_SD_JTAG sd_jtag.c)
 
 if(CONFIG_ARM64)
   zephyr_sources(soc_a.c mmu_regions.c)

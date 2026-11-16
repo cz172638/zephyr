@@ -379,6 +379,12 @@
 		status = "okay";
 	};
 
+	sd_jtag: sd-jtag@ff77e024 {
+		compatible = "rockchip,rk3399-sd-jtag";
+		reg = <0xff77e024 0x4>, <0xff77e21c 0x4>;
+		status = "disabled";
+	};
+
 	gpio2: gpio@ff780000 {
 		compatible = "snps,designware-gpio";
 		reg = <0xff780000 0x100>;

@@ -47,6 +47,14 @@ config RK3399_NOC_ERRLOG
 	  address, master ID. Call it from k_sys_fatal_error_handler() to
 	  explain SErrors from bus errors.
 
+config RK3399_SD_JTAG
+	bool "AP/MCU JTAG (SWD) on the micro SD pins"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_SD_JTAG_ENABLED
+	help
+	  Mux the JTAG pairs selected in the rockchip,rk3399-sd-jtag node to
+	  the micro SD pins at boot and set GRF_SOC_CON7.force_jtag.
+
 config RK3399_REMOTE_CORE_CONTROL
 	bool "Remote core control (M0 and big/little cluster start)"
 	depends on ARM64

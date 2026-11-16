@@ -39,11 +39,6 @@
 	};
 };
 
-/* SD slot host kept for its JTAG handling (force_jtag), no card disk */
-&sdmmc_disk {
-	status = "disabled";
-};
-
 /*
  * SR-IOV: 4 VFs (routing functions 1..4), each a pcie_epf_test with its own
  * 4 MiB of the carveout. The VF BAR layout is shared, so bar-sizes match;

@@ -1,0 +1,33 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  RK3399 debug port on the micro SD pins. The AP (Cortex-A) and MCU
+  (Cortex-M0) JTAG ports are two-wire (SWD): TCK = SWCLK, TMS = SWDIO.
+
+    GPIO4_B2  SDMMC_D2   APJTAG_TCK
+    GPIO4_B3  SDMMC_D3   APJTAG_TMS
+    GPIO4_B4  SDMMC_CLK  MCUJTAG_TCK
+    GPIO4_B5  SDMMC_CMD  MCUJTAG_TMS
+
+  Enabled, the selected pairs are muxed to JTAG at boot (PRE_KERNEL_1)
+  and GRF_SOC_CON7.force_jtag is set, so the port works with an empty
+  slot as well as with a breakout that card detect sees as a card. The
+  SD host (sdmmc) must then stay disabled, it would take the pins back.
+
+compatible: "rockchip,rk3399-sd-jtag"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: GRF_GPIO4B_IOMUX and GRF_SOC_CON7, as the core sees them.
+
+  ap-jtag:
+    type: boolean
+    description: Mux the AP pair (GPIO4_B2/B3).
+
+  mcu-jtag:
+    type: boolean
+    description: Mux the MCU pair (GPIO4_B4/B5).

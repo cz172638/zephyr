@@ -107,20 +107,27 @@
 };
 
 /*
- * micro SD, 3.3 V, up to high speed. The slot doubles as JTAG (breakout):
- * no card -> JTAG by force_jtag, breakout seen as a card -> JTAG by iomux.
+ * The micro SD slot is the debug port: AP and MCU SWD on the SD pins (JTAG
+ * breakout or empty slot). For an SD card instead, disable sd_jtag and
+ * enable sdmmc and sdmmc_disk.
  */
+&sd_jtag {
+	ap-jtag;
+	mcu-jtag;
+	status = "okay";
+};
+
 &sdmmc {
 	pinctrl-0 = <&sdmmc_pins>;
 	pinctrl-names = "default";
 	bus-width = <4>;
 	rockchip,sd-jtag;
-	status = "okay";
+	status = "disabled";
 
 	sdmmc_disk: sdmmc {
 		compatible = "zephyr,sdmmc-disk";
 		disk-name = "SD";
-		status = "okay";
+		status = "disabled";
 	};
 };
 
