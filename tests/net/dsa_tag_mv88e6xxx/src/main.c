@@ -32,7 +32,7 @@ static void fake_iface_init(struct net_if *iface)
 	ethernet_init(iface);
 }
 
-static const struct ethernet_api fake_api = {
+static DEVICE_API(ethernet, fake_api) = {
 	.iface_api.init = fake_iface_init,
 	.send = fake_send,
 };
