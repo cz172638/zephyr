@@ -9,10 +9,11 @@
 #include "xg26_explorer_kit.dtsi"
 
 / {
-	model = "Silicon Labs xGM260P Explorer Kit";
 	compatible = "silabs,mgm260p_ek2713a", "silabs,mgm26";
+	model = "Silicon Labs xGM260P Explorer Kit";
 
 	chosen {
+		zephyr,bt-c2h-uart = &usart0;
 		zephyr,bt-hci = &bt_hci_silabs;
 		zephyr,ieee802154 = &ieee802154;
 		zephyr,openthread-counter = &protimer;
@@ -40,9 +41,9 @@
 };
 
 &ieee802154 {
-	status = "okay";
 	hfxo = <&hfxo>;
 	sleep-clock = <&lfxo>;
+	status = "okay";
 };
 
 &itm {

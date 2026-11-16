@@ -18,7 +18,10 @@
 #include <zephyr/precision_timing/precision_pi.h>
 #include <zephyr/precision_timing/precision_time.h>
 #include <zephyr/sys/clock.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/ztest.h>
+
+BUILD_ASSERT(IS_ENABLED(CONFIG_REQUIRES_FULL_LIBC), "Precision timing requires a full C library");
 
 #define zassert_double_close(actual, expected)                                                     \
 	zassert_true(fabs((actual) - (expected)) <= 0.000000001, "unexpected floating result")
@@ -93,7 +96,7 @@ static const struct precision_clock_api fake_clock_api = {
 static struct net_ptp_time ptp_time;
 static int ptp_error;
 static int ptp_phase;
-static double ptp_rate_ratio;
+static int64_t ptp_scaled_ppm;
 
 static int fake_ptp_set(const struct device *dev, struct net_ptp_time *tm)
 {
@@ -131,7 +134,7 @@ static int fake_ptp_adjust(const struct device *dev, int increment)
 	return 0;
 }
 
-static int fake_ptp_rate_adjust(const struct device *dev, double ratio)
+static int fake_ptp_adjust_rate(const struct device *dev, int64_t scaled_ppm)
 {
 	ARG_UNUSED(dev);
 
@@ -139,7 +142,7 @@ static int fake_ptp_rate_adjust(const struct device *dev, double ratio)
 		return ptp_error;
 	}
 
-	ptp_rate_ratio = ratio;
+	ptp_scaled_ppm = scaled_ppm;
 	return 0;
 }
 
@@ -147,7 +150,7 @@ static DEVICE_API(ptp_clock, fake_ptp_api) = {
 	.set = fake_ptp_set,
 	.get = fake_ptp_get,
 	.adjust = fake_ptp_adjust,
-	.rate_adjust = fake_ptp_rate_adjust,
+	.adjust_rate = fake_ptp_adjust_rate,
 };
 
 DEVICE_DEFINE(fake_ptp_clock, "fake_ptp_clock", NULL, NULL, NULL, NULL, POST_KERNEL,
@@ -222,6 +225,81 @@ ZTEST(precision_timing, test_pi_instances_and_gains_are_independent)
 	zassert_double_close(second.integral, 0.0);
 }
 
+ZTEST(precision_timing, test_pi_integral_limit)
+{
+	struct precision_pi pi;
+
+	precision_pi_init(&pi, 1.0, 0.5);
+	precision_pi_set_limits(&pi, 2.0, 0.0);
+
+	zassert_double_close(precision_pi_update(&pi, 4.0), 6.0);
+	zassert_double_close(pi.integral, 2.0);
+	zassert_double_close(precision_pi_update(&pi, 4.0), 6.0);
+	zassert_double_close(pi.integral, 2.0);
+	zassert_double_close(precision_pi_update(&pi, -2.0), -1.0);
+	zassert_double_close(pi.integral, 1.0);
+}
+
+ZTEST(precision_timing, test_pi_output_limit_holds_integral)
+{
+	struct precision_pi pi;
+
+	precision_pi_init(&pi, 1.0, 0.5);
+	precision_pi_set_limits(&pi, 0.0, 5.0);
+
+	/* Unlimited output would be 6, and the integral would move to 2 */
+	zassert_double_close(precision_pi_update(&pi, 4.0), 5.0);
+	zassert_double_close(pi.integral, 0.0);
+	zassert_double_close(precision_pi_update(&pi, -12.0), -5.0);
+	zassert_double_close(pi.integral, 0.0);
+	zassert_double_close(precision_pi_update(&pi, -1.0), -1.5);
+	zassert_double_close(pi.integral, -0.5);
+}
+
+ZTEST(precision_timing, test_pi_interval_scales_gains)
+{
+	struct precision_pi one_second;
+	struct precision_pi quarter_second;
+	struct precision_pi plain;
+
+	precision_pi_init(&one_second, 0.4, 0.075);
+	precision_pi_init(&quarter_second, 0.4, 0.075);
+	precision_pi_init(&plain, 0.4, 0.075);
+
+	zassert_double_close(precision_pi_update_interval(&one_second, 100.0, 1.0), 47.5);
+	zassert_double_close(precision_pi_update_interval(&quarter_second, 100.0, 0.25), 190.0);
+	zassert_double_close(quarter_second.integral, 30.0);
+	zassert_double_close(precision_pi_update(&plain, 100.0), 47.5);
+	zassert_double_close(plain.integral, one_second.integral);
+}
+
+/*
+ * Clock servo with a Sync interval of 0.25 s: the local clock runs 66 ppm
+ * slow and starts 40 ms ahead. The output is a rate correction in ppb, so
+ * the offset changes by ppb * interval nanoseconds per sample.
+ */
+ZTEST(precision_timing, test_pi_clock_loop_with_limits)
+{
+	const double interval = 0.25;
+	const double drift_ppb = -66000.0;
+	const double integral_limit_ppb = 150000.0;
+	struct precision_pi pi;
+	double offset_ns = 40000000.0;
+	double ppb;
+
+	precision_pi_init(&pi, 0.4, 0.075);
+	precision_pi_set_limits(&pi, integral_limit_ppb, 47500000.0);
+
+	for (int i = 0; i < 400; i++) {
+		ppb = precision_pi_update_interval(&pi, -offset_ns, interval);
+		zassert_true(fabs(pi.integral) <= integral_limit_ppb);
+		offset_ns += (drift_ppb + ppb) * interval;
+	}
+
+	zassert_true(fabs(offset_ns) < 1.0, "offset %f ns", offset_ns);
+	zassert_within(pi.integral, -drift_ppb, 1.0);
+}
+
 ZTEST(precision_timing, test_clock_dispatch_and_error_propagation)
 {
 	struct fake_clock_data data = {.time_ns = 123};
@@ -284,12 +362,12 @@ ZTEST(precision_timing, test_ptp_adapter_converts_and_dispatches)
 	zassert_equal(ptp_phase, -123);
 	zassert_ok(precision_clock_adjust_rate(precision_clk,
 					2 * PRECISION_CLOCK_SCALED_PPM_ONE));
-	zassert_double_close(ptp_rate_ratio, 1.000002);
+	zassert_equal(ptp_scaled_ppm, 2 * PRECISION_CLOCK_SCALED_PPM_ONE);
 	zassert_ok(precision_clock_adjust_rate(precision_clk, 0));
-	zassert_double_close(ptp_rate_ratio, 1.0);
+	zassert_equal(ptp_scaled_ppm, 0);
 	zassert_ok(precision_clock_adjust_rate(precision_clk,
 					-(3 * PRECISION_CLOCK_SCALED_PPM_ONE / 2)));
-	zassert_double_close(ptp_rate_ratio, 0.9999985);
+	zassert_equal(ptp_scaled_ppm, -(3 * PRECISION_CLOCK_SCALED_PPM_ONE / 2));
 	zassert_equal(precision_clock_set(precision_clk, -1), -ERANGE);
 	zassert_equal(precision_clock_adjust_phase(precision_clk, (precision_time_t)INT_MAX + 1),
 		      -ERANGE);

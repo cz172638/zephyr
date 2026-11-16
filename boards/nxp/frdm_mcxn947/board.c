@@ -1,5 +1,5 @@
 /*
- * Copyright 2024-2025 NXP
+ * Copyright 2024-2026 NXP
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <zephyr/init.h>
@@ -140,19 +140,23 @@ void board_early_init_hook(void)
 	CLOCK_SetClkDiv(kCLOCK_DivAhbClk, 1U);
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai0)) || DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai1))
+/* PLL fractional M divider: 86.016 */
+#define PLL1_SS_MDIV_LSB_VALUE 2886218023U
+
 	/* < Set up PLL1 */
 	const pll_setup_t pll1_Setup = {
-		.pllctrl = SCG_SPLLCTRL_SOURCE(1U) | SCG_SPLLCTRL_SELI(3U) |
-				 SCG_SPLLCTRL_SELP(1U),
-		.pllndiv = SCG_SPLLNDIV_NDIV(25U),
-		.pllpdiv = SCG_SPLLPDIV_PDIV(10U),
-		.pllmdiv = SCG_SPLLMDIV_MDIV(256U),
+		.pllctrl = SCG_SPLLCTRL_SOURCE(1U) | SCG_SPLLCTRL_LIMUPOFF(1U) |
+			   SCG_SPLLCTRL_SELR(4U) | SCG_SPLLCTRL_SELI(4U) | SCG_SPLLCTRL_SELP(3U),
+		.pllndiv = SCG_SPLLNDIV_NDIV(12U),
+		.pllpdiv = SCG_SPLLPDIV_PDIV(7U),
+		.pllsscg[0] = PLL1_SS_MDIV_LSB_VALUE,
+		.pllsscg[1] = SCG_SPLLSSCG1_SEL_SS_MDIV(1U),
 		.pllRate = 24576000U};
 
 	/* Configure PLL1 to the desired values */
 	CLOCK_SetPLL1Freq(&pll1_Setup);
-	/* Set PLL1 CLK0 divider to value 1 */
-	CLOCK_SetClkDiv(kCLOCK_DivPLL1Clk0, 1U);
+	/* Set PLL1 CLK0 divider to value 2, then the clock is 12288000Hz. */
+	CLOCK_SetClkDiv(kCLOCK_DivPLL1Clk0, 2U);
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(flexcomm0))
@@ -255,6 +259,14 @@ void board_early_init_hook(void)
 	CLOCK_EnableClock(kCLOCK_Dac1);
 #endif
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(dac2))
+	SPC_EnableActiveModeAnalogModules(SPC0, kSPC_controlDac2);
+	CLOCK_SetClkDiv(kCLOCK_DivDac2Clk, 1u);
+	CLOCK_AttachClk(kFRO_HF_to_DAC2);
+
+	CLOCK_EnableClock(kCLOCK_Dac2);
+#endif
+
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(enet))
 	CLOCK_AttachClk(kNONE_to_ENETRMII);
 #if defined(CONFIG_PTP_CLOCK_NXP_ENET_QOS) || defined(CONFIG_PTP_CLOCK_DWC_MAC)
@@ -262,9 +274,11 @@ void board_early_init_hook(void)
 	CLOCK_AttachClk(kPLL0_to_ENETPTPREF);
 	CLOCK_SetClkDiv(kCLOCK_DivEnetptprefClk, 1u);
 #endif
+	/* Gate the peripheral clock during reset (MCX N RM 33.1). */
+	CLOCK_DisableClock(kCLOCK_Enet);
+	SYSCON0->PRESETCTRLSET[2] = SYSCON_PRESETCTRL2_ENET_RST_MASK;
+	SYSCON0->PRESETCTRLCLR[2] = SYSCON_PRESETCTRL2_ENET_RST_MASK;
 	CLOCK_EnableClock(kCLOCK_Enet);
-	SYSCON0->PRESETCTRL2 = SYSCON_PRESETCTRL2_ENET_RST_MASK;
-	SYSCON0->PRESETCTRL2 &= ~SYSCON_PRESETCTRL2_ENET_RST_MASK;
 	/* rmii selection for this board */
 	SYSCON->ENET_PHY_INTF_SEL = SYSCON_ENET_PHY_INTF_SEL_PHY_SEL(1);
 #endif
@@ -469,8 +483,8 @@ void board_early_init_hook(void)
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ewm0))
-	CLOCK_SetupOsc32KClocking(kCLOCK_Osc32kToWake);
-	CLOCK_AttachClk(kXTAL32K2_to_EWM0);
+	CLOCK_SetupClk16KClocking(kCLOCK_Clk16KToWake);
+	CLOCK_AttachClk(kCLK_16K2_to_EWM0);
 	CLOCK_EnableClock(kCLOCK_Ewm0);
 #endif
 

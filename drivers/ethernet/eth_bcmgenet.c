@@ -480,7 +480,7 @@ static void bcmgenet_iface_init(struct net_if *iface)
 	k_thread_name_set(&data->rx_thread, "eth_bcmgenet");
 }
 
-static const struct ethernet_api bcmgenet_api = {
+static DEVICE_API(ethernet, bcmgenet_api) = {
 	.iface_api.init = bcmgenet_iface_init,
 	.get_phy = bcmgenet_get_phy,
 	.get_capabilities = bcmgenet_get_caps,
@@ -547,7 +547,7 @@ BUILD_ASSERT(CONFIG_NET_BUF_RX_COUNT > GENET_BUF_RX_COUNT,
 #define BCMGENET_INIT(n)                                                                           \
 	ETH_NET_DEVICE_DT_INST_DEFINE(n, bcmgenet_init, NULL, &bcmgenet_##n##_data,                \
 				      &bcmgenet_##n##_cfg, CONFIG_ETH_INIT_PRIORITY,               \
-				      &bcmgenet_api, GENET_MAX_FRAME_LEN)
+				      &bcmgenet_api, NET_ETH_MTU)
 
 #define BCMGENET_INSTANTIATE(inst)                                                                 \
 	BCMGENET_DEV_CFG(inst);                                                                    \

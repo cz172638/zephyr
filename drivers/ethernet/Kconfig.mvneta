@@ -7,6 +7,7 @@ config ETH_MVNETA
 	depends on DT_HAS_MARVELL_ARMADA_3700_NETA_ENABLED
 	select PINCTRL
 	select CLOCK_CONTROL
+	select ETH_PHY_DRIVER
 	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	help
 	  Enable the NETA gigabit Ethernet controller of the Marvell

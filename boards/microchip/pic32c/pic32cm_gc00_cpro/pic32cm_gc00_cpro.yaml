@@ -10,12 +10,15 @@ toolchain:
 flash: 512
 ram: 128
 supported:
+  - can
   - clock_control
   - dma
   - flash
   - gpio
+  - hwinfo
   - i2c
   - pinctrl
+  - reset
   - spi
   - uart
   - watchdog

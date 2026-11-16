@@ -10,8 +10,8 @@
 #include <rockchip/rk3399_a53.dtsi>
 
 / {
-	model = "Khadas Edge-V";
 	compatible = "khadas,edgev";
+	model = "Khadas Edge-V";
 
 	sram0: memory@10000000 {
 		reg = <0x10000000 DT_SIZE_M(128)>;

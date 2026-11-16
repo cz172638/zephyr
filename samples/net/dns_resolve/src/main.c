@@ -17,6 +17,7 @@ LOG_MODULE_REGISTER(net_dns_resolve_client_sample, LOG_LEVEL_DBG);
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/dns_resolve.h>
 
+#include <zephyr/net/conn_mgr_monitor.h>
 #include "net_sample_common.h"
 
 #if defined(CONFIG_MDNS_RESOLVER)
@@ -183,7 +184,7 @@ static void print_dhcpv4_addr(struct net_if *iface, struct net_if_addr *if_addr,
 	LOG_INF("IPv4 address: %s",
 		net_addr_ntop(NET_AF_INET, &if_addr->address.in_addr,
 			      hr_addr, NET_IPV4_ADDR_LEN));
-	LOG_INF("Lease time: %u seconds", iface->config.dhcpv4.lease_time);
+	LOG_INF("Lease time: %u seconds", net_if_get_config(iface)->dhcpv4.lease_time);
 
 	netmask = net_if_ipv4_get_netmask_by_addr(iface,
 						  &if_addr->address.in_addr);
@@ -191,7 +192,7 @@ static void print_dhcpv4_addr(struct net_if *iface, struct net_if_addr *if_addr,
 		net_addr_ntop(NET_AF_INET, &netmask, hr_addr, NET_IPV4_ADDR_LEN));
 	LOG_INF("Router: %s",
 		net_addr_ntop(NET_AF_INET,
-			      &iface->config.ip.ipv4->gw,
+			      &net_if_get_config(iface)->ip.ipv4->gw,
 			      hr_addr, NET_IPV4_ADDR_LEN));
 
 	*found = true;
@@ -397,7 +398,9 @@ int main(void)
 
 	LOG_INF("Starting DNS resolve sample");
 
-	wait_for_network();
+	LOG_INF("Waiting for network...");
+	(void)conn_mgr_wait_ready(CONN_MGR_READY_IP_ANY, NULL, K_FOREVER);
+	LOG_INF("Network ready");
 
 	setup_ipv4(iface);
 

@@ -12,12 +12,12 @@ properties:
     required: true
 
   bus-width:
-    type: int
-    enum:
-      - 1
-      - 4
     default: 4
-    description: SD bus width in bits
+    description: SD bus width in bits. No 8-bit support in hardware.
+
+  cd-gpios:
+    type: phandle-array
+    description: Card detect GPIO, active when a card is present.
 
   clk-pin:
     type: int

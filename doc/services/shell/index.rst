@@ -683,8 +683,11 @@ modules you can execute the following command:
 This feature is activated by :kconfig:option:`CONFIG_SHELL_WILDCARD` set to ``y``.
 
 .. note::
-	When the wildcard feature is enabled, the characters ``*`` and ``?``
-	cannot be used as normal characters in commands or arguments.
+	When the wildcard feature is enabled, an argument containing ``*`` or ``?``
+	is replaced by the subcommands it matches. An argument that matches no
+	subcommand is passed to the command handler unchanged, so ``*`` and ``?``
+	can be used as normal characters, for example in a URL, as long as the
+	argument does not match a subcommand.
 
 Meta Keys Feature
 *****************
@@ -964,6 +967,18 @@ This approach has two main benefits:
    modules that use string formatting (for example, logging).
 
 See :zephyr:code-sample:`shell-module` for details on how to enable remote shell.
+
+Security considerations
+=======================
+
+The host and the remote client validate commands and message lengths received from each other.
+Print messages are not validated: the host formats the :ref:`cbprintf package <cbprintf_packaging>`
+received from the remote client as is. The format string and string arguments in the package can
+point to any host address, and ``%n`` writes to host memory when
+:kconfig:option:`CONFIG_CBPRINTF_N_SPECIFIER` is enabled. With
+:kconfig:option:`CONFIG_SHELL_REMOTE_CLI_SKIP_RO_STRINGS` enabled, the host reads read-only
+strings directly from the remote core memory by design. Enable
+:kconfig:option:`CONFIG_SHELL_REMOTE` only if the host core trusts every remote client core.
 
 Configuration
 =============

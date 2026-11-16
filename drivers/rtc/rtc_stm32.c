@@ -489,7 +489,7 @@ static inline void rtc_stm32_disable_alarm(uint16_t id)
 #endif /* RTC_STM32_ALARMS_COUNT > 1 */
 }
 
-void rtc_stm32_isr(const struct device *dev)
+static void rtc_stm32_isr(const struct device *dev)
 {
 	struct rtc_stm32_data *data = dev->data;
 	struct rtc_stm32_alrm *p_rtc_alrm;
@@ -910,14 +910,14 @@ static int rtc_stm32_alarm_get_time(const struct device *dev, uint16_t id, uint1
 
 	memset(timeptr, -1, sizeof(struct rtc_time));
 
-	if (IS_ENABLED(CONFIG_SOC_SERIES_STM32H7RSX)) {
+	if (IS_ENABLED(CONFIG_HAS_STM32_RTC_READ_GATED_BY_BKP_DOMAIN)) {
 		stm32_backup_domain_enable_access();
 	}
 
 	rtc_stm32_alarm_get_alrm_time(id, timeptr);
 	*mask = rtc_stm32_alarm_get_alrm_mask(id);
 
-	if (IS_ENABLED(CONFIG_SOC_SERIES_STM32H7RSX)) {
+	if (IS_ENABLED(CONFIG_HAS_STM32_RTC_READ_GATED_BY_BKP_DOMAIN)) {
 		stm32_backup_domain_disable_access();
 	}
 

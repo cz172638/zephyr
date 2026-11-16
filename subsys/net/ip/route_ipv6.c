@@ -281,6 +281,7 @@ int net_route_ipv6_mcast_forward_packet(struct net_pkt *pkt,
 			}
 
 			net_pkt_set_forwarding(pkt_cpy, true);
+			net_pkt_set_chksum_done(pkt_cpy, true);
 			net_pkt_set_orig_iface(pkt_cpy, pkt->iface);
 			net_pkt_set_iface(pkt_cpy, route->ifaces[i]);
 
@@ -513,9 +514,12 @@ int net_route_ipv6_packet(struct net_pkt *pkt, const struct net_in6_addr *nextho
 	orig_iface = net_pkt_orig_iface(pkt);
 	forwarding = net_pkt_forwarding(pkt);
 
+	/* A packet with an ingress interface was received for another host,
+	 * so re-sending it is forwarding even when out_iface is the one it
+	 * arrived on.
+	 */
 	if (orig_iface != NULL) {
-		forwarding = IS_ENABLED(CONFIG_NET_IPV6_FORWARDING) &&
-			     orig_iface != out_iface;
+		forwarding = IS_ENABLED(CONFIG_NET_IPV6_FORWARDING);
 		net_pkt_set_forwarding(pkt, forwarding);
 	}
 

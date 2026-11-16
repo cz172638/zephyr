@@ -1402,7 +1402,7 @@ static void mvneta_iface_init(struct net_if *iface)
 	k_thread_name_set(&data->rx_thread, dev->name);
 }
 
-static const struct ethernet_api mvneta_api = {
+static DEVICE_API(ethernet, mvneta_api) = {
 	.iface_api.init = mvneta_iface_init,
 	.get_capabilities = mvneta_get_caps,
 	.get_phy = mvneta_get_phy,

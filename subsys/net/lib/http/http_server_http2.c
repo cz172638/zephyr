@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -20,6 +21,11 @@
 #include <zephyr/net/http/server.h>
 
 LOG_MODULE_DECLARE(net_http_server, CONFIG_NET_HTTP_SERVER_LOG_LEVEL);
+
+/* Dynamic table size an HPACK decoder has to accept until its own
+ * SETTINGS_HEADER_TABLE_SIZE is acknowledged (RFC 7541, Section 6.3).
+ */
+#define HTTP2_DEFAULT_HEADER_TABLE_SIZE 4096U
 
 #include "headers/server_internal.h"
 
@@ -110,14 +116,23 @@ static void release_http_stream_context(struct http_client_ctx *client,
 static int add_header_field(struct http_client_ctx *client, uint8_t **buf,
 			    size_t *buflen, const char *name, const char *value)
 {
+	/* HTTP/2 field names are lowercase (RFC 9113, Section 8.2.1). Sized like
+	 * the HEADERS frame, the longest name that could be encoded into it.
+	 */
+	char lower_name[CONFIG_HTTP_SERVER_HTTP2_MAX_HEADER_FRAME_LEN];
+	size_t name_len = strlen(name);
 	int ret;
 
-	client->header_field.name = name;
-	client->header_field.name_len = strlen(name);
-	client->header_field.value = value;
-	client->header_field.value_len = strlen(value);
+	if (name_len >= sizeof(lower_name)) {
+		LOG_DBG("Header name too long (%zu)", name_len);
+		return -ENOBUFS;
+	}
 
-	ret = http_hpack_encode_header(*buf, *buflen, &client->header_field);
+	for (size_t i = 0; i <= name_len; i++) {
+		lower_name[i] = tolower((unsigned char)name[i]);
+	}
+
+	ret = http_hpack_encode_field(*buf, *buflen, &client->header_field, lower_name, value);
 	if (ret < 0) {
 		LOG_DBG("Failed to encode header, err %d", ret);
 		return ret;
@@ -165,6 +180,11 @@ static int send_headers_frame(struct http_client_ctx *client, enum http_status s
 
 	for (size_t i = 0; i < extra_headers_count; i++) {
 		const struct http_header *hdr = &extra_headers[i];
+
+		if (http_server_is_connection_specific_header(hdr->name)) {
+			LOG_DBG("Connection-specific header '%s' dropped", hdr->name);
+			continue;
+		}
 
 		if (strcasecmp(hdr->name, "content-encoding") == 0) {
 			content_encoding_sent = true;
@@ -300,6 +320,13 @@ int send_window_update_frame(struct http_client_ctx *client,
 		window_update = HTTP_SERVER_INITIAL_WINDOW_SIZE - client->window_size;
 		client->window_size = HTTP_SERVER_INITIAL_WINDOW_SIZE;
 		stream_id = 0;
+	}
+
+	/* Nothing consumed, nothing to grant: a zero increment is a protocol
+	 * error for the peer (RFC 9113, Section 6.9).
+	 */
+	if (window_update == 0) {
+		return 0;
 	}
 
 	encode_frame_header(window_update_frame, sizeof(uint32_t),
@@ -481,14 +508,14 @@ static int handle_http2_static_fs_resource(struct http_resource_detail_static_fs
 	}
 
 	/* get filename and content-type from url */
-	len = strlen(client->url_buffer);
+	len = http_server_path_len_without_query(client->url_buffer);
 	if (len == 1) {
 		/* url is just the leading slash, use index.html as filename */
 		snprintk(fname, sizeof(fname), "%s/index.html", static_fs_detail->fs_path);
 	} else {
 		http_server_get_content_type_from_extension(client->url_buffer, content_type,
 							    sizeof(content_type));
-		snprintk(fname, sizeof(fname), "%s%s", static_fs_detail->fs_path,
+		snprintk(fname, sizeof(fname), "%s%.*s", static_fs_detail->fs_path, len,
 			 client->url_buffer);
 	}
 
@@ -537,6 +564,13 @@ static int handle_http2_static_fs_resource(struct http_resource_detail_static_fs
 		len = fs_read(&file, tmp, sizeof(tmp));
 		if (len < 0) {
 			LOG_ERR("Filesystem read error (%d)", len);
+			ret = len;
+			goto out;
+		}
+
+		if (len == 0) {
+			LOG_ERR("File shorter than announced size (%d bytes left)", remaining);
+			ret = -EIO;
 			goto out;
 		}
 
@@ -1091,6 +1125,8 @@ int handle_http1_to_http2_upgrade(struct http_client_ctx *client)
 	struct http2_frame *frame = &client->current_frame;
 	struct http_resource_detail *detail;
 	struct http2_stream_ctx *stream;
+	bool new_request = false;
+	size_t discard_len;
 	int path_len;
 	int ret;
 
@@ -1115,6 +1151,8 @@ int handle_http1_to_http2_upgrade(struct http_client_ctx *client)
 			LOG_DBG("No available stream slots. Connection closed.");
 			return -ENOMEM;
 		}
+
+		new_request = true;
 	}
 
 	client->current_stream = stream;
@@ -1137,6 +1175,13 @@ int handle_http1_to_http2_upgrade(struct http_client_ctx *client)
 		}
 
 		client->preface_sent = true;
+	}
+
+	/* The request body can arrive over several calls. The request is
+	 * answered on the first call, the rest of the calls only carry body.
+	 */
+	if (!new_request) {
+		goto request_body;
 	}
 
 	detail = get_resource_detail(client->service, client->url_buffer, &path_len, false);
@@ -1165,18 +1210,6 @@ int handle_http1_to_http2_upgrade(struct http_client_ctx *client)
 			if (ret < 0) {
 				goto error;
 			}
-
-			if (client->method == HTTP_POST ||
-			    client->method == HTTP_PUT ||
-			    client->method == HTTP_PATCH) {
-				ret = dynamic_post_put_req_v2(
-					(struct http_resource_detail_dynamic *)detail, client,
-					false);
-				if (ret < 0) {
-					goto error;
-				}
-			}
-
 		}
 	} else {
 		ret = send_http2_404(client, frame);
@@ -1185,15 +1218,32 @@ int handle_http1_to_http2_upgrade(struct http_client_ctx *client)
 		}
 	}
 
+request_body:
+	/* A dynamic resource accepting a POST, PUT or PATCH request receives
+	 * the body. Otherwise the body is discarded.
+	 */
+	if (stream->current_detail != NULL) {
+		ret = dynamic_post_put_req_v2(
+			(struct http_resource_detail_dynamic *)stream->current_detail, client,
+			false);
+		if (ret < 0) {
+			goto error;
+		}
+	} else {
+		discard_len = MIN(frame->length, client->data_len);
+		frame->length -= discard_len;
+		client->cursor += discard_len;
+		client->data_len -= discard_len;
+	}
+
 	/* Only after the complete HTTP1 payload has been processed, switch
-	 * to HTTP2.
+	 * to HTTP2. Any data left after the request is the client connection
+	 * preface.
 	 */
 	if (client->parser_state == HTTP1_MESSAGE_COMPLETE_STATE) {
 		release_http_stream_context(client, frame->stream_identifier);
 		client->current_detail = NULL;
 		client->server_state = HTTP_SERVER_PREFACE_STATE;
-		client->cursor += client->data_len;
-		client->data_len = 0;
 	}
 
 	return 0;
@@ -1211,6 +1261,11 @@ static int parse_http_frame_padded_field(struct http_client_ctx *client)
 {
 	struct http2_frame *frame = &client->current_frame;
 
+	/* The Pad Length field itself has to fit the frame. */
+	if (frame->length == 0) {
+		return -EBADMSG;
+	}
+
 	if (client->data_len == 0) {
 		return -EAGAIN;
 	}
@@ -1220,7 +1275,10 @@ static int parse_http_frame_padded_field(struct http_client_ctx *client)
 	client->data_len--;
 	frame->length--;
 
-	if (frame->length <= frame->padding_len) {
+	/* The padding may take the whole payload, but not more (RFC 9113,
+	 * Section 6.1).
+	 */
+	if (frame->length < frame->padding_len) {
 		return -EBADMSG;
 	}
 
@@ -1241,6 +1299,10 @@ static int parse_http_frame_padded_field(struct http_client_ctx *client)
 static int parse_http_frame_priority_field(struct http_client_ctx *client)
 {
 	struct http2_frame *frame = &client->current_frame;
+
+	if (frame->length < HTTP2_HEADERS_FRAME_PRIORITY_LEN) {
+		return -EBADMSG;
+	}
 
 	if (client->data_len < HTTP2_HEADERS_FRAME_PRIORITY_LEN) {
 		return -EAGAIN;
@@ -1644,6 +1706,29 @@ int handle_http_frame_headers(struct http_client_ctx *client)
 		client->cursor += ret;
 		client->data_len -= ret;
 
+		if (header->type == HTTP_HPACK_ENTRY_TABLE_SIZE_UPDATE) {
+			/* The server advertises no dynamic table; until the
+			 * client acknowledges that, the protocol default is the
+			 * limit (RFC 7541, Section 6.3). No field to process.
+			 */
+			uint32_t limit = client->settings_acked ? 0U :
+							  HTTP2_DEFAULT_HEADER_TABLE_SIZE;
+
+			if (header->table_size > limit) {
+				LOG_ERR("Dynamic table size update above the limit");
+				ret = -EBADMSG;
+				goto error;
+			}
+
+			continue;
+		}
+
+		if (header->oversized) {
+			LOG_ERR("Header field too large");
+			ret = -ENOBUFS;
+			goto error;
+		}
+
 		LOG_DBG("Parsed header: %.*s %.*s", (int)header->name_len,
 			header->name, (int)header->value_len, header->value);
 
@@ -1798,7 +1883,9 @@ int handle_http_frame_settings(struct http_client_ctx *client)
 	client->data_len -= bytes_consumed;
 	client->cursor += bytes_consumed;
 
-	if (!is_header_flag_set(frame->flags, HTTP2_FLAG_SETTINGS_ACK)) {
+	if (is_header_flag_set(frame->flags, HTTP2_FLAG_SETTINGS_ACK)) {
+		client->settings_acked = true;
+	} else {
 		int ret;
 
 		ret = send_settings_frame(client, true);

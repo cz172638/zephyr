@@ -13,14 +13,12 @@
 #include <stdint.h>
 
 #include <zephyr/bluetooth/audio/mcc.h>
-#include <zephyr/bluetooth/audio/media_proxy.h>
+#include <zephyr/bluetooth/audio/mcs.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/toolchain.h>
-
-static struct bt_conn *default_conn;
 
 static K_SEM_DEFINE(sem_discovery_done, 0U, 1U);
 
@@ -36,7 +34,7 @@ static void mcc_discover_mcs_cb(struct bt_conn *conn, int err)
 	k_sem_give(&sem_discovery_done);
 }
 
-static void mcc_send_command_cb(struct bt_conn *conn, int err, const struct mpl_cmd *cmd)
+static void mcc_send_command_cb(struct bt_conn *conn, int err, const struct bt_mcs_cmd *cmd)
 {
 	ARG_UNUSED(conn);
 
@@ -58,14 +56,12 @@ int mcp_ctlr_init(struct bt_conn *conn)
 {
 	int err;
 
-	default_conn = bt_conn_ref(conn);
-
 	err = bt_mcc_init(&mcc_cb);
 	if (err != 0) {
 		return err;
 	}
 
-	err = bt_mcc_discover_mcs(default_conn, true);
+	err = bt_mcc_discover_mcs(conn, true);
 	if (err == 0) {
 		err = k_sem_take(&sem_discovery_done, K_FOREVER);
 		__ASSERT_NO_MSG(err == 0);
@@ -73,20 +69,15 @@ int mcp_ctlr_init(struct bt_conn *conn)
 	return err;
 }
 
-int mcp_send_cmd(uint8_t mcp_opcode)
+int mcp_send_cmd(struct bt_conn *conn, uint8_t mcp_opcode)
 {
+	struct bt_mcs_cmd cmd;
 	int err;
-	struct mpl_cmd cmd;
 
 	cmd.opcode = mcp_opcode;
 	cmd.use_param = false;
 
-	if (default_conn == NULL) {
-		printk("MCP: No connection\n");
-		return -EINVAL;
-	}
-
-	err = bt_mcc_send_cmd(default_conn, &cmd);
+	err = bt_mcc_send_cmd(conn, &cmd);
 	if (err != 0) {
 		printk("MCP: Command failed: %d\n", err);
 	}

@@ -535,6 +535,11 @@ struct quic_crypto_context {
 	/** Are the settings initialized
 	 */
 	bool initialized;
+
+	/** The keys of this level were discarded for good (RFC 9001
+	 * ch. 4.9) and must not be set up again for this connection.
+	 */
+	bool discarded;
 };
 
 /**
@@ -1264,6 +1269,13 @@ __net_socket struct quic_context {
 	/** Streams connected to this context */
 	sys_slist_t streams;
 
+	/** Nothing is accepted on the context any more, neither connections
+	 * nor streams: the application closed the socket, or the connection
+	 * was never accepted. Written under contexts_lock, where connections
+	 * and streams are queued, so not a bit field.
+	 */
+	bool accept_closed;
+
 	/** Information whether this context is the listening one */
 	bool is_listening : 1;
 };
@@ -1463,6 +1475,10 @@ int quic_flush_deferred_crypto(struct quic_endpoint *ep);
 bool quic_recovery_tx_slot_available(struct quic_endpoint *ep,
 				     enum quic_secret_level level);
 void quic_crypto_context_destroy(struct quic_crypto_context *ctx);
+void quic_endpoint_discard_keys(struct quic_endpoint *ep,
+				enum quic_secret_level level);
+int quic_send_packet(struct quic_endpoint *ep, enum quic_secret_level level,
+		     const uint8_t *payload, size_t payload_len);
 void quic_key_update_destroy(struct quic_key_update *ku);
 bool quic_setup_ciphers_ex(struct quic_ciphers *ciphers,
 			   psa_algorithm_t hash_alg,
@@ -1569,6 +1585,11 @@ int process_long_header(struct quic_endpoint *ep,
 			net_socklen_t addrlen,
 			struct quic_long_header_info *info,
 			size_t datagram_len);
+struct quic_stream *quic_find_stream(struct quic_context *ctx,
+				     struct quic_endpoint *ep,
+				     uint64_t stream_id);
+void quic_stream_unref_deferred(struct quic_stream *stream);
+extern struct k_work quic_stream_release_work;
 
 /* Server session-ticket cache helpers (single-use / freshness). */
 struct quic_server_ticket_entry;
@@ -1582,5 +1603,11 @@ bool tls_server_ticket_cache_lookup(const uint8_t *ticket, size_t ticket_len,
 void tls_server_ticket_cache_consume(const uint8_t *ticket, size_t ticket_len);
 bool tls_ticket_age_acceptable(uint64_t issued_at_ms, uint32_t ticket_age_add,
 			       uint32_t obfuscated_ticket_age, uint64_t now_ms);
+void quic_test_context_unref(struct quic_context *ctx);
+void quic_test_stream_unref(struct quic_stream *stream);
+void quic_test_streams_lock(bool lock);
+void quic_connection_accept_enqueue(struct quic_endpoint *child_ep);
+struct quic_stream *quic_get_stream(struct quic_context *conn);
+bool quic_ctx_queue_incoming_stream(struct quic_context *ctx, struct quic_stream *stream);
 
 #endif /* CONFIG_NET_TEST */

@@ -109,7 +109,12 @@ static void hid_set_state_debug(struct bt_hid_host *hid, enum bt_hid_state state
 		}
 		break;
 	case BT_HID_STATE_INTR_CONNECTING:
-		if (hid->state != BT_HID_STATE_CTRL_CONNECTED) {
+		/* HID spec v1.1.2 Section 5.2.2 only requires the Control channel to be
+		 * initiated first and lets the Interrupt channel be requested before the
+		 * Control channel is configured, so both predecessors are valid.
+		 */
+		if ((hid->state != BT_HID_STATE_CTRL_CONNECTED) &&
+		    (hid->state != BT_HID_STATE_CTRL_CONNECTING)) {
 			LOG_WRN("%s()%d: invalid transition", func, line);
 		}
 		break;
@@ -172,10 +177,6 @@ static struct bt_hid_host *hid_find(const struct bt_conn *conn)
 	__ASSERT(index < ARRAY_SIZE(hid_conn_pool), "Index is out of bounds");
 
 	hid = &hid_conn_pool[index];
-
-	if (hid->state == BT_HID_STATE_DISCONNECTED) {
-		return NULL;
-	}
 
 	return hid;
 }
@@ -304,18 +305,13 @@ static bool hid_req_take(struct bt_hid_host *hid, struct bt_hid_req *req)
 
 /* Closes whichever channel L2CAP still owns.
  *
- * This runs on the Bluetooth workqueue rather than from the L2CAP callback that
- * reported the first channel gone, because that callback runs while L2CAP is
- * still processing the peer's signalling packet and holding the buffer for its
- * response: br_sig_pool has one buffer per connection and
- * bt_l2cap_br_chan_disconnect() waits for one with K_FOREVER
- * (l2cap_br.c), so issuing a request from there deadlocks the receive thread.
- *
- * It also serves as the INTR channel connect timeout on the acceptor path, where
- * CTRL came up but the device never opened INTR: HID spec v1.1.2 Section 5.2.2
- * requires both channels, so an association that cannot make progress is torn
- * down. The two uses never overlap: the timeout is cancelled as soon as INTR is
- * connected, and hid_cleanup() cancels whatever is left.
+ * It serves as the INTR channel connect timeout on the acceptor path, where CTRL came up but the
+ * device never opened INTR: HID spec v1.1.2 Section 5.2.2 requires both channels, so an
+ * association that cannot make progress is torn down.
+ * And it is used to close the other channel when one of them disconnects, which is the normal
+ * path when the device initiates the teardown.
+ * Also it is used to close the INTR channel when the INTR channel is established while the CTRL
+ * is not.
  */
 static void hid_close_handler(struct k_work *work)
 {
@@ -396,6 +392,13 @@ static void hid_vcu_work_handler(struct k_work *work)
 	}
 }
 
+static void hid_host_connected(struct bt_hid_host *hid)
+{
+	if ((hid_cb != NULL) && (hid_cb->connected != NULL)) {
+		hid_cb->connected(hid);
+	}
+}
+
 static void hid_l2cap_ctrl_connected(struct bt_l2cap_chan *chan)
 {
 	struct bt_hid_host *hid = HID_HOST_BY_CTRL_CHAN(chan);
@@ -417,16 +420,38 @@ static void hid_l2cap_ctrl_connected(struct bt_l2cap_chan *chan)
 		return;
 	}
 
-	hid_set_state(hid, BT_HID_STATE_CTRL_CONNECTED);
 	atomic_set_bit(&hid->flags, BT_HID_HOST_FLAG_CTRL_CONNECTED);
+
+	if (hid->state == BT_HID_STATE_CTRL_CONNECTING &&
+		!atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_INTR_ATTACHED)) {
+		hid_set_state(hid, BT_HID_STATE_CTRL_CONNECTED);
+	}
 
 	if (!atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_INITIATOR)) {
 		/* HID spec v1.1.2 Section 5.2.2: the device opens the Interrupt channel
 		 * next, so the association is not reported to the application until that
 		 * channel is up.
 		 */
+		if (atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_INTR_CONNECTED)) {
+			if (atomic_test_and_set_bit(&hid->flags,
+						    BT_HID_HOST_FLAG_CONNECTED_REPORTED)) {
+				return;
+			}
+			hid_set_state(hid, BT_HID_STATE_CONNECTED);
+			k_work_cancel_delayable(&hid->close_work);
+
+			hid_host_connected(hid);
+
+			return;
+		}
+
 		LOG_DBG("wait for INTR connection");
 		bt_work_reschedule(&hid->close_work, HID_INTR_CONN_TIMEOUT);
+
+		if (atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_INTR_CONNECTED)) {
+			k_work_cancel_delayable(&hid->close_work);
+		}
+
 		return;
 	}
 
@@ -456,22 +481,25 @@ static void hid_l2cap_intr_connected(struct bt_l2cap_chan *chan)
 
 	__ASSERT_NO_MSG(chtype == BT_HID_CHANNEL_INTR);
 
-	/* HID spec v1.1.2 Section 5.2.2: both CTRL and INTR channels
-	 * must be established for the HID connection to be valid.
-	 */
-	if (!atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_CTRL_CONNECTED)) {
-		LOG_WRN("CTRL not connected, reject INTR");
+	if (hid->state == BT_HID_STATE_DISCONNECTING) {
+		LOG_WRN("CTRL gone while INTR was configuring, closing");
 		bt_work_reschedule(&hid->close_work, K_NO_WAIT);
 		return;
 	}
 
-	hid_set_state(hid, BT_HID_STATE_CONNECTED);
 	atomic_set_bit(&hid->flags, BT_HID_HOST_FLAG_INTR_CONNECTED);
+
+	if (!atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_CTRL_CONNECTED)) {
+		LOG_DBG("INTR connected while CTRL still configuring");
+		return;
+	}
+	if (atomic_test_and_set_bit(&hid->flags, BT_HID_HOST_FLAG_CONNECTED_REPORTED)) {
+		return;
+	}
+	hid_set_state(hid, BT_HID_STATE_CONNECTED);
 	k_work_cancel_delayable(&hid->close_work);
 
-	if ((hid_cb != NULL) && (hid_cb->connected != NULL)) {
-		hid_cb->connected(hid);
-	}
+	hid_host_connected(hid);
 }
 
 static void hid_cleanup(struct bt_hid_host *hid)
@@ -575,6 +603,7 @@ static void hid_l2cap_intr_disconnected(struct bt_l2cap_chan *chan)
 	 */
 	if (atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_CTRL_ATTACHED)) {
 		hid_set_state(hid, BT_HID_STATE_DISCONNECTING);
+		bt_work_reschedule(&hid->close_work, K_NO_WAIT);
 		return;
 	}
 
@@ -971,19 +1000,33 @@ static int hid_l2cap_intr_accept(struct bt_conn *conn, struct bt_l2cap_server *s
 
 	LOG_DBG("INTR accept conn %p", conn);
 
-	/* HID spec v1.1.2 Section 5.2.2: the control channel is opened first and
-	 * has to be established before the interrupt channel. The state also rules
-	 * out a second interrupt channel: it leaves BT_HID_STATE_CTRL_CONNECTED as
-	 * soon as one is accepted.
-	 */
 	hid = hid_find(conn);
-	if ((hid == NULL) || (hid->state != BT_HID_STATE_CTRL_CONNECTED)) {
-		LOG_ERR("CTRL channel not connected");
+	if (hid == NULL) {
+		LOG_WRN("HID instance not found");
 		return -ENOTCONN;
 	}
 
+	if ((hid->state == BT_HID_STATE_DISCONNECTED) ||
+	    (hid->state == BT_HID_STATE_DISCONNECTING)) {
+		LOG_WRN("association not up (state %s)", hid_state_str(hid->state));
+		return -ENOTCONN;
+	}
+
+	if (atomic_test_bit(&hid->flags, BT_HID_HOST_FLAG_INITIATOR)) {
+		LOG_WRN("peer opened INTR on an initiated association (state %s)",
+			hid_state_str(hid->state));
+		return -ENOTCONN;
+	}
+
+	if (atomic_test_and_set_bit(&hid->flags, BT_HID_HOST_FLAG_INTR_ATTACHED)) {
+		LOG_WRN("INTR channel already attached (state %s)",
+			hid_state_str(hid->state));
+		return -EBUSY;
+	}
+
 	hid_set_state(hid, BT_HID_STATE_INTR_CONNECTING);
-	atomic_set_bit(&hid->flags, BT_HID_HOST_FLAG_INTR_ATTACHED);
+
+	bt_work_reschedule(&hid->close_work, HID_INTR_CONN_TIMEOUT);
 
 	*chan = &hid->intr_session.br_chan.chan;
 	return 0;

@@ -114,6 +114,7 @@ bool compression_value_is_valid(enum http_compression compression);
 struct http_resource_detail *get_resource_detail(const struct http_service_desc *service,
 						 const char *path, int *len, bool is_ws);
 void http_server_remove_dot_segments(char *path);
+int http_server_path_len_without_query(const char *path);
 int http_server_sendall(struct http_client_ctx *client, const void *buf, size_t len);
 int http_server_sendall_iov(struct http_client_ctx *client, struct net_iovec *iov, size_t iovlen);
 void http_server_get_content_type_from_extension(char *url, char *content_type,
@@ -123,6 +124,7 @@ int http_server_find_file(char *fname, size_t fname_size, size_t *file_size,
 void http_client_timer_restart(struct http_client_ctx *client);
 bool http_response_is_final(struct http_response_ctx *rsp, enum http_transaction_status status);
 bool http_response_is_provided(struct http_response_ctx *rsp);
+bool http_server_is_connection_specific_header(const char *name);
 
 /* TODO Could be static, but currently used in tests. */
 int parse_http_frame_header(struct http_client_ctx *client, const uint8_t *buffer, size_t buflen);

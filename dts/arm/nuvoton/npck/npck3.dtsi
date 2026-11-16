@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <arm/armv7-m.dtsi>
+
 /* NPCK3 series pinmux mapping table */
 #include "npck3/npck3-alts-map.dtsi"
 /* NPCK3 series mapping table between MIWU wui bits and source device */
@@ -41,25 +43,22 @@
 	};
 
 	soc {
-		/* Specific soc devices in npck3 series */
-		itims: timer@400b0000 {
-			compatible = "nuvoton,npcx-itim-timer";
-			reg = <0x400b0000 0x2000
-			       0x400bc000 0x2000>;
-			reg-names = "evt_itim", "sys_itim";
-			clocks = <&pcc NPCX_CLOCK_BUS_LFCLK NPCX_PWDWN_CTL4 0
-				  &pcc NPCX_CLOCK_BUS_APB2 NPCX_PWDWN_CTL2 6>;
-			interrupts = <29 1>; /* Event timer interrupt */
-			clock-frequency = <15000000>; /* Set for SYS_CLOCK_HW_CYCLES_PER_SEC */
-		};
+		espi0: espi@4000a000 {
+			rx-plsize = <64>;
+			tx-plsize = <64>;
 
-		uart1: serial@400c4000 {
-			compatible = "nuvoton,npcx-uart", "nuvoton,npcx-uart-npckn";
-			reg = <0x400c4000 0x2000>;
-			interrupts = <23 3>;
-			clocks = <&pcc NPCX_CLOCK_BUS_APB2 NPCX_PWDWN_CTL1 4>;
-			uart-rx = <&wui_cr_sin1>;
-			status = "disabled";
+			rst-gpios = <&gpio1 0 0>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			espi_taf: espitaf@4000a000 {
+				compatible = "nuvoton,npcx-espi-taf";
+				reg = <0x4000a000 0x2000>,
+				      <0x40021000 0x2000>;
+				reg-names = "saf", "fiu1";
+				status = "disabled";
+			};
 		};
 
 		/* Default clock and power settings in npck3 series */
@@ -225,6 +224,12 @@
 		};
 
 		gpiostb0: gpio@400ab000 {
+			compatible = "nuvoton,npcx-gpio";
+			reg = <0x400ab000 0x2000>;
+			gpio-controller;
+			index = <0x12>;
+			ngpios = <8>;
+			#gpio-cells = <2>;
 			wui-maps = <&wui_io_stb00 &wui_io_stb01 &wui_io_stb02 &wui_io_stb03
 				    &wui_io_stb04 &wui_none &wui_none &wui_none>;
 
@@ -233,6 +238,12 @@
 		};
 
 		gpiostb1: gpio@400ad000 {
+			compatible = "nuvoton,npcx-gpio";
+			reg = <0x400ad000 0x2000>;
+			gpio-controller;
+			index = <0x13>;
+			ngpios = <8>;
+			#gpio-cells = <2>;
 			wui-maps = <&wui_none &wui_io_stb11_psl_in0
 				    &wui_io_stb12_psl_in1 &wui_io_stb13_psl_in2
 				    &wui_io_stb14_psl_in3 &wui_io_stb15_psl_in4
@@ -242,37 +253,50 @@
 				     &lvol_none &lvol_none &lvol_none &lvol_none>;
 		};
 
+		/* Specific soc devices in npck3 series */
+		itims: timer@400b0000 {
+			compatible = "nuvoton,npcx-itim-timer";
+			reg = <0x400b0000 0x2000
+			       0x400bc000 0x2000>;
+			reg-names = "evt_itim", "sys_itim";
+			clocks = <&pcc NPCX_CLOCK_BUS_LFCLK NPCX_PWDWN_CTL4 0
+				  &pcc NPCX_CLOCK_BUS_APB2 NPCX_PWDWN_CTL2 6>;
+			interrupts = <29 1>; /* Event timer interrupt */
+			clock-frequency = <15000000>; /* Set for SYS_CLOCK_HW_CYCLES_PER_SEC */
+		};
+
+		uart1: serial@400c4000 {
+			compatible = "nuvoton,npcx-uart", "nuvoton,npcx-uart-npckn";
+			reg = <0x400c4000 0x2000>;
+			interrupts = <23 3>;
+			clocks = <&pcc NPCX_CLOCK_BUS_APB2 NPCX_PWDWN_CTL1 4>;
+			uart-rx = <&wui_cr_sin1>;
+			status = "disabled";
+		};
+
 		/* ADC0 comparator configuration in npck3 series */
 		adc0: adc@400d1000 {
 			channel-count = <12>;
 			threshold-count = <6>;
 		};
+	};
 
-		espi0: espi@4000a000 {
-			rx-plsize = <64>;
-			tx-plsize = <64>;
-
-			rst-gpios = <&gpio1 0 0>;
-
+	soc-if {
+		i2c1_b: io_i2c_ctrl1_portb {
+			compatible = "nuvoton,npcx-i2c-port";
 			#address-cells = <1>;
-			#size-cells = <1>;
-
-			espi_taf: espitaf@4000a000 {
-				compatible = "nuvoton,npcx-espi-taf";
-				reg = <0x4000a000 0x2000>,
-				      <0x40021000 0x2000>;
-				reg-names = "saf", "fiu1";
-				status = "disabled";
-			};
+			#size-cells = <0>;
+			port = <NPCX_I2C_CTRL_PORT(1, 1)>;
+			controller = <&i2c_ctrl1>;
+			status = "disabled";
 		};
 
-		lct0: lct@400dd000 {
-			compatible = "nuvoton,npck-lct";
-			reg = <0x400dd000 0x10>;
-			interrupts = <17 4>;
-			/* The maximum counter value is (16 weeks - 1 second) */
-			maximum-cnt-in-sec = <9676799>;
-			pwr-by-vsby;
+		i2c4_b: io_i2c_ctrl4_portb {
+			compatible = "nuvoton,npcx-i2c-port";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			port = <NPCX_I2C_CTRL_PORT(4, 1)>;
+			controller = <&i2c_ctrl4>;
 			status = "disabled";
 		};
 	};

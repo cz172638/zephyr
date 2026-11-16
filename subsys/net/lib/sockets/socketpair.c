@@ -740,7 +740,7 @@ out:
 	return res;
 }
 
-static int zsock_poll_prepare_ctx(struct spair *const spair,
+static int spair_poll_prepare_ctx(struct spair *const obj,
 				  struct zsock_pollfd *const pfd,
 				  struct k_poll_event **pev,
 				  struct k_poll_event *pev_end)
@@ -753,7 +753,7 @@ static int zsock_poll_prepare_ctx(struct spair *const spair,
 	if (pfd->events & ZSOCK_POLLIN) {
 
 		/* Tell poll() to short-circuit wait */
-		if (sock_is_eof(spair)) {
+		if (sock_is_eof(obj)) {
 			res = -EALREADY;
 			goto out;
 		}
@@ -764,13 +764,13 @@ static int zsock_poll_prepare_ctx(struct spair *const spair,
 		}
 
 		/* Wait until data has been written to the local end */
-		(*pev)->obj = &spair->readable;
+		(*pev)->obj = &obj->readable;
 	}
 
 	if (pfd->events & ZSOCK_POLLOUT) {
 
 		/* Tell poll() to short-circuit wait */
-		if (!sock_is_connected(spair)) {
+		if (!sock_is_connected(obj)) {
 			res = -EALREADY;
 			goto out;
 		}
@@ -780,7 +780,7 @@ static int zsock_poll_prepare_ctx(struct spair *const spair,
 			goto out;
 		}
 
-		remote = zvfs_get_fd_obj(spair->remote,
+		remote = zvfs_get_fd_obj(obj->remote,
 			(const struct fd_op_vtable *)
 			&spair_fd_op_vtable, 0);
 
@@ -814,7 +814,7 @@ out:
 	return res;
 }
 
-static int zsock_poll_update_ctx(struct spair *const spair,
+static int spair_poll_update_ctx(struct spair *const obj,
 				 struct zsock_pollfd *const pfd,
 				 struct k_poll_event **pev)
 {
@@ -825,12 +825,12 @@ static int zsock_poll_update_ctx(struct spair *const spair,
 	bool have_remote_sem = false;
 
 	if (pfd->events & ZSOCK_POLLOUT) {
-		if (!sock_is_connected(spair)) {
+		if (!sock_is_connected(obj)) {
 			pfd->revents |= ZSOCK_POLLHUP;
 			goto pollout_done;
 		}
 
-		remote = zvfs_get_fd_obj(spair->remote,
+		remote = zvfs_get_fd_obj(obj->remote,
 			(const struct fd_op_vtable *) &spair_fd_op_vtable, 0);
 
 		__ASSERT(remote != NULL, "remote is NULL");
@@ -843,7 +843,7 @@ static int zsock_poll_update_ctx(struct spair *const spair,
 
 		have_remote_sem = true;
 
-		if (spair_write_avail(spair) > 0) {
+		if (spair_write_avail(obj) > 0) {
 			pfd->revents |= ZSOCK_POLLOUT;
 			goto pollout_done;
 		}
@@ -865,19 +865,19 @@ static int zsock_poll_update_ctx(struct spair *const spair,
 pollout_done:
 
 	if (pfd->events & ZSOCK_POLLIN) {
-		if (sock_is_eof(spair)) {
+		if (sock_is_eof(obj)) {
 			pfd->revents |= ZSOCK_POLLIN;
 			goto pollin_done;
 		}
 
-		if (spair_read_avail(spair) > 0) {
+		if (spair_read_avail(obj) > 0) {
 			pfd->revents |= ZSOCK_POLLIN;
 			goto pollin_done;
 		}
 
 		/* check to see if op was canceled */
 		signaled = false;
-		k_poll_signal_check(&spair->readable, &signaled, &result);
+		k_poll_signal_check(&obj->readable, &signaled, &result);
 		if (signaled) {
 			/* Cannot be SPAIR_SIG_DATA, because
 			 * spair_read_avail() would have
@@ -901,12 +901,46 @@ pollin_done:
 	return res;
 }
 
+static int spair_poll_prepare(void *obj, struct zvfs_pollfd *pfd, struct k_poll_event **pev,
+			      struct k_poll_event *pev_end)
+{
+	int res;
+	struct spair *const spair = (struct spair *)obj;
+
+	if (spair == NULL) {
+		return -EINVAL;
+	}
+
+	res = k_sem_take(&spair->sem, K_FOREVER);
+	__ASSERT(res == 0, "failed to take local sem: %d", res);
+
+	res = spair_poll_prepare_ctx(spair, pfd, pev, pev_end);
+	k_sem_give(&spair->sem);
+
+	return res;
+}
+
+static int spair_poll_update(void *obj, struct zvfs_pollfd *pfd, struct k_poll_event **pev)
+{
+	int res;
+	struct spair *const spair = (struct spair *)obj;
+
+	if (spair == NULL) {
+		return -EINVAL;
+	}
+
+	res = k_sem_take(&spair->sem, K_FOREVER);
+	__ASSERT(res == 0, "failed to take local sem: %d", res);
+
+	res = spair_poll_update_ctx(spair, pfd, pev);
+	k_sem_give(&spair->sem);
+
+	return res;
+}
+
 static int spair_ioctl(void *obj, unsigned int request, va_list args)
 {
 	int res;
-	struct zsock_pollfd *pfd;
-	struct k_poll_event **pev;
-	struct k_poll_event *pev_end;
 	int flags = 0;
 	bool have_local_sem = false;
 	struct spair *const spair = (struct spair *)obj;
@@ -962,23 +996,6 @@ static int spair_ioctl(void *obj, unsigned int request, va_list args)
 			*nbytes = spair_read_avail(spair);
 
 			res = 0;
-			goto out;
-		}
-
-		case ZFD_IOCTL_POLL_PREPARE: {
-			pfd = va_arg(args, struct zsock_pollfd *);
-			pev = va_arg(args, struct k_poll_event **);
-			pev_end = va_arg(args, struct k_poll_event *);
-
-			res = zsock_poll_prepare_ctx(obj, pfd, pev, pev_end);
-			goto out;
-		}
-
-		case ZFD_IOCTL_POLL_UPDATE: {
-			pfd = va_arg(args, struct zsock_pollfd *);
-			pev = va_arg(args, struct k_poll_event **);
-
-			res = zsock_poll_update_ctx(obj, pfd, pev);
 			goto out;
 		}
 
@@ -1183,6 +1200,8 @@ static const struct socket_op_vtable spair_fd_op_vtable = {
 		.write = spair_write,
 		.close2 = spair_close,
 		.ioctl = spair_ioctl,
+		.poll_prepare = spair_poll_prepare,
+		.poll_update = spair_poll_update,
 	},
 	.bind = spair_bind,
 	.connect = spair_connect,

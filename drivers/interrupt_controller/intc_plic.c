@@ -543,6 +543,11 @@ static void plic_irq_handler(const struct device *dev)
 	 * as IRQ number held by the claim_complete register is
 	 * cleared upon read.
 	 */
+#ifdef CONFIG_RISCV_NESTED_INTERRUPTS
+	const uint32_t outer_irq = save_irq[cpu_id];
+	const struct device *outer_dev = save_dev[cpu_id];
+#endif /* CONFIG_RISCV_NESTED_INTERRUPTS */
+
 	save_irq[cpu_id] = local_irq;
 	save_dev[cpu_id] = dev;
 
@@ -565,9 +570,30 @@ static void plic_irq_handler(const struct device *dev)
 	}
 #endif /* CONFIG_PLIC_SUPPORTS_TRIG_EDGE */
 
+#ifdef CONFIG_RISCV_NESTED_INTERRUPTS
+	const mem_addr_t thres_addr = get_threshold_priority_addr(dev, cpu_id);
+	const uint32_t outer_thres = sys_read32(thres_addr);
+
+	/*
+	 * The PLIC only takes a source above the threshold, so raising it to
+	 * this source's priority lets only higher priority sources preempt.
+	 */
+	sys_write32(sys_read32(config->prio + local_irq * sizeof(uint32_t)), thres_addr);
+	arch_irq_unlock(RV_STATUS_IE);
+#endif /* CONFIG_RISCV_NESTED_INTERRUPTS */
+
 	/* Call the corresponding IRQ handler in _sw_isr_table */
 	ite = &config->isr_table[local_irq];
 	ite->isr(ite->arg);
+
+#ifdef CONFIG_RISCV_NESTED_INTERRUPTS
+	/* Undo the above before completing, in the opposite order */
+	(void)arch_irq_lock();
+	sys_write32(outer_thres, thres_addr);
+
+	save_irq[cpu_id] = outer_irq;
+	save_dev[cpu_id] = outer_dev;
+#endif /* CONFIG_RISCV_NESTED_INTERRUPTS */
 
 	/*
 	 * Write to claim_complete register to indicate to
@@ -777,7 +803,7 @@ static int cmd_affinity_set(const struct shell *sh, size_t argc, char **argv)
 		riscv_plic_irq_set_affinity(irq, mask);
 		shell_print(sh, "IRQ %d affinity set to 0x%X", local_irq, mask);
 	} else {
-		for (local_irq = 1; local_irq <= config->nr_irqs; local_irq++) {
+		for (local_irq = 1; local_irq < config->nr_irqs; local_irq++) {
 			irq = local_irq_to_irq(dev, local_irq);
 			riscv_plic_irq_set_affinity(irq, mask);
 		}
@@ -877,7 +903,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(plic_cmds,
 SHELL_CMD_REGISTER(plic, &plic_cmds, "PLIC shell commands", NULL);
 #endif /* CONFIG_PLIC_SHELL */
 
-#define PLIC_MIN_IRQ_NUM(n) MIN(DT_INST_PROP(n, riscv_ndev), CONFIG_MAX_IRQ_PER_AGGREGATOR)
+/* IRQ ID 0 is reserved, so valid local IRQs are 1..riscv,ndev (ndev + 1 IDs) */
+#define PLIC_NR_IRQS(n)     (DT_INST_PROP(n, riscv_ndev) + 1)
+#define PLIC_MIN_IRQ_NUM(n) MIN(PLIC_NR_IRQS(n), CONFIG_MAX_IRQ_PER_AGGREGATOR)
 
 #ifdef CONFIG_PLIC_SHELL_IRQ_COUNT
 #define PLIC_INTC_IRQ_COUNT_BUF_DEFINE(n)                                                          \

@@ -944,7 +944,7 @@ choice
 
 config STACK_CANARIES
 	bool "Default protection"
-	depends on ENTROPY_GENERATOR || TEST_RANDOM_GENERATOR
+	depends on HAS_RANDOM_GENERATOR
 	select NEED_LIBC_MEM_PARTITION if !STACK_CANARIES_TLS
 	select REQUIRES_STACK_CANARIES
 	help
@@ -954,7 +954,7 @@ config STACK_CANARIES
 
 config STACK_CANARIES_STRONG
 	bool "Strong protection"
-	depends on ENTROPY_GENERATOR || TEST_RANDOM_GENERATOR
+	depends on HAS_RANDOM_GENERATOR
 	select NEED_LIBC_MEM_PARTITION if !STACK_CANARIES_TLS
 	select REQUIRES_STACK_CANARIES
 	help
@@ -964,7 +964,7 @@ config STACK_CANARIES_STRONG
 
 config STACK_CANARIES_ALL
 	bool "Maximum protection available"
-	depends on ENTROPY_GENERATOR || TEST_RANDOM_GENERATOR
+	depends on HAS_RANDOM_GENERATOR
 	select NEED_LIBC_MEM_PARTITION if !STACK_CANARIES_TLS
 	select REQUIRES_STACK_CANARIES
 	help
@@ -972,7 +972,7 @@ config STACK_CANARIES_ALL
 
 config STACK_CANARIES_EXPLICIT
 	bool "Explicit protection"
-	depends on ENTROPY_GENERATOR || TEST_RANDOM_GENERATOR
+	depends on HAS_RANDOM_GENERATOR
 	depends on "$(ZEPHYR_TOOLCHAIN_VARIANT)" = "zephyr"
 	select NEED_LIBC_MEM_PARTITION if !STACK_CANARIES_TLS
 	select REQUIRES_STACK_CANARIES
@@ -1011,7 +1011,7 @@ config STACK_POINTER_RANDOM
 	int "Initial stack pointer randomization bounds"
 	depends on !STACK_GROWS_UP
 	depends on MULTITHREADING
-	depends on TEST_RANDOM_GENERATOR || ENTROPY_HAS_DRIVER
+	depends on HAS_RANDOM_GENERATOR
 	default 0
 	help
 	  This option performs a limited form of Address Space Layout
@@ -1129,6 +1129,13 @@ config KERNEL_WHOLE_ARCHIVE
 	help
 	  This option forces every object file in the libkernel.a archive
 	  to be included, rather than searching the archive for required object files.
+
+config TOOLCHAIN_HAS_CRT_CTOR_MARKERS
+	bool
+	help
+	  The toolchain's crtbegin.o and crtend.o contain boundary markers
+	  in their .ctors sections. Exclude these sections when collecting
+	  callable initializers.
 
 config TOOLCHAIN_SUPPORTS_STATIC_INIT_GNU
 	# As of today, we don't know of any toolchains that don't create

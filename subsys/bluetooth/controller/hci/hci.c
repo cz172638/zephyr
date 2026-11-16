@@ -66,6 +66,7 @@
 #include "ll_sw/ull_internal.h"
 
 #include "ll_sw/ull_adv_internal.h"
+#include "ll_sw/ull_scan_internal.h"
 #include "ll_sw/ull_sync_internal.h"
 #include "ll_sw/ull_conn_internal.h"
 #include "ll_sw/ull_sync_iso_internal.h"
@@ -879,8 +880,12 @@ static void read_supported_commands(struct net_buf *buf, struct net_buf **evt)
 	rp->commands[27] |= BIT(0) | BIT(1);
 #endif /* CONFIG_BT_CTLR_FILTER_ACCEPT_LIST */
 
-	/* LE Encrypt, LE Rand */
-	rp->commands[27] |= BIT(6) | BIT(7);
+#if defined(CONFIG_BT_CTLR_CRYPTO)
+	/* LE Encrypt */
+	rp->commands[27] |= BIT(6);
+#endif /* CONFIG_BT_CTLR_CRYPTO */
+	/* LE Rand */
+	rp->commands[27] |= BIT(7);
 	/* LE Read Supported States */
 	rp->commands[28] |= BIT(3);
 
@@ -6964,6 +6969,11 @@ static uint8_t ext_adv_data_get(const struct node_rx_pdu *node_rx_data,
 		goto no_ext_hdr;
 	}
 
+	/* The fields of an incomplete extended header can lie beyond the PDU */
+	if (!ull_scan_aux_ext_hdr_is_complete(adv)) {
+		return 0U;
+	}
+
 	ptr = h->data;
 
 	if (h->adv_addr) {
@@ -7066,7 +7076,7 @@ static void ext_adv_info_fill(uint8_t evt_type, uint8_t phy, uint8_t sec_phy,
 		adv_info->addr.type = adv_addr_type;
 		(void)memcpy(adv_info->addr.a.val, adv_addr, sizeof(bt_addr_t));
 	} else {
-		adv_info->addr.type = 0U;
+		adv_info->addr.type = BT_ADDR_LE_ANONYMOUS;
 		(void)memset(adv_info->addr.a.val, 0, sizeof(bt_addr_t));
 	}
 
@@ -7087,7 +7097,9 @@ static void ext_adv_info_fill(uint8_t evt_type, uint8_t phy, uint8_t sec_phy,
 	}
 
 	adv_info->length = data_len;
-	(void)memcpy(adv_info->data, data, data_len);
+	if (data_len > 0U) {
+		(void)memcpy(adv_info->data, data, data_len);
+	}
 }
 
 static void ext_adv_pdu_frag(uint8_t evt_type, uint8_t phy, uint8_t sec_phy,
@@ -7211,6 +7223,7 @@ static void le_ext_adv_report(struct pdu_data *pdu_data,
 	uint8_t *adv_addr = NULL;
 	uint8_t data_status = 0U;
 	struct net_buf *evt_buf;
+	bool anon_allow = false;
 	bool devmatch = false;
 	uint8_t data_len = 0U;
 	uint8_t evt_type = 0U;
@@ -7290,6 +7303,14 @@ static void le_ext_adv_report(struct pdu_data *pdu_data,
 			hdr_len = PDU_AC_EXT_HEADER_SIZE_MIN;
 
 			goto no_ext_hdr;
+		}
+
+		/* The fields of an incomplete extended header can lie beyond
+		 * the PDU: nothing of this event is reported.
+		 */
+		if (!ull_scan_aux_ext_hdr_is_complete(adv)) {
+			node_rx_extra_list_release(node_rx->rx_ftr.extra);
+			return;
 		}
 
 		ptr = h->data;
@@ -7493,6 +7514,7 @@ no_ext_hdr:
 #if defined(CONFIG_BT_CTLR_SYNC_PERIODIC) && \
 	defined(CONFIG_BT_CTLR_FILTER_ACCEPT_LIST)
 			devmatch = devmatch_curr;
+			anon_allow = node_rx_curr->rx_ftr.anon_allow;
 #endif /* CONFIG_BT_CTLR_SYNC_PERIODIC && CONFIG_BT_CTLR_FILTER_ACCEPT_LIST */
 
 		} else {
@@ -7568,9 +7590,14 @@ no_ext_hdr:
 		adv = (void *)node_rx_curr->pdu;
 	} while (1);
 
+	/* A PDU received for a periodic sync that is being created is not
+	 * reported unless the scanner filter policy allows its AdvA. Anonymous
+	 * advertising has no AdvA to allow: the ULL recorded with the
+	 * ADV_EXT_IND whether the policy lets it through.
+	 */
 	if (IS_ENABLED(CONFIG_BT_CTLR_SYNC_PERIODIC) &&
 	    IS_ENABLED(CONFIG_BT_CTLR_FILTER_ACCEPT_LIST) &&
-	    !devmatch) {
+	    !devmatch && ((adv_addr != NULL) || !anon_allow)) {
 		node_rx_extra_list_release(node_rx->rx_ftr.extra);
 		return;
 	}
@@ -7833,9 +7860,20 @@ static void le_per_adv_sync_report(struct pdu_data *pdu_data,
 
 	data_len_total = ftr->aux_data_len;
 
+	/* A PDU with an incomplete extended header ends the report as a failed
+	 * chain reception does, as it can follow a partial report of its chain.
+	 */
 	if ((le_event_mask & BT_EVT_MASK_LE_PER_ADVERTISING_REPORT) &&
-	    (ftr->aux_failed || data_len_total > CONFIG_BT_CTLR_SCAN_DATA_LEN_MAX)) {
+	    (ftr->aux_failed || data_len_total > CONFIG_BT_CTLR_SCAN_DATA_LEN_MAX ||
+	     !ull_scan_aux_ext_hdr_is_complete(adv))) {
 		struct bt_hci_evt_le_per_advertising_report *sep;
+
+		/* Not even the end of a report is sent while reporting is
+		 * disabled
+		 */
+		if (sync->rx_enable == 0U) {
+			return;
+		}
 
 		sep = meta_evt(buf,
 			       BT_HCI_EVT_LE_PER_ADVERTISING_REPORT,
@@ -7866,6 +7904,11 @@ static void le_per_adv_sync_report(struct pdu_data *pdu_data,
 		hdr_len = PDU_AC_EXT_HEADER_SIZE_MIN;
 
 		goto no_ext_hdr;
+	}
+
+	/* The fields of an incomplete extended header can lie beyond the PDU */
+	if (!ull_scan_aux_ext_hdr_is_complete(adv)) {
+		return;
 	}
 
 	ptr = h->data;
@@ -8019,7 +8062,9 @@ no_ext_hdr:
 			sep->rssi = rssi;
 			sep->cte_type = cte_type;
 			sep->length = data_len_frag;
-			memcpy(&sep->data[0], data, data_len_frag);
+			if (data_len_frag > 0U) {
+				(void)memcpy(&sep->data[0], data, data_len_frag);
+			}
 
 			data += data_len_frag;
 			data_len -= data_len_frag;

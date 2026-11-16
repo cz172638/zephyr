@@ -32,6 +32,7 @@
 #include "lll_clock.h"
 #include "lll_df_types.h"
 #include "lll_scan.h"
+#include "lll_scan_aux.h"
 #include "lll_sync.h"
 #include "lll_conn.h"
 #include "lll_chan.h"
@@ -190,40 +191,46 @@ bool lll_scan_ext_tgta_check(const struct lll_scan *lll, bool pri, bool is_init,
 			     const struct pdu_adv *pdu, uint8_t rl_idx,
 			     bool *const dir_report)
 {
-	const uint8_t *adva;
-	const uint8_t *tgta;
-	uint8_t is_directed;
-	uint8_t tx_addr;
-	uint8_t rx_addr;
+	const struct pdu_adv_com_ext_adv *com_hdr = &pdu->adv_ext_ind;
+	const struct pdu_adv_ext_hdr *hdr = &com_hdr->ext_hdr;
+	bool is_directed = false;
+	uint8_t adva_size = 0U;
+	bool has_aux = false;
 
-	if (pri && !pdu->adv_ext_ind.ext_hdr.adv_addr) {
-		return true;
-	}
-
-	if (pdu->len <
-	    PDU_AC_EXT_HEADER_SIZE_MIN + sizeof(struct pdu_adv_ext_hdr) +
-	    ADVA_SIZE) {
+	/* The ULL and HCI read the fields that the flags announce */
+	if (!ull_scan_aux_lll_ext_hdr_is_complete(pdu)) {
 		return false;
 	}
 
-	is_directed = pdu->adv_ext_ind.ext_hdr.tgt_addr;
-	if (is_directed && (pdu->len < PDU_AC_EXT_HEADER_SIZE_MIN +
-				       sizeof(struct pdu_adv_ext_hdr) +
-				       ADVA_SIZE + TARGETA_SIZE)) {
+	/* Without an extended header, there are no flags either */
+	if (com_hdr->ext_hdr_len != 0U) {
+		adva_size = (hdr->adv_addr != 0U) ? ADVA_SIZE : 0U;
+		is_directed = (hdr->tgt_addr != 0U);
+		has_aux = (hdr->aux_ptr != 0U);
+	}
+
+	if (adva_size == 0U) {
+		/* Connectable and scannable advertising has the AdvA in the
+		 * AUX_ADV_IND that the AuxPtr of its ADV_EXT_IND points to (Core
+		 * Spec v6.3, Vol 6, Part B, Tables 2.4 and 2.5), and the
+		 * connection and scan requests take it from there
+		 */
+		if ((pri && is_init && !has_aux) ||
+		    (!pri && (com_hdr->adv_mode != 0U))) {
+			return false;
+		}
+	} else if (is_init && ((lll->filter_policy & SCAN_FP_FILTER) == 0U) &&
+		   !lll_scan_adva_check(lll, pdu->tx_addr,
+					&hdr->data[ADVA_OFFSET], rl_idx)) {
 		return false;
 	}
 
-	tx_addr = pdu->tx_addr;
-	rx_addr = pdu->rx_addr;
-	adva = &pdu->adv_ext_ind.ext_hdr.data[ADVA_OFFSET];
-	tgta = &pdu->adv_ext_ind.ext_hdr.data[TGTA_OFFSET];
-	return ((!is_init ||
-		 ((lll->filter_policy & SCAN_FP_FILTER) != 0U) ||
-		 lll_scan_adva_check(lll, tx_addr, adva, rl_idx)) &&
-		((!is_directed) ||
-		 (is_directed &&
-		  isr_scan_tgta_check(lll, is_init, rx_addr, tgta, rl_idx,
-				      dir_report))));
+	/* TargetA follows the AdvA, if any. An ADV_EXT_IND may have it while
+	 * the AdvA is in its AUX_ADV_IND, which then has no TargetA.
+	 */
+	return !is_directed ||
+	       isr_scan_tgta_check(lll, is_init, pdu->rx_addr,
+				   &hdr->data[adva_size], rl_idx, dir_report);
 }
 #endif /* CONFIG_BT_CTLR_ADV_EXT */
 
@@ -243,7 +250,10 @@ void lll_scan_prepare_connect_req(struct lll_scan *lll, struct pdu_adv *pdu_tx,
 	/* Note: this code is also valid for AUX_CONNECT_REQ */
 	pdu_tx->type = PDU_ADV_TYPE_CONNECT_IND;
 
-	if (IS_ENABLED(CONFIG_BT_CTLR_CHAN_SEL_2)) {
+	/* ChSel is RFU in AUX_CONNECT_REQ, as Channel Selection Algorithm #2
+	 * is used anyway.
+	 */
+	if ((phy == PHY_LEGACY) && IS_ENABLED(CONFIG_BT_CTLR_CHAN_SEL_2)) {
 		pdu_tx->chan_sel = 1;
 	} else {
 		pdu_tx->chan_sel = 0;
@@ -416,7 +426,15 @@ static int common_prepare_cb(struct lll_prepare_param *p, bool is_resume)
 		radio_switch_complete_and_tx(PHY_LEGACY, PHY_FLAGS_UNUSED,
 					     PHY_LEGACY, PHY_FLAGS_UNUSED);
 	} else {
-		radio_switch_complete_and_disable();
+		if (IS_ENABLED(CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER) &&
+		    IS_ENABLED(CONFIG_BT_CTLR_ADV_EXT)) {
+			/* Required under single time tIFS switching, to accumulate the packet
+			 * timer value at the time of clear on radio end.
+			 */
+			radio_switch_complete_end_capture_and_disable();
+		} else {
+			radio_switch_complete_and_disable();
+		}
 	}
 
 #if defined(CONFIG_BT_CTLR_PRIVACY)
@@ -581,7 +599,13 @@ static int is_abort_cb(void *next, void *curr, lll_prepare_cb_t *resume_cb)
 		}
 	}
 
-	if (0) {
+	/* We are here when same event is preempting, example continuous scanning */
+	if (lll->is_stop != 0U) {
+		/* Flagged to stop, lets yield to be cancelled so that done event is generated for
+		 * which ULL scan disable is waiting to take a semaphore.
+		 */
+		return -ECANCELED;
+
 #if defined(CONFIG_BT_CTLR_ADV_EXT)
 	} else if (unlikely(lll->duration_reload && !lll->duration_expire)) {
 		/* Duration expired, do not continue, close and generate
@@ -878,7 +902,15 @@ static void isr_common_done(void *param)
 		radio_switch_complete_and_tx(PHY_LEGACY, PHY_FLAGS_UNUSED,
 					     PHY_LEGACY, PHY_FLAGS_UNUSED);
 	} else {
-		radio_switch_complete_and_disable();
+		if (IS_ENABLED(CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER) &&
+		    IS_ENABLED(CONFIG_BT_CTLR_ADV_EXT)) {
+			/* Required under single time tIFS switching, to accumulate the packet
+			 * timer value at the time of clear on radio end.
+			 */
+			radio_switch_complete_end_capture_and_disable();
+		} else {
+			radio_switch_complete_and_disable();
+		}
 	}
 
 	node_rx = ull_pdu_rx_alloc_peek(1);
@@ -1171,6 +1203,7 @@ static inline int isr_rx_pdu(struct lll_scan *lll, struct pdu_adv *pdu_adv_rx,
 		struct node_rx_pdu *rx;
 		struct pdu_adv *pdu_tx;
 		uint32_t conn_space_us;
+		uint32_t conn_ind_us;
 		struct ull_hdr *ull;
 		uint32_t pdu_end_us;
 		uint8_t init_tx_addr;
@@ -1197,10 +1230,32 @@ static inline int isr_rx_pdu(struct lll_scan *lll, struct pdu_adv *pdu_adv_rx,
 			scan_interval_us = lll->interval * SCAN_INT_UNIT_US;
 			pdu_end_us %= scan_interval_us;
 		}
+
+		/* What follows the received PDU: the inter frame space and the
+		 * CONNECT_IND, with a margin for the resolution of the ticker.
+		 */
+		conn_ind_us = EVENT_IFS_US +
+			      PDU_AC_MAX_US(sizeof(struct pdu_adv_connect_ind), PHY_1M) +
+			      EVENT_TICKER_RES_MARGIN_US;
+
 		ull = HDR_LLL2ULL(lll);
 		if (pdu_end_us > (HAL_TICKER_TICKS_TO_US(ull->ticks_slot) -
-				  EVENT_IFS_US - 352 - EVENT_OVERHEAD_START_US -
-				  EVENT_TICKER_RES_MARGIN_US)) {
+				  EVENT_OVERHEAD_START_US - conn_ind_us)) {
+			return -ETIME;
+		}
+
+		/* A finite scan window is closed by the stop ticker, see
+		 * common_prepare_cb(), and the radio is disabled there: the
+		 * CONNECT_IND has to be over by then. The ticker counts from
+		 * the start of the event, which is EVENT_OVERHEAD_START_US
+		 * before the radio timer was started. In an event that has
+		 * been resumed the timer was started later, which makes this
+		 * a loose bound there. The shortest valid scan window is
+		 * longer than what is subtracted here.
+		 */
+		if (lll->ticks_window != 0U &&
+		    (pdu_end_us > (HAL_TICKER_TICKS_TO_US(lll->ticks_window) -
+				   EVENT_OVERHEAD_START_US - conn_ind_us))) {
 			return -ETIME;
 		}
 

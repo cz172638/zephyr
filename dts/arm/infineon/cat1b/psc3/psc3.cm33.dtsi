@@ -12,10 +12,10 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		cpu@0 {
-			device_type = "cpu";
+		cpu0: cpu@0 {
 			compatible = "arm,cortex-m33";
 			reg = <0>;
+			device_type = "cpu";
 			clock-frequency = <180000000>;
 			cpu-power-states = <&sleep &deepsleep &deepsleep_ram>;
 		};

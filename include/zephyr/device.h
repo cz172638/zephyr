@@ -496,9 +496,9 @@ struct device_state {
 	uint8_t init_res;
 
 	/** Indicates the device initialization function has been
-	 * invoked.
+	 * invoked and succeeded.
 	 */
-	bool initialized : 1;
+	bool initialized;
 };
 
 struct pm_device_base;
@@ -905,6 +905,19 @@ size_t z_device_get_all_static(const struct device **devices);
  */
 __syscall bool device_is_ready(const struct device *dev);
 
+static inline bool z_impl_device_is_ready(const struct device *dev)
+{
+	/*
+	 * if an invalid device pointer is passed as argument, this call
+	 * reports the `device` as not ready for usage.
+	 */
+	if (dev == NULL) {
+		return false;
+	}
+
+	return dev->state->initialized;
+}
+
 /**
  * @brief Writes a "device not ready" warning message to the log.
  *
@@ -956,13 +969,14 @@ __syscall bool device_is_ready(const struct device *dev);
  *
  * A device whose initialization was deferred (by marking it as
  * ``zephyr,deferred-init`` on devicetree) needs to be initialized manually via
- * this call. De-initialized devices can also be initialized again via this
- * call.
+ * this call. De-initialized devices, and devices whose initialization
+ * failed, can be initialized again via this call.
  *
  * @param dev device to be initialized.
  *
+ * @retval 0 If successful
  * @retval -EALREADY Device is already initialized.
- * @retval -errno For other errors.
+ * @retval -errno Error returned by the device initialization function.
  */
 __syscall int device_init(const struct device *dev);
 
@@ -976,12 +990,17 @@ __syscall int device_init(const struct device *dev);
  * Note: this will be available if CONFIG_DEVICE_DEINIT_SUPPORT is enabled.
  *
  * @warning It is the responsibility of the caller to ensure that the device is
- * ready to be de-initialized.
+ * ready to be de-initialized. As a best-effort guard on top of that contract, a
+ * driver may reject de-initialization with -EBUSY while an operation is still in
+ * flight; this is driver-defined and is not a substitute for caller-side
+ * synchronization.
  *
  * @param dev device to be de-initialized.
  *
  * @retval 0 If successful
- * @retval -EPERM If device has not been initialized.
+ * @retval -EPERM If device has not been initialized, or its initialization
+ *         failed.
+ * @retval -EBUSY If the device is busy.
  * @retval -ENOTSUP If device does not support de-initialization, or if the
  *         feature is not enabled (see CONFIG_DEVICE_DEINIT_SUPPORT)
  * @retval -errno For any other errors.

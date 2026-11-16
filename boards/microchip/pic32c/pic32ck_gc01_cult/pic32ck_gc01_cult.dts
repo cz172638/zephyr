@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Microchip Technology Inc.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Microchip Technology Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -7,15 +7,18 @@
 /dts-v1/;
 #include <microchip/pic32c/pic32ck_sg_gc/pic32ck_gc01/pic32ck2051gc01144.dtsi>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include "pic32ck_gc01_cult-pinctrl.dtsi"
 
 / {
-	model = "PIC32CK GC01 Curiosity Ultra";
 	compatible = "microchip,pic32ck_gc01_cult";
+	model = "PIC32CK GC01 Curiosity Ultra";
 
 	chosen {
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash1;
 		zephyr,code-partition = &code_partition;
+		zephyr,console = &sercom5;
+		zephyr,shell-uart = &sercom5;
 	};
 
 	aliases {
@@ -58,34 +61,34 @@
 
 &flash0 {
 	partitions {
+		ranges;
 		#address-cells = <1>;
 		#size-cells = <1>;
-		ranges;
 
 		boot_partition: partition@0 {
-			label = "boot_flash";
 			compatible = "zephyr,mapped-partition";
 			reg = <0x0 DT_SIZE_K(128)>;
+			label = "boot_flash";
 		};
 	};
 };
 
 &flash1 {
 	partitions {
+		ranges;
 		#address-cells = <1>;
 		#size-cells = <1>;
-		ranges;
 
 		code_partition: partition@0 {
-			label = "program_flash";
 			compatible = "zephyr,mapped-partition";
 			reg = <0x0 DT_SIZE_K(2032)>;
+			label = "program_flash";
 		};
 
 		storage_partition: partition@1fc000 {
-			label = "storage";
 			compatible = "zephyr,mapped-partition";
 			reg = <0x1fc000 DT_SIZE_K(16)>;
+			label = "storage";
 		};
 	};
 };
@@ -290,5 +293,20 @@
 };
 
 &portd {
+	status = "okay";
+};
+
+&sercom5 {
+	compatible = "microchip,sercom-g1-uart";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	current-speed = <115200>;
+	data-bits = <8>;
+	parity = "none";
+	stop-bits = "1";
+	rxpo = <1>;
+	txpo = <0>;
+	pinctrl-0 = <&sercom5_uart_default>;
+	pinctrl-names = "default";
 	status = "okay";
 };

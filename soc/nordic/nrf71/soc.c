@@ -46,6 +46,7 @@ LOG_MODULE_REGISTER(soc, CONFIG_SOC_LOG_LEVEL);
 #define LFXO_NODE DT_NODELABEL(lfxo)
 
 #if !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)
+#if !defined(CONFIG_SOC_SERIES_NRF71_SKIP_PREV_IMAGE_INIT)
 
 struct mpc_region_override {
 	nrf_mpc_override_config_t config;
@@ -147,6 +148,23 @@ static inline NRF_SPU_Type *spu_instance_from_peripheral_addr(uint32_t periphera
 	return (NRF_SPU_Type *)(0x50000000 | apb_bus_number);
 }
 
+static void oscillators_configuration(void)
+{
+	NRF_SPU_Type *spu_instance = spu_instance_from_peripheral_addr(NRF_OSCILLATORS_S_BASE);
+	uint16_t periph_id = NRFX_PERIPHERAL_ID_GET(NRF_OSCILLATORS_S_BASE);
+	uint16_t spu_id = NRFX_PERIPHERAL_ID_GET(spu_instance);
+	uint8_t index = (uint8_t)(periph_id - spu_id);
+
+	/*
+	 * Wi-Fi is non-secure and configures the PLL in NRF_OSCILLATORS.
+	 * NRF_OSCILLATORS and NRF_REGULATORS share a peripheral ID and must
+	 * therefore have the same security configuration.
+	 */
+	nrf_spu_periph_perm_secattr_set(spu_instance, index, false);
+	nrf_spu_periph_perm_lock_enable(spu_instance, index);
+}
+#endif /* !CONFIG_SOC_SERIES_NRF71_SKIP_PREV_IMAGE_INIT */
+
 static void grtc_configuration(void)
 {
 	/* Split security configuration to let Wi-Fi access GRTC */
@@ -164,35 +182,41 @@ static void ipct_configuration(void)
 }
 #endif /* CONFIG_TRUSTED_EXECUTION_NONSECURE */
 
-#if defined(CONFIG_SOC_NRF71_WIFI_BOOT)
 #if (defined(NRF_APPLICATION) && !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)) || \
 	!defined(__ZEPHYR__)
-#if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_wifi_antsw)
-#define WIFI_ANTSW_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(nordic_nrf71_wifi_antsw)
+#if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_antsw)
+#define ANTSW_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(nordic_nrf71_antsw)
 
 /* Steering an unpowered switch is meaningless: require pwr_antswc to power it. */
 BUILD_ASSERT(DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf_pwr_antswc),
-	     "wifi-antsw steering requires pwr_antswc to power the antenna switch");
+	     "antsw steering requires pwr_antswc to power the antenna switch");
 
 /*
- * Steer the antenna switch (ANTSW) towards WLAN before the Wi-Fi core is
- * started. This runs before the GPIO driver is up, so the pin (described in
- * devicetree) is configured directly through the nrf_gpio HAL, which keeps the
- * access on the P0 alias that matches the build's security state. Powering the
- * switch is handled separately by pwr_antswc.
+ * Steer the antenna switch (ANTSW) towards its Kconfig-selected default
+ * radio (CONFIG_SOC_SERIES_NRF71_ANTSW_DEFAULT) before either radio that
+ * shares it starts using it. This runs before the GPIO driver is up, so the
+ * pin (described in devicetree) is configured directly through the nrf_gpio
+ * HAL, which keeps the access on the P0 alias that matches the build's
+ * security state. Powering the switch is handled separately by pwr_antswc.
  */
 static void antsw_setup(void)
 {
-	uint32_t wlan_psel = NRF_DT_GPIOS_TO_PSEL(WIFI_ANTSW_NODE, wlan_gpios);
+	uint32_t sel_psel = NRF_DT_GPIOS_TO_PSEL(ANTSW_NODE, sel_gpios);
 
-	/* Drive the pin low (WLAN) before enabling the output, then configure it
-	 * as a plain output. No pull is needed on a driven output.
+	/* Drive the pin to the WLAN or BLE position before enabling the output,
+	 * then configure it as a plain output. No pull is needed on a driven
+	 * output.
 	 */
-	nrf_gpio_pin_clear(wlan_psel);
-	nrf_gpio_cfg_output(wlan_psel);
+	if (IS_ENABLED(CONFIG_SOC_SERIES_NRF71_ANTSW_DEFAULT_BLE)) {
+		nrf_gpio_pin_set(sel_psel);
+	} else {
+		nrf_gpio_pin_clear(sel_psel);
+	}
+	nrf_gpio_cfg_output(sel_psel);
 }
-#endif /* DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_wifi_antsw) */
+#endif /* DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_antsw) */
 
+#if defined(CONFIG_SOC_NRF71_WIFI_BOOT)
 static void wifi_setup(void)
 {
 	/* Kickstart the LMAC processor */
@@ -221,7 +245,10 @@ int nordicsemi_nrf71_init(void)
 
 #if !defined(CONFIG_TRUSTED_EXECUTION_NONSECURE)
 	/* Skip for tf-m, configuration exist in target_cfg_71.c */
+#if !defined(CONFIG_SOC_SERIES_NRF71_SKIP_PREV_IMAGE_INIT)
+	oscillators_configuration();
 	mpc_configuration();
+#endif
 	grtc_configuration();
 	ipct_configuration();
 #endif
@@ -242,16 +269,28 @@ int nordicsemi_nrf71_init(void)
 #endif
 
 #if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf_pwr_antswc)
-	/* Power on the antenna switch before starting the Wi-Fi core. */
+	/* Power on the antenna switch before steering it or starting the Wi-Fi core. */
 	*(volatile uint32_t *)PWR_ANTSWC_REG |= PWR_ANTSWC_ENABLE;
 #endif
 
-#if defined(CONFIG_SOC_NRF71_WIFI_BOOT)
-#if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_wifi_antsw)
-	/* Steer the (now powered) antenna switch towards WLAN before Wi-Fi boot. */
+#if DT_HAS_COMPAT_STATUS_OKAY(nordic_nrf71_antsw)
+	/* Steer the (now powered) antenna switch towards its default radio. */
 	antsw_setup();
 #endif
+
+#if defined(CONFIG_SOC_NRF71_WIFI_BOOT)
 	wifi_setup();
+#endif
+
+#if !DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio4))
+	/* Powered off. */
+	nrf_gpio_port_pwrctrl_t pwrctrl = NRF_GPIO_PORT_PWRCTRL_OFF;
+#elif DT_ENUM_HAS_VALUE(DT_NODELABEL(gpio4), nordic_pad_voltage, 1v8)
+	/* Intended for VDDIO = 1.8 V. */
+	nrf_gpio_port_pwrctrl_t pwrctrl = NRF_GPIO_PORT_PWRCTRL_FLOATING_GND_0V;
+#else
+	/* Intended for VDDIO > 1.8 V. */
+	nrf_gpio_port_pwrctrl_t pwrctrl = NRF_GPIO_PORT_PWRCTRL_FLOATING_GND_BUF;
 #endif
 
 	/* Power P4 on or off explicitly, as the boards disagree on its initial state.
@@ -261,18 +300,22 @@ int nordicsemi_nrf71_init(void)
 	 * The selected voltage mode must match what actually drives the port's VDDIO
 	 * pin on the board; mismatching them can damage the port.
 	 */
-#if !DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio4))
-	NRF_P4->PWRCTRL = P4_PWRCTRL_OFF;
-#elif DT_ENUM_HAS_VALUE(DT_NODELABEL(gpio4), nordic_pad_voltage, 1v8)
-	NRF_P4->PWRCTRL = P4_PWRCTRL_1V8;
-#else
-	NRF_P4->PWRCTRL = P4_PWRCTRL_3V3;
-#endif
+	nrf_gpio_port_pwrctrl_set(NRF_P4, pwrctrl);
 
 	/* Configure LFXO capacitive load if internal load capacitors are used */
-#if DT_ENUM_HAS_VALUE(LFXO_NODE, load_capacitors, internal)
+#if DT_ENUM_HAS_VALUE(LFXO_NODE, load_capacitors, internal) && \
+	!defined(CONFIG_SOC_SERIES_NRF71_SKIP_PREV_IMAGE_INIT)
 	nrf_lfxo_cload_set(NRF_LFXO,
 			(uint8_t)(DT_PROP(LFXO_NODE, load_capacitance_femtofarad) / 1000));
+#endif
+
+#if DT_NODE_HAS_PROP(LFXO_NODE, idac_init)
+	/* Must be set before the LFXO is requested */
+	nrf_lfxo_amplitude_ctrl_t ampl_ctrl;
+
+	nrf_lfxo_amplitude_control_get(NRF_LFXO, &ampl_ctrl);
+	ampl_ctrl.idac_init = DT_PROP(LFXO_NODE, idac_init);
+	nrf_lfxo_amplitude_control_set(NRF_LFXO, &ampl_ctrl);
 #endif
 #endif /* (NRF_APPLICATION && !CONFIG_TRUSTED_EXECUTION_NONSECURE) || !__ZEPHYR__  */
 
@@ -289,10 +332,49 @@ void arch_busy_wait(uint32_t time_us)
 	nrfx_coredep_delay_us(time_us);
 }
 
-#ifdef CONFIG_SOC_RESET_HOOK
+#if defined(CONFIG_SOC_RESET_HOOK) && defined(CONFIG_ARM)
 void soc_reset_hook(void)
 {
 	SystemInit();
 	nordicsemi_nrf71_init();
+}
+#endif
+
+#if defined(__ZEPHYR__) && defined(CONFIG_SOC_LATE_INIT_HOOK) &&                                   \
+	DT_ENUM_HAS_VALUE(LFXO_NODE, mode, pixo) &&                                                \
+	((DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(lfclk)) &&                                          \
+	  DT_ENUM_HAS_VALUE(DT_NODELABEL(lfclk), k32src, xtal)) ||                                 \
+	 defined(CONFIG_NRF_GRTC_TIMER_SOURCE_LFXO))
+#define LFXO_PIXO_SWITCH 1
+#define LFXO_PIXO_POLL_MS 10
+
+static void lfxo_pixo_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(lfxo_pixo_work, lfxo_pixo_work_handler);
+
+/* PIXO cannot start the crystal, so switch once Pierce start-up is done */
+static void lfxo_pixo_work_handler(struct k_work *work)
+{
+	nrf_lfxo_status_t status;
+
+	ARG_UNUSED(work);
+
+	nrf_lfxo_status_get(NRF_LFXO, &status);
+	if (!status.running) {
+		k_work_schedule(&lfxo_pixo_work, K_MSEC(LFXO_PIXO_POLL_MS));
+		return;
+	}
+
+	nrf_lfxo_mode_set(NRF_LFXO, NRF_LFXO_OSCILLATOR_MODE_PIXO, false);
+	LOG_DBG("LFXO switch to PIXO mode requested");
+}
+
+#endif
+
+#if defined(__ZEPHYR__) && defined(CONFIG_SOC_LATE_INIT_HOOK)
+void soc_late_init_hook(void)
+{
+#ifdef LFXO_PIXO_SWITCH
+	k_work_schedule(&lfxo_pixo_work, K_NO_WAIT);
+#endif
 }
 #endif

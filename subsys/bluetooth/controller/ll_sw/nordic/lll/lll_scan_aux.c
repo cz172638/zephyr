@@ -140,6 +140,11 @@ uint8_t lll_scan_aux_setup(struct pdu_adv *pdu, uint8_t pdu_phy,
 		return 0U;
 	}
 
+	/* The fields of an incomplete extended header can lie beyond the PDU */
+	if (unlikely(!ull_scan_aux_lll_ext_hdr_is_complete(pdu))) {
+		return 0U;
+	}
+
 	/* Get reference to flags and contents */
 	pri_hdr = (void *)pri_com_hdr->ext_hdr_adv_data;
 	pri_dptr = pri_hdr->data;
@@ -406,7 +411,14 @@ bool lll_scan_aux_addr_match_get(const struct lll_scan *lll,
 	const struct pdu_adv_ext_hdr *ext_hdr;
 
 	ext_hdr = &pdu->adv_ext_ind.ext_hdr;
-	if (unlikely(!ext_hdr->adv_addr)) {
+
+	/* Without an extended header, there are no flags and no AdvA. What
+	 * the radio matched where a legacy PDU has its AdvA is no address.
+	 */
+	if (unlikely((pdu->adv_ext_ind.ext_hdr_len == 0U) || (ext_hdr->adv_addr == 0U))) {
+		*devmatch_ok = 0U;
+		*irkmatch_ok = 0U;
+
 		return false;
 	}
 
@@ -1683,6 +1695,9 @@ static bool isr_rx_connect_rsp_check(struct lll_scan *lll,
 				     struct pdu_adv *pdu_tx,
 				     struct pdu_adv *pdu_rx, uint8_t rl_idx)
 {
+	const uint8_t *adva;
+	bool is_adva;
+
 	if (unlikely(pdu_rx->type != PDU_ADV_TYPE_AUX_CONNECT_RSP)) {
 		return false;
 	}
@@ -1698,9 +1713,19 @@ static bool isr_rx_connect_rsp_check(struct lll_scan *lll,
 		return false;
 	}
 
-	return lll_scan_adva_check(lll, pdu_rx->tx_addr,
-			&pdu_rx->adv_ext_ind.ext_hdr.data[ADVA_OFFSET],
-			rl_idx) &&
+	adva = &pdu_rx->adv_ext_ind.ext_hdr.data[ADVA_OFFSET];
+
+	/* With the Filter Accept List, the Host gives no peer address, so the
+	 * advertiser is the one the AUX_CONNECT_REQ was sent to.
+	 */
+	if ((lll->filter_policy & SCAN_FP_FILTER) != 0U) {
+		is_adva = (pdu_rx->tx_addr == pdu_tx->rx_addr) &&
+			  util_memeq(adva, pdu_tx->connect_ind.adv_addr, BDADDR_SIZE);
+	} else {
+		is_adva = lll_scan_adva_check(lll, pdu_rx->tx_addr, adva, rl_idx);
+	}
+
+	return is_adva &&
 	       (pdu_rx->rx_addr == pdu_tx->tx_addr) &&
 	       (memcmp(&pdu_rx->adv_ext_ind.ext_hdr.data[TGTA_OFFSET],
 		       pdu_tx->connect_ind.init_addr, BDADDR_SIZE) == 0);

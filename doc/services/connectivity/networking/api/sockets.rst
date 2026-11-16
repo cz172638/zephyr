@@ -153,8 +153,16 @@ The following TLS credential types can be registered in the system:
 - ``TLS_CREDENTIAL_CA_CERTIFICATE``
 - ``TLS_CREDENTIAL_PUBLIC_CERTIFICATE``
 - ``TLS_CREDENTIAL_PRIVATE_KEY``
+- ``TLS_CREDENTIAL_PRIVATE_KEY_PSA``
 - ``TLS_CREDENTIAL_PSK``
+- ``TLS_CREDENTIAL_PSK_PSA``
 - ``TLS_CREDENTIAL_PSK_ID``
+
+``TLS_CREDENTIAL_PRIVATE_KEY_PSA`` and ``TLS_CREDENTIAL_PSK_PSA`` are alternatives to
+``TLS_CREDENTIAL_PRIVATE_KEY`` and ``TLS_CREDENTIAL_PSK`` respectively, for keys stored in PSA.
+Instead of the key material, the credential buffer holds the ``psa_key_id_t`` of the key, which
+must already be present in PSA when the credential is used. A secure tag cannot hold both
+``TLS_CREDENTIAL_PSK`` and ``TLS_CREDENTIAL_PSK_PSA``.
 
 An example registration of CA certificate (provided in ``ca_certificate``
 array) looks like this:
@@ -369,3 +377,67 @@ TLS Credentials
 ===============
 
 .. doxygengroup:: tls_credentials
+
+TLS Credentials On-Device Key Generation
+========================================
+
+A device can generate its own TLS private key with the PSA Crypto API and create a Certificate
+Signing Request (CSR) for it, so the private key never leaves the device.
+Enable the feature with :kconfig:option:`CONFIG_TLS_CREDENTIALS_KEYGEN`.
+It requires the protected storage backend of the TLS credentials,
+:kconfig:option:`CONFIG_TLS_CREDENTIALS_BACKEND_PROTECTED_STORAGE`.
+
+The key is a persistent, non-exportable ECDSA key on the P-256 or the P-384 curve, enabled with
+:kconfig:option:`CONFIG_TLS_CREDENTIALS_KEYGEN_SECP256R1` and
+:kconfig:option:`CONFIG_TLS_CREDENTIALS_KEYGEN_SECP384R1`.
+Each generated key gets a PSA key ID from the key store and is registered for its security tag as
+:c:enumerator:`TLS_CREDENTIAL_PRIVATE_KEY_PSA`.
+
+The default key store uses the key ID range from :file:`include/zephyr/psa/key_ids.h`, see
+:c:macro:`ZEPHYR_PSA_TLS_CREDENTIALS_KEYGEN_KEY_ID_RANGE_BEGIN` and
+:c:macro:`ZEPHYR_PSA_TLS_CREDENTIALS_KEYGEN_KEY_ID_RANGE_SIZE`.
+Keys of other PSA users are never used or destroyed.
+
+To delete a key, use :c:func:`tls_credential_keygen_delete`.
+:c:func:`tls_credential_delete` removes only the registration, so the key stays in PSA storage and
+keeps its key ID.
+Such orphaned keys can make :c:func:`tls_credential_keygen_generate` return ``-ENOSPC``.
+To delete them:
+
+#. For each key ID of the key store, check if the key exists with ``psa_get_key_attributes()``.
+#. Skip the key IDs that :c:func:`tls_credential_keygen_key_id_get` returns for the security tags
+   of the application.
+#. Destroy the remaining keys with ``psa_destroy_key()``.
+
+:c:func:`tls_credential_keygen_key_id_get` gives the key ID, so that the key can also sign outside
+of TLS, for example a JSON Web Token.
+The key ID is valid until the key is deleted.
+
+The device certificate is issued by a certificate authority for the CSR and installed for the same
+security tag as :c:enumerator:`TLS_CREDENTIAL_PUBLIC_CERTIFICATE`.
+The public key is exported as a SubjectPublicKeyInfo structure, so it can be compared with the
+SubjectPublicKeyInfo of the certificate.
+The :zephyr:code-sample:`tls-keygen` sample shows the full flow, from the key generation to a
+TLS connection with the new certificate.
+
+Note the following limitations:
+
+* :c:func:`tls_credential_keygen_delete` keeps the other credentials of the security tag, for
+  example the device certificate, which no longer matches a new key.
+* A TLS socket that is open keeps the key ID, so its next handshake fails after the key is deleted.
+* Do not add a :c:enumerator:`TLS_CREDENTIAL_PRIVATE_KEY` for a security tag that has a generated
+  key. A TLS socket cannot use two private keys for one security tag.
+
+The key store decides where the keys are stored and which key IDs they get.
+With :kconfig:option:`CONFIG_TLS_CREDENTIALS_KEYGEN_KEY_STORE_DEFAULT`, the keys are persistent
+keys in the default PSA key location, with key IDs from the reserved range.
+With :kconfig:option:`CONFIG_TLS_CREDENTIALS_KEYGEN_KEY_STORE_CUSTOM`, the application or the vendor
+implements the key store, for example to store the keys in a hardware key location.
+The key generation then uses and destroys only keys with key IDs of that key store.
+
+.. doxygengroup:: tls_credentials_keygen_store
+
+The :ref:`TLS credentials shell <tls_credentials_shell>` provides the same functions with the
+``cred keygen``, ``cred keydel``, ``cred csr`` and ``cred pubkey`` commands.
+
+.. doxygengroup:: tls_credentials_keygen

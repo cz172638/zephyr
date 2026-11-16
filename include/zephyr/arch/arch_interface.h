@@ -31,8 +31,6 @@
 #include <zephyr/toolchain.h>
 #include <stddef.h>
 #include <zephyr/types.h>
-#include <zephyr/arch/cpu.h>
-#include <zephyr/irq_offload.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +44,23 @@ struct k_mem_domain;
 typedef struct z_thread_stack_element k_thread_stack_t;
 
 typedef void (*k_thread_entry_t)(void *p1, void *p2, void *p3);
+
+#ifdef __cplusplus
+}
+#endif
+
+/*
+ * <zephyr/arch/cpu.h> pulls in the architecture headers, which in turn include
+ * <zephyr/kernel/thread.h>. That header uses the declarations above, so these
+ * includes have to come after them: otherwise a translation unit that includes
+ * this header before any kernel header fails to compile.
+ */
+#include <zephyr/arch/cpu.h>
+#include <zephyr/irq_offload.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @defgroup arch-timing Architecture timing APIs
@@ -695,28 +710,6 @@ void arch_irq_offload_init(void);
 /** Return the CPU struct for the currently executing CPU */
 static inline struct _cpu *arch_curr_cpu(void);
 
-
-/**
- * @brief Processor hardware ID
- *
- * Most multiprocessor architectures have a low-level unique ID value
- * associated with the current CPU that can be retrieved rapidly and
- * efficiently in kernel context.  Note that while the numbering of
- * the CPUs is guaranteed to be unique, the values are
- * platform-defined. In particular, they are not guaranteed to match
- * Zephyr's own sequential CPU IDs (even though on some platforms they
- * do).
- *
- * @note There is an inherent race with this API: the system may
- * preempt the current thread and migrate it to another CPU before the
- * value is used.  Safe usage requires knowing the migration is
- * impossible (e.g. because the code is in interrupt context, holds a
- * spinlock, or cannot migrate due to k_cpu_mask state).
- *
- * @return Unique ID for currently-executing CPU
- */
-static inline uint32_t arch_proc_id(void);
-
 /**
  * Broadcast an interrupt to all CPUs
  *
@@ -736,6 +729,33 @@ void arch_sched_directed_ipi(uint32_t cpu_bitmap);
 int arch_smp_init(void);
 
 #endif /* CONFIG_SMP */
+
+/**
+ * @brief Processor hardware ID
+ *
+ * Most multiprocessor architectures have a low-level unique ID value
+ * associated with the current CPU that can be retrieved rapidly and
+ * efficiently in kernel context.  Note that while the numbering of
+ * the CPUs is guaranteed to be unique, the values are
+ * platform-defined. In particular, they are not guaranteed to match
+ * Zephyr's own sequential CPU IDs (even though on some platforms they
+ * do).
+ *
+ * Every architecture implements this function, including uniprocessor
+ * ones, so that generic code can record the CPU it runs on without
+ * depending on CONFIG_SMP.  On a uniprocessor image the value is the ID
+ * of the CPU running that image, which can be non-zero on asymmetric
+ * multiprocessing systems.
+ *
+ * @note There is an inherent race with this API: the system may
+ * preempt the current thread and migrate it to another CPU before the
+ * value is used.  Safe usage requires knowing the migration is
+ * impossible (e.g. because the code is in interrupt context, holds a
+ * spinlock, or cannot migrate due to k_cpu_mask state).
+ *
+ * @return Unique ID for currently-executing CPU
+ */
+static inline uint32_t arch_proc_id(void);
 
 /**
  * @brief Returns the number of CPUs
@@ -981,6 +1001,9 @@ int arch_mem_domain_deinit(struct k_mem_domain *domain);
  * The thread->mem_domain_info.mem_domain pointer will be set to the domain to
  * be added to before this is called. Implementations may assume that the
  * thread is not already a member of this domain.
+ *
+ * On failure, the thread must keep the memory configuration of the domain it
+ * was in, which the kernel then restores it to.
  *
  * @param thread Thread which needs to be configured.
  *

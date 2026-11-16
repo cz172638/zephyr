@@ -534,6 +534,18 @@ struct net_if_dhcpv6 {
 	/** Retransmission counter. */
 	uint8_t retransmissions;
 
+	/** Client was started automatically by a Router Advertisement. */
+	bool auto_started : 1;
+
+	/** Automatic start disabled by an explicit stop. */
+	bool auto_start_disabled : 1;
+
+	/** M flag of the latest Router Advertisement. */
+	bool ra_managed : 1;
+
+	/** O flag of the latest Router Advertisement. */
+	bool ra_other : 1;
+
 	/** Transaction ID for current exchange. */
 	uint8_t tid[DHCPV6_TID_SIZE];
 
@@ -655,6 +667,9 @@ struct net_if_dhcpv4 {
 
 	/** Number of attempts made for REQUEST and RENEWAL messages */
 	uint8_t attempts;
+
+	/** Network events received and not yet acted on */
+	uint8_t pending_events;
 
 	/** Gateway the client installed, unspecified if it installed none */
 	struct net_in_addr gw;
@@ -961,8 +976,6 @@ static inline void net_if_flag_set(struct net_if *iface,
 		return;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	atomic_set_bit(iface->if_dev->flags, value);
 }
 
@@ -981,8 +994,6 @@ static inline bool net_if_flag_test_and_set(struct net_if *iface,
 		return false;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return atomic_test_and_set_bit(iface->if_dev->flags, value);
 }
 
@@ -998,8 +1009,6 @@ static inline void net_if_flag_clear(struct net_if *iface,
 	if (iface == NULL) {
 		return;
 	}
-
-	NET_ASSERT(iface->if_dev != NULL);
 
 	atomic_clear_bit(iface->if_dev->flags, value);
 }
@@ -1019,8 +1028,6 @@ static inline bool net_if_flag_test_and_clear(struct net_if *iface,
 		return false;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return atomic_test_and_clear_bit(iface->if_dev->flags, value);
 }
 
@@ -1039,8 +1046,6 @@ static inline bool net_if_flag_is_set(struct net_if *iface,
 		return false;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return atomic_test_bit(iface->if_dev->flags, value);
 }
 
@@ -1058,8 +1063,6 @@ static inline enum net_if_oper_state net_if_oper_state_set(
 	if (iface == NULL) {
 		return NET_IF_OPER_UNKNOWN;
 	}
-
-	NET_ASSERT(iface->if_dev != NULL);
 
 	if (oper_state <= NET_IF_OPER_UP) {
 		iface->if_dev->oper_state = oper_state;
@@ -1087,8 +1090,6 @@ static inline enum net_if_oper_state net_if_oper_state(struct net_if *iface)
 		return NET_IF_OPER_UNKNOWN;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return iface->if_dev->oper_state;
 }
 
@@ -1110,8 +1111,6 @@ static inline int net_if_oper_state_change_time(struct net_if *iface,
 	if (iface == NULL || change_time == NULL) {
 		return -EINVAL;
 	}
-
-	NET_ASSERT(iface->if_dev != NULL);
 
 	net_if_lock(iface);
 
@@ -1164,8 +1163,6 @@ static inline const struct net_l2 *net_if_l2(struct net_if *iface)
 		return NULL;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return iface->if_dev->l2;
 }
 
@@ -1192,8 +1189,6 @@ static inline void *net_if_l2_data(struct net_if *iface)
 		return NULL;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return iface->if_dev->l2_data;
 }
 
@@ -1209,8 +1204,6 @@ static inline const struct device *net_if_get_device(struct net_if *iface)
 	if (iface == NULL) {
 		return NULL;
 	}
-
-	NET_ASSERT(iface->if_dev != NULL);
 
 	return iface->if_dev->dev;
 }
@@ -1248,7 +1241,6 @@ static inline void net_if_queue_tx(struct net_if *iface, struct net_pkt *pkt)
 static inline bool net_if_is_ip_offloaded(struct net_if *iface)
 {
 #if defined(CONFIG_NET_OFFLOAD)
-	__ASSERT_NO_MSG(iface == NULL || iface->if_dev != NULL);
 	return (iface != NULL && iface->if_dev->offload != NULL);
 #else
 	ARG_UNUSED(iface);
@@ -1280,8 +1272,6 @@ static inline struct net_offload *net_if_offload(struct net_if *iface)
 		return NULL;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return iface->if_dev->offload;
 #else
 	ARG_UNUSED(iface);
@@ -1303,8 +1293,6 @@ static inline void net_if_offload_set(struct net_if *iface, struct net_offload *
 		return;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	iface->if_dev->offload = offload;
 #else
 	ARG_UNUSED(iface);
@@ -1325,8 +1313,6 @@ static inline bool net_if_is_socket_offloaded(struct net_if *iface)
 	if (iface == NULL) {
 		return false;
 	}
-
-	NET_ASSERT(iface->if_dev != NULL);
 
 	return (iface->if_dev->socket_offload != NULL);
 #else
@@ -1350,8 +1336,6 @@ static inline void net_if_socket_offload_set(
 		return;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	iface->if_dev->socket_offload = socket_offload;
 #else
 	ARG_UNUSED(iface);
@@ -1373,8 +1357,6 @@ static inline net_socket_create_t net_if_socket_offload(struct net_if *iface)
 		return NULL;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return iface->if_dev->socket_offload;
 #else
 	ARG_UNUSED(iface);
@@ -1395,8 +1377,6 @@ static inline struct net_linkaddr *net_if_get_link_addr(struct net_if *iface)
 	if (iface == NULL) {
 		return NULL;
 	}
-
-	NET_ASSERT(iface->if_dev != NULL);
 
 	return &iface->if_dev->link_addr;
 }
@@ -1612,8 +1592,6 @@ static inline uint16_t net_if_get_mtu(struct net_if *iface)
 		return 0U;
 	}
 
-	NET_ASSERT(iface->if_dev != NULL);
-
 	return iface->if_dev->mtu;
 }
 
@@ -1629,8 +1607,6 @@ static inline void net_if_set_mtu(struct net_if *iface,
 	if (iface == NULL) {
 		return;
 	}
-
-	NET_ASSERT(iface->if_dev != NULL);
 
 	iface->if_dev->mtu = mtu;
 }
@@ -1781,8 +1757,19 @@ struct net_if_addr *net_if_ipv6_addr_lookup_by_iface_raw(struct net_if *iface,
  *
  * @return Pointer to interface address, NULL if not found.
  */
+#if defined(CONFIG_NET_IPV6)
 struct net_if_addr *net_if_ipv6_addr_lookup_by_iface(struct net_if *iface,
 						     const struct net_in6_addr *addr);
+#else
+static inline struct net_if_addr *net_if_ipv6_addr_lookup_by_iface(
+	struct net_if *iface, const struct net_in6_addr *addr)
+{
+	ARG_UNUSED(iface);
+	ARG_UNUSED(addr);
+
+	return NULL;
+}
+#endif
 
 /**
  * @brief Check if this IPv6 address belongs to one of the interface indices.
@@ -2741,8 +2728,19 @@ struct net_if_addr *net_if_ipv4_addr_lookup_by_iface_raw(struct net_if *iface,
  *
  * @return Pointer to interface address, NULL if not found.
  */
+#if defined(CONFIG_NET_IPV4)
 struct net_if_addr *net_if_ipv4_addr_lookup_by_iface(struct net_if *iface,
 						     const struct net_in_addr *addr);
+#else
+static inline struct net_if_addr *net_if_ipv4_addr_lookup_by_iface(
+	struct net_if *iface, const struct net_in_addr *addr)
+{
+	ARG_UNUSED(iface);
+	ARG_UNUSED(addr);
+
+	return NULL;
+}
+#endif
 
 /**
  * @brief Add a IPv4 address to an interface
@@ -3136,12 +3134,14 @@ struct net_in_addr *net_if_ipv4_get_ll(struct net_if *iface,
 				   enum net_addr_state addr_state);
 
 /**
- * @brief Get a IPv4 global address in a given state.
+ * @brief Get an IPv4 global address in a given state.
+ *
+ * Loopback and link-local addresses are excluded.
  *
  * @param iface Interface to use. Must be a valid pointer to an interface.
  * @param addr_state IPv4 address state (preferred, tentative, deprecated)
  *
- * @return Pointer to link local IPv4 address, NULL if no proper IPv4 address
+ * @return Pointer to global IPv4 address, NULL if no proper IPv4 address
  * could be found.
  */
 struct net_in_addr *net_if_ipv4_get_global_addr(struct net_if *iface,
@@ -3795,7 +3795,7 @@ int net_if_set_name(struct net_if *iface, const char *buf);
 int net_if_get_by_name(const char *name);
 
 /** @cond INTERNAL_HIDDEN */
-struct net_if_api {
+__subsystem struct net_if_driver_api {
 	void (*init)(struct net_if *iface);
 };
 

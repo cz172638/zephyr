@@ -35,10 +35,10 @@ axp2101@3 {
 lc709203f@4 {
 	compatible = "onnn,lc709203f";
 	reg = <0x4>;
-	status = "okay";
 	apa = "500mAh";
 	battery-profile = <0x01>;
 	thermistor;
+	status = "okay";
 };
 
 sy24561@5 {
@@ -67,4 +67,18 @@ adp5360@8 {
 		compatible = "adi,adp5360-fuel-gauge";
 		status = "okay";
 	};
+};
+
+ltc2941@9 {
+	compatible = "adi,ltc2941";
+	reg = <0x9>;
+	rsense-milliohms = <50>;
+	status = "okay";
+};
+
+ltc3337@a {
+	compatible = "adi,ltc3337";
+	reg = <0xa>;
+	ipeak-milliamp = <100>;
+	status = "okay";
 };

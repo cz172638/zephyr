@@ -10,6 +10,7 @@ tests:
   drivers.uart.uart_elementary:
     filter: CONFIG_SERIAL_SUPPORT_INTERRUPT
     platform_allow:
+      - mimxrt2660_evk/mimxrt2663/cm85
       - nrf54h20dk/nrf54h20/cpuapp
       - nrf54h20dk/nrf54h20/cpuflpr
       - nrf54l15dk/nrf54l15/cpuapp
@@ -18,8 +19,13 @@ tests:
       - nrf54lm20dk/nrf54lm20a/cpuflpr
       - nrf54lm20dk/nrf54lm20b/cpuapp
       - nrf54lm20dk/nrf54lm20b/cpuflpr
+      - nrf54lv10dk/nrf54lv10a/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuflpr
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
+      - nrf7120dk/nrf7120/cpuapp/ns
       - nrf7120dk/nrf7120/cpuflpr
+      - nrf7120dk/nrf7120e/cpuflpr
       - nrf5340dk/nrf5340/cpuapp
       - ophelia4ev/nrf54l15/cpuapp
       - ophelia4ev/nrf54l15/cpuflpr
@@ -31,6 +37,7 @@ tests:
       - esp32h2_devkitm
       - esp32s2_devkitc
       - esp32s3_devkitc/esp32s3/procpu
+      - esp32p4x_function_ev_board/esp32p4/hpcore
       - bgm220_ek4314a
       - sixg301_rb4407a
       - slwrb4180b
@@ -48,6 +55,7 @@ tests:
       - nucleo_h753zi
       - nucleo_l152re
       - stm32n6570_dk/stm32n657xx/sb
+      - pic32cm_sg00_cpro
     integration_platforms:
       - nrf54h20dk/nrf54h20/cpuapp
   drivers.uart.uart_elementary.esp.pm:
@@ -118,7 +126,7 @@ tests:
     extra_configs:
       - CONFIG_DUAL_UART_TEST=y
       - CONFIG_SETUP_MISMATCH_TEST=y
-  drivers.uart.uart_elementary_dual_nrf54l:
+  drivers.uart.uart_elementary_dual:
     filter: CONFIG_SERIAL_SUPPORT_INTERRUPT
     platform_allow:
       - nrf54l15dk/nrf54l15/cpuapp
@@ -127,10 +135,15 @@ tests:
       - nrf54lm20dk/nrf54lm20a/cpuflpr
       - nrf54lm20dk/nrf54lm20b/cpuapp
       - nrf54lm20dk/nrf54lm20b/cpuflpr
+      - nrf54lv10dk/nrf54lv10a/cpuapp
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
+      - nrf7120dk/nrf7120/cpuapp/ns
       - nrf7120dk/nrf7120/cpuflpr
+      - nrf7120dk/nrf7120e/cpuflpr
       - ophelia4ev/nrf54l15/cpuapp
       - ophelia4ev/nrf54l15/cpuflpr
+      - pic32cm_sg00_cpro
     extra_args:
       - FILE_SUFFIX="dual_uart"
     extra_configs:
@@ -144,8 +157,12 @@ tests:
       - nrf54lm20dk/nrf54lm20a/cpuflpr
       - nrf54lm20dk/nrf54lm20b/cpuapp
       - nrf54lm20dk/nrf54lm20b/cpuflpr
+      - nrf54lv10dk/nrf54lv10a/cpuapp
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
+      - nrf7120dk/nrf7120/cpuapp/ns
       - nrf7120dk/nrf7120/cpuflpr
+      - nrf7120dk/nrf7120e/cpuflpr
       - ophelia4ev/nrf54l15/cpuapp
       - ophelia4ev/nrf54l15/cpuflpr
     extra_args:
@@ -160,6 +177,7 @@ tests:
     platform_allow:
       - nrf54l15dk/nrf54l15/cpuapp
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
     extra_args:
       - FILE_SUFFIX="cross_domain"
     extra_configs:

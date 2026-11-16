@@ -96,7 +96,7 @@ struct dsa_switch_context {
 
 /**
  * Structure to provide DSA switch api callbacks - it is an augmented
- * struct ethernet_api.
+ * struct ethernet_driver_api.
  */
 struct dsa_api {
 	/** DSA helper callbacks */
@@ -239,7 +239,7 @@ void dsa_port_bridge_leave(struct net_if *iface, struct net_if *br);
 bool dsa_port_fwd_offloaded(struct net_if *from, struct net_if *to);
 
 /* Ethernet APIs definition for switch ports */
-extern const struct ethernet_api dsa_eth_api;
+extern const struct ethernet_driver_api dsa_eth_api;
 
 /** @endcond */
 

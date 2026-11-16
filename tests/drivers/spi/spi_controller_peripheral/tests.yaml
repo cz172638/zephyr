@@ -17,7 +17,11 @@ common:
     - nrf54l15dk/nrf54l15/cpuapp/ns
     - nrf54lm20dk/nrf54lm20a/cpuapp
     - nrf54lm20dk/nrf54lm20b/cpuapp
+    - nrf54lv10dk/nrf54lv10a/cpuapp
+    - nrf54lv10dk/nrf54lv10a/cpuapp/ns
     - nrf7120dk/nrf7120/cpuapp
+    - nrf7120dk/nrf7120e/cpuapp
+    - nrf7120dk/nrf7120/cpuapp/ns
     - ophelia4ev/nrf54l15/cpuapp
 
 tests:
@@ -40,6 +44,8 @@ tests:
       - nrf52840dk/nrf52840
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
+      - pic32cm_sg00_cpro
 
   drivers.spi.spi_mode1:
     extra_configs:
@@ -49,6 +55,8 @@ tests:
       - nrf52840dk/nrf52840
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
+      - pic32cm_sg00_cpro
 
   drivers.spi.spi_mode2:
     extra_configs:
@@ -58,6 +66,8 @@ tests:
       - nrf52840dk/nrf52840
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
+      - pic32cm_sg00_cpro
 
   drivers.spi.spi_mode3:
     extra_configs:
@@ -67,6 +77,8 @@ tests:
       - nrf52840dk/nrf52840
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
+      - pic32cm_sg00_cpro
 
   drivers.spi.spi_mode0.incorrect_sck_state:
     extra_configs:
@@ -108,8 +120,11 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp
       - nrf54h20dk/nrf54h20/cpuapp
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
+      - pic32cm_sg00_cpro
 
   drivers.spi.spi_2M666666Hz:
     extra_configs:
@@ -119,8 +134,10 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp
       - nrf54h20dk/nrf54h20/cpuapp
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
 
   drivers.spi.spi_4MHz:
     extra_configs:
@@ -130,6 +147,7 @@ tests:
       - nrf52840dk/nrf52840
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
 
   drivers.spi.spi_8MHz:
     extra_configs:
@@ -139,6 +157,7 @@ tests:
       - nrf52840dk/nrf52840
     platform_allow:
       - sam_e54_xpro
+      - pic32cz_ca80_cult
 
   drivers.spi.spi_half_duplex:
     extra_args: EXTRA_DTC_OVERLAY_FILE="half-duplex.overlay"
@@ -151,7 +170,11 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp/ns
       - nrf54lm20dk/nrf54lm20a/cpuapp
       - nrf54lm20dk/nrf54lm20b/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuapp/ns
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
+      - nrf7120dk/nrf7120/cpuapp/ns
       - ophelia4ev/nrf54l15/cpuapp
 
   drivers.spi.spi_fast:
@@ -166,7 +189,11 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp/ns
       - nrf54lm20dk/nrf54lm20a/cpuapp
       - nrf54lm20dk/nrf54lm20b/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuapp/ns
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
+      - nrf7120dk/nrf7120/cpuapp/ns
       - ophelia4ev/nrf54l15/cpuapp
 
   drivers.spi.spis_fast:
@@ -184,7 +211,11 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp/ns
       - nrf54lm20dk/nrf54lm20a/cpuapp
       - nrf54lm20dk/nrf54lm20b/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuapp/ns
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
+      - nrf7120dk/nrf7120/cpuapp/ns
       - ophelia4ev/nrf54l15/cpuapp
 
   drivers.spi.pm_runtime:
@@ -209,8 +240,12 @@ tests:
       - nrf54h20dk/nrf54h20/cpuapp
       - nrf54h20dk/nrf54h20/cpurad
       - nrf54h20dk/nrf54h20/cpuppr
+      - nrf54lv10dk/nrf54lv10a/cpuapp
+      - nrf54lv10dk/nrf54lv10a/cpuapp/ns
       - ophelia4ev/nrf54l15/cpuapp
       - nrf7120dk/nrf7120/cpuapp
+      - nrf7120dk/nrf7120e/cpuapp
+      - nrf7120dk/nrf7120/cpuapp/ns
 
   drivers.spi.direct_xfer:
     extra_configs:

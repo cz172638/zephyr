@@ -11,6 +11,8 @@
 	aliases {
 		led0 = &user_led;
 		sw0 = &user_button;
+		ambient-temp0 = &p3t1755;
+		rtt-custom-section = &sram0;
 	};
 
 	leds {
@@ -50,6 +52,12 @@
 	pinctrl-names = "default";
 };
 
+/* Alternate UART; left disabled until an overlay enables it. */
+&lpuart2 {
+	pinctrl-0 = <&pinmux_lpuart2>;
+	pinctrl-names = "default";
+};
+
 /*
  * U24 Winbond W25H512NWEAM: 512 Mbit (64 MB) serial NOR, 1.8 V, quad.
  * Boot ROM configures the pins and brings XSPI0 up for XIP from the flash
@@ -60,22 +68,22 @@
 	w25h512_ctrl: flash-controller@0 {
 		compatible = "nxp,xspi-nor";
 		reg = <0>;
-		status = "disabled";
+		ranges = <0x0 0x60000000 DT_SIZE_M(64)>;
 		device-name = "w25h512nweam";
 		size = <DT_SIZE_M(64)>;
 		#address-cells = <1>;
 		#size-cells = <1>;
-		ranges = <0x0 0x60000000 DT_SIZE_M(64)>;
+		status = "disabled";
 
 		w25h512: flash@0 {
 			compatible = "soc-nv-flash";
 			reg = <0x0 DT_SIZE_M(64)>;
+			ranges;
 			erase-block-size = <DT_SIZE_K(4)>;
 			write-block-size = <4>;
-			status = "disabled";
 			#address-cells = <1>;
 			#size-cells = <1>;
-			ranges;
+			status = "disabled";
 		};
 	};
 };
@@ -94,9 +102,30 @@
 / {
 	psram: memory@80000000 {
 		compatible = "zephyr,memory-region";
-		device_type = "memory";
 		reg = <0x80000000 DT_SIZE_M(32)>;
+		device_type = "memory";
 		zephyr,memory-region = "PSRAM";
 		status = "disabled";
+	};
+};
+
+&lpi2c0 {
+	pinctrl-0 = <&pinmux_lpi2c0>;
+	pinctrl-names = "default";
+
+	pca9555: gpio@21 {
+		compatible = "nxp,pca9555";
+		reg = <0x21>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <16>;
+	};
+
+	pcal6524: gpio@22 {
+		compatible = "nxp,pcal6524";
+		reg = <0x22>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <24>;
 	};
 };

@@ -180,6 +180,12 @@ static inline void trigger_irq(int irq)
 {
 	irq_set_pending(irq);
 }
+#elif defined(CONFIG_MAX32_RV32_INTC)
+#include <zephyr/drivers/interrupt_controller/intc_max32_rv32.h>
+static inline void trigger_irq(int irq)
+{
+	intc_max32_rv32_irq_set_pending(irq);
+}
 #elif defined(CONFIG_RISCV_S_MODE)
 /* In S-mode mip is read-only; set bits via sip (SSIP is writable via sip) */
 static inline void trigger_irq(int irq)
@@ -187,6 +193,50 @@ static inline void trigger_irq(int irq)
 	uint32_t sip;
 
 	__asm__ volatile("csrrs %0, sip, %1\n" : "=r"(sip) : "r"(1 << irq));
+}
+#elif defined(CONFIG_RISCV_HAS_AIA)
+#include <zephyr/irq_multilevel.h>
+#include <zephyr/drivers/interrupt_controller/riscv_aplic.h>
+
+static inline void trigger_irq(int irq)
+{
+	unsigned int level = irq_get_level(irq);
+
+	if (level == 1) {
+#if !defined(CONFIG_64BIT) && defined(CONFIG_RISCV_ISA_EXT_SMAIA)
+		/* mip is 64 bits in AIA; upper 32 bits are accessed using miph CSR for RV32 */
+		if (irq >= 32) {
+			csr_set(miph, BIT(irq - 32));
+			return;
+		}
+#endif
+		csr_set(mip, BIT(irq));
+	} else {
+		/*
+		 * An APLIC source can be set pending by number, which an MSI mode
+		 * domain then forwards to the hart's interrupt file, so this covers
+		 * both delivery modes. Only an edge or detached source can be set
+		 * this way.
+		 */
+		sys_write32(irq_from_level_2(irq),
+			    DT_REG_ADDR(DT_NODELABEL(aplic)) + APLIC_SETIPNUM);
+	}
+}
+#elif defined(CONFIG_PLIC_SUPPORTS_SOFT_INTERRUPT)
+#include <zephyr/irq_multilevel.h>
+#include <zephyr/drivers/interrupt_controller/riscv_plic.h>
+
+static inline void trigger_irq(int irq)
+{
+	unsigned int level = irq_get_level(irq);
+
+	if (level == 1) {
+		uint32_t mip;
+
+		__asm__ volatile("csrrs %0, mip, %1\n" : "=r"(mip) : "r"(1 << irq));
+	} else {
+		riscv_plic_irq_set_pending(irq);
+	}
 }
 #else
 static inline void trigger_irq(int irq)

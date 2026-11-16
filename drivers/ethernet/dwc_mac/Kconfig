@@ -10,6 +10,7 @@ DT_CHOSEN_Z_DTCM := zephyr,dtcm
 config ETH_DWC_ETHER_QOS_CORE
 	bool
 	depends on NET_BUF_FIXED_DATA_SIZE
+	select ETH_PHY_DRIVER
 	select CACHE_MANAGEMENT if DCACHE
 	# The DMA descriptor rings are not cache maintained, so they need an
 	# uncached region, which on ARM can only be carved out by the MPU.
@@ -23,6 +24,7 @@ config ETH_DWC_ETHER_QOS_CORE
 config ETH_DWC_ETHER_1000_CORE
 	bool
 	depends on NET_BUF_FIXED_DATA_SIZE
+	select ETH_PHY_DRIVER
 	select CACHE_MANAGEMENT if DCACHE
 	# The DMA descriptor rings are not cache maintained, so they need an
 	# uncached region, which on ARM can only be carved out by the MPU.
@@ -32,6 +34,19 @@ config ETH_DWC_ETHER_1000_CORE
 	  This is a driver for the Synopsys DesignWare Ethernet MAC 10/100/1G Universal,
 	  also referred to as "dwc_ether_mac10_100_1000_universal".
 	  IP version v3.x is supported.
+
+config ETH_ALIF_DWC_ETHER_QOS
+	bool "Driver for DWC Ethernet QoS-based Alif Ensemble"
+	depends on SOC_FAMILY_ENSEMBLE_RTSS
+	depends on DT_HAS_ALIF_ENSEMBLE_ETH_ENABLED
+	select ETH_DWC_ETHER_QOS_CORE
+	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT
+	select PINCTRL
+	select CLOCK_CONTROL
+	default y
+	help
+	  This enables the Synopsys DesignWare MAC driver on the RTSS cores of
+	  Alif Ensemble SoCs.
 
 config ETH_ESP32_DWC_ETHER_1000
 	bool "Driver for DWC Ethernet MAC-based ESP32"
@@ -144,7 +159,7 @@ config ETH_ROCKCHIP_DWC_ETHER_QOS
 
 config ETH_DWMAC_MMU
 	bool "Synopsys DesignWare MAC driver for MMU based platforms"
-	depends on MMU
+	depends on CPU_HAS_MMU
 	depends on DT_HAS_SNPS_DESIGNWARE_ETHERNET_ENABLED
 	select ETH_DWC_ETHER_QOS_CORE
 	default y

@@ -103,6 +103,31 @@ struct bt_hid_session {
 	enum bt_hid_channel_type type;
 };
 
+/** @brief HID Device per-connection state flags stored in
+ *  @ref bt_hid_device.flags.
+ *
+ * The Control and Interrupt @c connected callbacks can complete the association
+ * concurrently on SMP: each records its own channel and then checks the other,
+ * so a plain bool could be missed by the peer and nothing would report the
+ * association, or both could see both set and report it twice. They are
+ * therefore atomic, and @ref BT_HID_DEVICE_FLAG_CONNECTED_REPORTED is claimed
+ * with a test-and-set so only one callback hands the association up.
+ */
+enum bt_hid_device_flag {
+	/** The control channel is connected. */
+	BT_HID_DEVICE_FLAG_CTRL_CONNECTED,
+	/** True while the CTRL channel exists, including connect/config phases. */
+	BT_HID_DEVICE_FLAG_CTRL_ATTACHED,
+	/** The interrupt channel is connected. */
+	BT_HID_DEVICE_FLAG_INTR_CONNECTED,
+	/** True while the INTR channel is attached, including connect/config phases. */
+	BT_HID_DEVICE_FLAG_INTR_ATTACHED,
+	/** The association has been reported to the application through
+	 *  @ref bt_hid_device_cb.connected.
+	 */
+	BT_HID_DEVICE_FLAG_CONNECTED_REPORTED,
+};
+
 /** @brief HID device instance (opaque to applications) */
 struct bt_hid_device {
 	/** Role of this device (initiator or acceptor). */
@@ -117,10 +142,8 @@ struct bt_hid_device {
 	/** Runtime connection state. */
 	uint8_t state;
 
-	/** True while the control channel is connected. */
-	bool ctrl_connected;
-	/** True while the interrupt channel is connected. */
-	bool intr_connected;
+	/** Per-connection state flags, see @ref bt_hid_device_flag. */
+	atomic_t flags;
 
 	struct k_work_delayable intr_timeout;
 	struct k_work_delayable vcu_disconnect;
@@ -178,6 +201,10 @@ enum bt_hid_host_flag {
 	BT_HID_HOST_FLAG_INTR_CONNECTED,
 	/** As @ref BT_HID_HOST_FLAG_CTRL_ATTACHED, for the interrupt channel. */
 	BT_HID_HOST_FLAG_INTR_ATTACHED,
+	/** Association reported through @ref bt_hid_host_cb.connected.
+	 * Claimed with test-and-set to avoid duplicate reports on SMP.
+	 */
+	BT_HID_HOST_FLAG_CONNECTED_REPORTED,
 };
 
 /** @brief Outstanding Control channel transaction of a HID Host connection.
@@ -231,10 +258,9 @@ struct bt_hid_host {
 	struct bt_hid_req req;
 	/** Closes whichever channel L2CAP still owns.
 	 *
-	 * Used both as the INTR channel connect timeout, where CTRL came up but the
-	 * device never opened INTR, and to close the second channel of an
-	 * association whose first channel is already gone. The latter cannot be done
-	 * from the L2CAP callback that reported it, see hid_close_handler().
+	 * Used to handle HID channel timeout and teardown, ensuring CTRL and INTR channels are
+	 * both established as required and closing the peer channel when the association becomes
+	 * invalid or is disconnected.
 	 */
 	struct k_work_delayable close_work;
 	/** Control channel transaction timeout. */

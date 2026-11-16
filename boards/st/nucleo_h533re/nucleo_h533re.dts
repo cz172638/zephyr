@@ -12,8 +12,8 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 
 / {
-	model = "STMicroelectronics STM32H533RE-NUCLEO board";
 	compatible = "st,stm32h533re-nucleo";
+	model = "STMicroelectronics STM32H533RE-NUCLEO board";
 
 	chosen {
 		zephyr,console = &usart2;
@@ -111,6 +111,15 @@
 	pinctrl-0 = <&spi1_sck_pa5 &spi1_miso_pa6 &spi1_mosi_pa7>;
 	pinctrl-names = "default";
 	cs-gpios = <&gpioc 9 GPIO_ACTIVE_LOW>;
+	status = "okay";
+};
+
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+	pinctrl-names = "default";
+	scl-gpios = <&gpiob 6 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;
+	clock-frequency = <I2C_BITRATE_FAST>;
 	status = "okay";
 };
 
