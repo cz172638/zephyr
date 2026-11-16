@@ -124,6 +124,22 @@ readme() {
 	} > "$OUT/README.md"
 }
 
+# Debug files for gdb/OpenOCD: debug <file>..., packed flat (basenames, an
+# optional "src=name" renames) into $OUT/$IMG-$NAME-debug.tar.xz.
+debug() {
+	local d=$WS/build/$IMG-$NAME-debug f
+
+	rm -rf "$d"
+	mkdir -p "$d" "$OUT"
+	for f in "$@"; do
+		case $f in
+		*=*) cp "${f%%=*}" "$d/${f#*=}" ;;
+		*) cp "$f" "$d/" ;;
+		esac
+	done
+	tar -C "$d" -cJf "$OUT/$IMG-$NAME-debug.tar.xz" .
+}
+
 checksums() {
 	(cd "$OUT" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort |
 		xargs -r sha256sum > SHA256SUMS)
