@@ -133,6 +133,29 @@ static bool active_role(void)
 #endif
 }
 
+/*
+ * Rockchip tuning of the Cadence core that Linux applies on the RK3399 (as
+ * root complex): the FTS count to leave L0s at its maximum (no common
+ * reference clock on a crossover link), and the Tx credit maximum update
+ * interval, which a link change sets back and Linux rewrites on every PHY
+ * link interrupt ("need this to enter L1 again").
+ */
+#define LM_PLC1                 (CDNS_LM_BASE + 0x004U)
+#define  LM_PLC1_FTS            GENMASK(23, 8)
+#define LM_TXCREDIT_CFG1        (CDNS_LM_BASE + 0x020U)
+#define  LM_TXCREDIT_CFG1_MUI   GENMASK(31, 16)
+#define TXCREDIT_MUI_NS         24000U
+
+static void core_tune(struct epc_rk3399_data *d)
+{
+	uint32_t v = cdns_ep_read(&d->core, LM_PLC1);
+
+	cdns_ep_write(&d->core, LM_PLC1, (v & ~LM_PLC1_FTS) | FIELD_PREP(LM_PLC1_FTS, 0xffffU));
+	v = cdns_ep_read(&d->core, LM_TXCREDIT_CFG1);
+	cdns_ep_write(&d->core, LM_TXCREDIT_CFG1, (v & ~LM_TXCREDIT_CFG1_MUI) |
+		      FIELD_PREP(LM_TXCREDIT_CFG1_MUI, TXCREDIT_MUI_NS >> 3));
+}
+
 /* --- link supervision ------------------------------------------------------ */
 
 /*
@@ -189,6 +212,7 @@ static void link_work(struct k_work *work)
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
+		core_tune(d);
 		irq_region_forget(d);
 		pcie_epc_notify(dev, PCIE_EPC_EVT_HOT_RESET, 0);
 	}
@@ -216,6 +240,7 @@ static void link_work(struct k_work *work)
 		} else {
 			LOG_DBG("%s: link up, Gen%u x%u", dev->name, gen, width);
 		}
+		core_tune(d);
 		d->link_up = true;
 		d->ups++;
 		pcie_epc_notify(dev, PCIE_EPC_EVT_LINK_UP, 0);
@@ -875,6 +900,7 @@ static int epc_rk3399_init(const struct device *dev)
 		LOG_ERR("%s: port init failed: %d", dev->name, ret);
 		return ret;
 	}
+	core_tune(d);
 	LOG_INF("%s: core up, reset VID/SSVID 0x%08x", dev->name,
 		cdns_ep_read(&d->core, CDNS_LM_ID));
 
