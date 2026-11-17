@@ -25,7 +25,7 @@
  *   pcictl aer    <bdf> [clear]                AER and Device Status errors
  *   pcictl test   <bdf> [-b bar] [-t ms] [-d] [-k] [-l limit] <item>...
  *                 pci-epf-test over vfio-pci (No-IOMMU): bars, bar<n>, msi, msi<n>,
- *                 msix<n>, read:<size>, write:<size>, copy:<size> (u: unaligned),
+ *                 msix[<n>], read:<size>, write:<size>, copy:<size> (u: unaligned),
  *                 doorbell, all; -k rings the endpoint's doorbell after each
  *                 command (no waiting for its poll)
  *   pcictl buf    [-l limit] [ms]              DMA buffer for the endpoint's requests
@@ -92,13 +92,15 @@ static void __attribute__((noreturn, format(printf, 1, 2))) die(const char *fmt,
 
 static void __attribute__((noreturn)) usage(void)
 {
-	fputs("usage: pcictl [-w 8|16|32|64] [-q] [-F dump] ls | info <bdf> | cfg <bdf> <off> [val] |\n"
+	fputs("usage: pcictl [-w 8|16|32|64] [-q] [-F dump] ls | info <bdf> |\n"
+	      "       cfg <bdf> <off> [val] |\n"
 	      "       cmd <bdf> [+-mem +-bme +-io +-serr +-intx] | rd <bdf> <bar> <off> [count] |\n"
 	      "       wr <bdf> <bar> <off> <val>... | dump <bdf> <bar> [off [len]] |\n"
 	      "       epf <bdf> [bar] | link <bdf> [status | retrain | disable | enable |\n"
 	      "       speed <1..6> | aspm off|l0s|l1|l0s+l1] | hotreset <bridge> [ms] |\n"
 	      "       ports <bridge> | watch <bdf> [ms] | aer <bdf> [clear] |\n"
-	      "       test <bdf> [-b bar] [-t ms] [-d] [-k] [-l limit] bars|bar<n>|msi[<n>]|msix<n>|doorbell|\n"
+	      "       test <bdf> [-b bar] [-t ms] [-d] [-k] [-l limit]\n"
+	      "            bars|bar<n>|msi[<n>]|msix[<n>]|doorbell|\n"
 	      "            read:<size>[u]|write:<size>[u]|copy:<size>[u]|all |\n"
 	      "       buf [-l limit] [ms] | remove <bdf> | rescan | reset <bdf> |\n"
 	      "       unbind <bdf> | bind <bdf> <driver> | resize <bdf> [<bar> <size>]\n",
@@ -1712,7 +1714,7 @@ static int vt_test_bar(struct vt *t, unsigned int b)
 	unsigned int w = width;
 	uint64_t n, i;
 	uint32_t pat = 0xa0a0a0a0U + 0x01010101U * b;
-	char what[32];
+	char what[48];
 	int ok = 1;
 
 	if (m->va == NULL) {
@@ -1722,14 +1724,27 @@ static int vt_test_bar(struct vt *t, unsigned int b)
 		printf("BAR%u                         skipped (doorbell)\n", b);
 		return 0;
 	}
-	/* the register block: only the first word, as pci_endpoint_test does */
-	n = (b == t->reg_bar) ? 0 : (m->size < (1U << 20) ? m->size : (1U << 20));
+	/*
+	 * The register block: only the first word, as pci_endpoint_test does.
+	 * Others: every word of the first MiB, beyond it one word per 4 KiB
+	 * (reads cost a round trip each); the pattern holds the offset, so a
+	 * window that wraps (inbound translation not aligned to the BAR size)
+	 * reads back the wrong words.
+	 */
+	n = (b == t->reg_bar) ? 0 : m->size;
 	width = 32;
-	for (i = 0; i < n; i += 4) {
-		bar_wr(m, b, i, pat);
+	for (i = 0; i < n; i += (i < (1U << 20)) ? 4 : 4096) {
+		bar_wr(m, b, i, pat ^ (uint32_t)i);
 	}
-	for (i = 0; i < n && ok; i += 4) {
-		ok = bar_rd(m, b, i) == pat;
+	for (i = 0; i < n; i += (i < (1U << 20)) ? 4 : 4096) {
+		uint32_t got = (uint32_t)bar_rd(m, b, i);
+
+		if (got != (pat ^ (uint32_t)i)) {
+			printf("BAR%u: offset 0x%" PRIx64 " reads 0x%08x, wrote 0x%08x\n", b, i,
+			       got, pat ^ (uint32_t)i);
+			ok = 0;
+			break;
+		}
 	}
 	width = w;
 	snprintf(what, sizeof(what), "BAR%u (%" PRIu64 " bytes)", b, n);
@@ -1898,6 +1913,10 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 			}
 		} else if (strncmp(a, "bar", 3) == 0) {
 			fails += vt_test_bar(&t, (unsigned int)num(a + 3));
+		} else if (strcmp(a, "msix") == 0) {
+			for (int v = 1; v <= 16; v++) {
+				fails += vt_test_irq(&t, EPT_IRQ_MSIX, v);
+			}
 		} else if (strncmp(a, "msix", 4) == 0) {
 			fails += vt_test_irq(&t, EPT_IRQ_MSIX, (int)num(a + 4));
 		} else if (strcmp(a, "msi") == 0) {
