@@ -42,6 +42,8 @@
 		resizable-bar = <4>;
 		resizable-bar-max-size = <0x1000000>;
 		msi-interrupts = <16>;
+		/* table and PBA after the register block in BAR0 */
+		msix-interrupts = <16>;
 	};
 };
 
