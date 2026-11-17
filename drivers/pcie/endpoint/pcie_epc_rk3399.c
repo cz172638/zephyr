@@ -84,6 +84,8 @@ struct epc_rk3399_data {
 	struct pcie_epc_features features;
 	struct pcie_epc_features vf_features; /* no INTx */
 	bool active;
+	/* between start and stop; set before the link work is first queued */
+	bool running;
 	bool perst_asserted;
 	bool link_up;
 	uint16_t bme; /* per routing function, PF and VFs */
@@ -164,7 +166,7 @@ static void link_work(struct k_work *work)
 	const struct device *dev = d->dev;
 	uint32_t ist;
 
-	if (d->perst_asserted || !d->epc.started) {
+	if (d->perst_asserted || !d->running) {
 		return;
 	}
 
@@ -275,7 +277,7 @@ static void perst_handler(const struct device *port, struct gpio_callback *cb,
 	if (d->perst_asserted) {
 		d->perst_asserted = false;
 		pcie_epc_notify(dev, PCIE_EPC_EVT_PERST_DEASSERT, 0);
-		if (d->epc.started) {
+		if (d->running) {
 			retrain(d);
 			(void)k_work_reschedule(&d->link_work, K_NO_WAIT);
 		}
@@ -297,6 +299,12 @@ static int epc_start(const struct device *dev)
 		      (d->epc.func_map | BIT(0)) & BIT_MASK(cfg->max_functions));
 	rk_client_write(apb(dev), RK_CLIENT_CONFIG,
 			RK_WM16(RK_CLIENT_LINK_TRAIN, 1U) | RK_WM16(RK_CLIENT_CONF_ENABLE, 1U));
+	/*
+	 * Not epc.started: the core sets that after start() returns, and the
+	 * link work queued below can run first (system work queue preempts the
+	 * caller), return on it and never be queued again.
+	 */
+	d->running = true;
 
 	if (cfg->max_vfs != 0U) {
 		k_timer_start(&d->sriov_timer, K_MSEC(1), K_MSEC(1));
@@ -328,6 +336,7 @@ static void epc_stop(const struct device *dev)
 	if (cfg->perst.port != NULL) {
 		(void)gpio_pin_interrupt_configure_dt(&cfg->perst, GPIO_INT_DISABLE);
 	}
+	d->running = false;
 	k_timer_stop(&d->sriov_timer);
 	(void)k_work_cancel_delayable(&d->link_work);
 	link_down(dev);
