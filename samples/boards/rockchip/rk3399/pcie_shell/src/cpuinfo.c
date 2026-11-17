@@ -8,6 +8,7 @@
  * core cycles, instructions, cache refills and exceptions taken.
  */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/arch/pmu.h>
@@ -210,5 +211,65 @@ static int cmd_cpu(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-SHELL_CMD_REGISTER(cpu, NULL, "CPU registers, memory attributes, clock and memory speed",
+/*
+ * Which interrupt keeps the core busy: with IRQs masked at the core,
+ * ICC_HPPIR1_EL1 names the highest priority pending Group 1 interrupt;
+ * the PMU counts exceptions taken over a period with IRQs on.
+ */
+#define HPPIR_SAMPLES 64U
+#define INTID_SPURIOUS 1023U
+
+static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t ids[HPPIR_SAMPLES], cnt[HPPIR_SAMPLES] = {0}, nids = 0;
+	uint32_t ms = argc > 1 ? strtoul(argv[1], NULL, 0) : 100U;
+
+	for (uint32_t i = 0; i < HPPIR_SAMPLES; i++) {
+		unsigned int key = irq_lock();
+		uint64_t t0 = k_cycle_get_64();
+		uint32_t id;
+
+		/* 50..1650 us: long enough for a periodic source to become pending */
+		while (k_cycle_get_64() - t0 < k_us_to_cyc_ceil64(50U + 25U * i)) {
+		}
+		id = (uint32_t)SYSREG(S3_0_C12_C12_2) & 0xffffffU; /* ICC_HPPIR1_EL1 */
+		irq_unlock(key);
+
+		uint32_t j;
+
+		for (j = 0; j < nids && ids[j] != id; j++) {
+		}
+		if (j == nids) {
+			ids[nids++] = id;
+		}
+		cnt[j]++;
+	}
+	shell_print(sh, "pending with IRQs masked, %u samples:", HPPIR_SAMPLES);
+	for (uint32_t j = 0; j < nids; j++) {
+		shell_print(sh, "  INTID %4u%s: %u", ids[j],
+			    ids[j] == INTID_SPURIOUS ? " (none)"
+			    : ids[j] >= 32U ? "" : ids[j] >= 16U ? " (PPI)" : " (SGI)", cnt[j]);
+	}
+
+	pmu_setup(sh);
+	if (pmu_ok) {
+		uint64_t exc;
+
+		pmu_begin();
+		k_busy_wait(ms * 1000U);
+		pmu_stop();
+		exc = pmu_counter_read(4);
+		shell_print(sh, "exceptions taken in %u ms: %llu (%llu/s)", ms, exc,
+			    exc * 1000U / MAX(ms, 1U));
+	}
+	shell_print(sh, "SPI n = INTID - 32 (devicetree GIC_SPI n)");
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_cpu,
+	SHELL_CMD_ARG(irq, NULL, "[ms]: pending interrupt with IRQs masked, exception rate",
+		      cmd_cpu_irq, 1, 1),
+	SHELL_SUBCMD_SET_END);
+
+SHELL_CMD_REGISTER(cpu, &sub_cpu, "CPU registers, memory attributes, clock and memory speed",
 		   cmd_cpu);
