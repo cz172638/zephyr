@@ -10,6 +10,7 @@
 #   > rk_pcie            ;# client, link, function 0 header, MSI, BARs, OB/IB
 #   > rk_pcie_ob 32      ;# all outbound regions, also the unused ones
 #   > rk_noc             ;# NoC error loggers (rk_noc clear: also clear them)
+#   > rk_wdt off         ;# stop the watchdog before looking at a hung board
 #
 # Set rk_ap to the memory AP target if it is not called rk3399.ahb.
 
@@ -172,4 +173,30 @@ proc rk_noc {{clear ""}} {
 			$rk_ap write_memory [expr {$base + 0x10}] 32 1
 		}
 	}
+}
+
+# DesignWare watchdog at 0xff848000 (Zephyr pcie_shell feeds it, 10 s):
+#   rk_wdt        state: enabled, timeout range, counter
+#   rk_wdt off    stop it: pulse its reset in the CRU (SRST_P_WDT0,
+#                 SOFTRST_CON20[5]); a running DW watchdog cannot be disabled
+#                 any other way. Use before looking at a hung board.
+#   rk_wdt kick   restart the counter once
+set rk_wdt_base 0xff848000
+set rk_cru_softrst20 0xff760450
+
+proc rk_wdt {{op ""}} {
+	global rk_ap rk_wdt_base rk_cru_softrst20
+	if {$op eq "off"} {
+		$rk_ap write_memory $rk_cru_softrst20 32 [expr {(1 << 21) | (1 << 5)}]
+		$rk_ap write_memory $rk_cru_softrst20 32 [expr {1 << 21}]
+	} elseif {$op eq "kick"} {
+		$rk_ap write_memory [expr {$rk_wdt_base + 0x0c}] 32 0x76
+	} elseif {$op ne ""} {
+		echo "rk_wdt \[off|kick\]"
+		return
+	}
+	lassign [rk_rd $rk_wdt_base 5] cr torr ccvr crr stat
+	echo [format "wdt     %s, mode %s, timeout range %d (2^%d cycles), counter %s, irq %d" \
+		[expr {$cr & 1 ? "ENABLED" : "off"}] [expr {$cr & 2 ? "irq first" : "reset"}] \
+		[expr {$torr & 0xf}] [expr {16 + ($torr & 0xf)}] [rk_hex $ccvr] [expr {$stat & 1}]]
 }
