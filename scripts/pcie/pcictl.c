@@ -26,6 +26,7 @@
  *   pcictl test   <bdf> [-b bar] [-t ms] [-d] [-l limit] <item>...
  *                 pci-epf-test over vfio-pci (No-IOMMU): bars, bar<n>, msi, msi<n>,
  *                 msix<n>, read:<size>, write:<size>, copy:<size> (u: unaligned), all
+ *   pcictl buf    [-l limit] [ms]              DMA buffer for the endpoint's requests
  *   pcictl remove <bdf> | rescan | reset <bdf> | unbind <bdf> | bind <bdf> <drv>
  *
  * Options before the command: -w 8|16|32|64 access width (default 32; cfg
@@ -95,7 +96,7 @@ static void __attribute__((noreturn)) usage(void)
 	      "       ports <bridge> | watch <bdf> [ms] | aer <bdf> [clear] |\n"
 	      "       test <bdf> [-b bar] [-t ms] [-d] [-l limit] bars|bar<n>|msi[<n>]|msix<n>|\n"
 	      "            read:<size>[u]|write:<size>[u]|copy:<size>[u]|all |\n"
-	      "       remove <bdf> | rescan | reset <bdf> |\n"
+	      "       buf [-l limit] [ms] | remove <bdf> | rescan | reset <bdf> |\n"
 	      "       unbind <bdf> | bind <bdf> <driver>\n",
 	      stderr);
 	exit(2);
@@ -1719,6 +1720,57 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 	return fails ? 1 : 0;
 }
 
+/*
+ * buf [-l limit] [ms]: a 2 MiB DMA buffer for the endpoint's own requests,
+ * without vfio: its physical (= bus) address, the first 4 KiB filled with
+ * 0xb0f00000 + word index, then every word the endpoint changes, until ^C.
+ * The function needs Memory Space and Bus Master (pcictl cmd <bdf> +mem +bme).
+ */
+static int cmd_buf(int argc, char **argv)
+{
+	struct vt t = {.limit = 1ULL << 32};
+	uint64_t ms = 100;
+	struct dbuf b;
+	uint32_t *w, shadow[1024];
+	struct timespec t0, now;
+
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) {
+			t.limit = num(argv[++i]);
+		} else {
+			ms = num(argv[i]);
+		}
+	}
+	b = hugebuf(&t);
+	w = (uint32_t *)b.va;
+	for (unsigned int i = 0; i < ARRAY_SIZE(shadow); i++) {
+		w[i] = 0xb0f00000U + i;
+		shadow[i] = w[i];
+	}
+	cache_flush(b.va, sizeof(shadow));
+	printf("buffer at 0x%" PRIx64 " (2 MiB), first 4 KiB = 0xb0f00000 + word index\n"
+	       "endpoint: pcie controller ep host <fn> 0x%" PRIx64 " 4 | pcie controller ep host "
+	       "<fn> 0x%" PRIx64 " =<val>\n", b.pa, b.pa, b.pa + 0x10);
+	fflush(stdout);
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (;;) {
+		usleep((useconds_t)ms * 1000U);
+		cache_flush(b.va, sizeof(shadow));
+		for (unsigned int i = 0; i < ARRAY_SIZE(shadow); i++) {
+			if (w[i] != shadow[i]) {
+				clock_gettime(CLOCK_MONOTONIC, &now);
+				printf("%9.3f +0x%03x: %08x -> %08x\n",
+				       (double)(now.tv_sec - t0.tv_sec) +
+					       (now.tv_nsec - t0.tv_nsec) / 1e9,
+				       i * 4U, shadow[i], w[i]);
+				fflush(stdout);
+				shadow[i] = w[i];
+			}
+		}
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct sigaction sa = {.sa_handler = on_sigbus};
@@ -1753,6 +1805,9 @@ int main(int argc, char **argv)
 	}
 	c = argv[0];
 
+	if (strcmp(c, "buf") == 0) {
+		return cmd_buf(argc - 1, argv + 1);
+	}
 	if (strcmp(c, "rescan") == 0) {
 		sysfs_write("/sys/bus/pci/rescan", "1");
 		return 0;
