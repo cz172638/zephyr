@@ -233,6 +233,24 @@ int cdns_ep_msi_target(const struct cdns_ep_core *core, uint8_t fn, uint32_t irq
 	return 0;
 }
 
+int cdns_ep_set_msix(const struct cdns_ep_core *core, uint8_t fn, uint16_t nr, uint8_t bir,
+		     uint32_t offset)
+{
+	uint32_t base = CDNS_EP_FUNC_BASE(fn);
+	uint32_t ctrl;
+
+	if (nr == 0U || nr > 2048U || bir > 5U || (offset & 7U) != 0U) {
+		return -EINVAL;
+	}
+	ctrl = cdns_ep_read(core, base + CDNS_EP_FUNC_MSIX_CAP);
+	ctrl &= ~(CDNS_MSIX_CTRL_TSIZE | CDNS_MSIX_CTRL_EN | CDNS_MSIX_CTRL_FMASK);
+	ctrl |= FIELD_PREP(CDNS_MSIX_CTRL_TSIZE, nr - 1U);
+	cdns_ep_write(core, base + CDNS_EP_FUNC_MSIX_CAP, ctrl);
+	cdns_ep_write(core, base + CDNS_MSIX_TABLE, offset | bir);
+	cdns_ep_write(core, base + CDNS_MSIX_PBA, (offset + nr * 16U) | bir);
+	return 0;
+}
+
 void cdns_ep_hide_msix_cap(const struct cdns_ep_core *core)
 {
 	uint32_t msi = cdns_ep_read(core, CDNS_RP_BASE + CDNS_EP_FUNC_MSI_CAP);
