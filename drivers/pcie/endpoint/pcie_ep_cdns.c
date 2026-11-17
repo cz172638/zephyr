@@ -244,6 +244,21 @@ void cdns_ep_hide_msix_cap(const struct cdns_ep_core *core)
 }
 
 /*
+ * The core advertises Function Level Reset, but nothing on the endpoint side
+ * completes one: a host that resets the function (vfio-pci does when it
+ * opens the device) waits for a function that never becomes ready again.
+ * Cleared through the privileged view, like the MSI-X link.
+ */
+bool cdns_ep_hide_flr(const struct cdns_ep_core *core, uint8_t fn)
+{
+	uint32_t reg = CDNS_EP_FUNC_BASE(fn) + CDNS_EP_FUNC_PCIE_CAP + CDNS_EXP_DEVCAP;
+	uint32_t cap = cdns_ep_read(core, CDNS_RP_BASE + reg);
+
+	cdns_ep_write(core, CDNS_RP_BASE + reg, cap & ~CDNS_EXP_DEVCAP_FLR);
+	return (cdns_ep_read(core, reg) & CDNS_EXP_DEVCAP_FLR) == 0U;
+}
+
+/*
  * SR-IOV: the BAR layout (aperture, type) is one setting per physical
  * function for all its VFs, in the VF BAR configuration registers; the
  * inbound translation is per routing ID (vf_fn = PF + First VF Offset +

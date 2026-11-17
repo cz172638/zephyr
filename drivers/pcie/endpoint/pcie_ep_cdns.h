@@ -86,6 +86,10 @@
 #define CDNS_MSI_CTRL_64BIT		BIT(23)
 #define CDNS_MSI_CTRL_MASKBIT		BIT(24)
 #define CDNS_MSI_CTRL_NEXT_MASK		GENMASK(15, 8)
+
+/* PCI Express capability: Device Capabilities */
+#define CDNS_EXP_DEVCAP			0x04U
+#define  CDNS_EXP_DEVCAP_FLR		BIT(28)
 #define CDNS_MSI_ADDR_LO		0x04U
 #define CDNS_MSI_ADDR_HI		0x08U
 #define CDNS_MSI_DATA_64		0x0cU
@@ -150,5 +154,12 @@ void cdns_ep_ob_clear(const struct cdns_ep_core *core, uint32_t region);
 int cdns_ep_msi_target(const struct cdns_ep_core *core, uint8_t fn, uint32_t irq_num,
 		       uint64_t *pci_addr, uint16_t *data);
 void cdns_ep_hide_msix_cap(const struct cdns_ep_core *core);
+/**
+ * @brief Stop advertising Function Level Reset for function fn.
+ *
+ * @retval true The capability bit reads back clear.
+ * @retval false The bit stayed set.
+ */
+bool cdns_ep_hide_flr(const struct cdns_ep_core *core, uint8_t fn);
 
 #endif /* ZEPHYR_DRIVERS_PCIE_ENDPOINT_PCIE_EP_CDNS_H_ */

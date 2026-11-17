@@ -854,6 +854,12 @@ static int epc_rk3399_init(const struct device *dev)
 
 	/* MSI-X is advertised but not functional on this revision. */
 	cdns_ep_hide_msix_cap(&d->core);
+	for (uint8_t fn = 0; fn <= cfg->max_vfs; fn++) {
+		if (!cdns_ep_hide_flr(&d->core, fn)) {
+			LOG_WRN("%s: fn%u still advertises FLR, a host reset will hang it",
+				dev->name, fn);
+		}
+	}
 	cdns_ep_write(&d->core, CDNS_LM_EP_FUNC_CFG, BIT(0));
 	if (cfg->has_ids) {
 		(void)epc_write_header(dev, 0, &cfg->hdr);
