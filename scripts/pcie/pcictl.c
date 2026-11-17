@@ -51,6 +51,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <linux/dma-heap.h>
 #include <linux/vfio.h>
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -1081,25 +1083,91 @@ static uint64_t virt_to_phys(const void *v)
 struct dbuf {
 	uint8_t *va;
 	uint64_t pa;
+	int fd;		/* dma-buf of a heap, -1 for a hugepage */
 };
+
+/*
+ * A contiguous CMA dma-buf when no hugepage lies in the RC's window: the
+ * hugepage pool fills from the top of memory, CMA usually sits low.
+ */
+static bool heapbuf(const struct vt *t, struct dbuf *b)
+{
+	DIR *dir = opendir("/dev/dma_heap");
+	struct dirent *e;
+	bool ok = false;
+
+	if (dir == NULL) {
+		return false;
+	}
+	while (!ok && (e = readdir(dir)) != NULL) {
+		struct dma_heap_allocation_data a = {.len = HUGE_SIZE, .fd_flags = O_RDWR | O_CLOEXEC};
+		char path[300];
+		int h;
+		void *p;
+
+		if (strstr(e->d_name, "cma") == NULL && strstr(e->d_name, "reserved") == NULL) {
+			continue;
+		}
+		snprintf(path, sizeof(path), "/dev/dma_heap/%s", e->d_name);
+		h = open(path, O_RDWR | O_CLOEXEC);
+		if (h < 0) {
+			continue;
+		}
+		if (ioctl(h, DMA_HEAP_IOCTL_ALLOC, &a) != 0) {
+			close(h);
+			continue;
+		}
+		close(h);
+		p = mmap(NULL, HUGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, (int)a.fd, 0);
+		if (p == MAP_FAILED) {
+			close((int)a.fd);
+			continue;
+		}
+		memset(p, 0, HUGE_SIZE);
+		b->va = p;
+		b->fd = (int)a.fd;
+		b->pa = virt_to_phys(p);
+		/* contiguous and in the window, checked page by page at both ends */
+		ok = b->pa + HUGE_SIZE <= t->limit &&
+		     virt_to_phys((uint8_t *)p + HUGE_SIZE - 4096) == b->pa + HUGE_SIZE - 4096;
+		if (!ok) {
+			munmap(p, HUGE_SIZE);
+			close(b->fd);
+			b->va = NULL;
+			b->fd = -1;
+		} else {
+			fprintf(stderr, "buffer from %s at 0x%" PRIx64 "\n", path, b->pa);
+		}
+	}
+	closedir(dir);
+	return ok;
+}
+
+static void dbuf_free(struct dbuf *b)
+{
+	if (b->va != NULL) {
+		munmap(b->va, HUGE_SIZE);
+	}
+	if (b->fd >= 0) {
+		close(b->fd);
+	}
+	b->va = NULL;
+	b->fd = -1;
+}
 
 /* a 2 MiB hugepage below vt->limit (tries a few, gives the others back) */
 static struct dbuf hugebuf(const struct vt *t)
 {
-	void *tried[16];
+	static void *tried[1024];
 	int n = 0;
-	struct dbuf b = {0};
+	struct dbuf b = {.fd = -1};
 
 	while (n < (int)ARRAY_SIZE(tried)) {
 		void *p = mmap(NULL, HUGE_SIZE, PROT_READ | PROT_WRITE,
 			       MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE, -1, 0);
 
-		if (p == MAP_FAILED && n > 0) {
-			break;	/* only pages above the limit left */
-		}
 		if (p == MAP_FAILED) {
-			die("hugepage: %s (echo 8 > /sys/kernel/mm/hugepages/hugepages-2048kB/"
-			    "nr_hugepages)", strerror(errno));
+			break;	/* none left, or only pages above the limit */
 		}
 		memset(p, 0, HUGE_SIZE);
 		if (mlock(p, HUGE_SIZE) != 0) {
@@ -1116,8 +1184,9 @@ static struct dbuf hugebuf(const struct vt *t)
 	for (int i = 0; i < n; i++) {
 		munmap(tried[i], HUGE_SIZE);
 	}
-	if (b.va == NULL) {
-		die("no hugepage below 0x%" PRIx64 " (DMA window of the RC)", t->limit);
+	if (b.va == NULL && !heapbuf(t, &b)) {
+		die("no 2 MiB buffer below 0x%" PRIx64 " (DMA window of the RC): %d hugepages above "
+		    "it, no CMA dma-heap (/dev/dma_heap) with room", t->limit, n);
 	}
 	return b;
 }
@@ -1237,7 +1306,6 @@ static void vt_irq_on(struct vt *t, int type, int n)
 	unsigned int index = type == EPT_IRQ_MSIX ? VFIO_PCI_MSIX_IRQ_INDEX
 						  : VFIO_PCI_MSI_IRQ_INDEX;
 	struct vfio_irq_info ii = {.argsz = sizeof(ii), .index = index};
-	size_t sz = sizeof(struct vfio_irq_set) + sizeof(int32_t) * (size_t)n;
 	struct vfio_irq_set *s;
 
 	if (t->irq_type == type && t->nirq >= n) {
@@ -1247,39 +1315,53 @@ static void vt_irq_on(struct vt *t, int type, int n)
 	if (ioctl(t->dev, VFIO_DEVICE_GET_IRQ_INFO, &ii) != 0 || ii.count == 0U) {
 		die("%s not available", type == EPT_IRQ_MSIX ? "MSI-X" : "MSI");
 	}
-	if (type == EPT_IRQ_MSI) {
-		int p = 1;
+	/*
+	 * MSI: all the vectors the function offers, once (as pci_endpoint_test
+	 * does); re-enabling with another count fragments the MSI domain. A
+	 * positive return is the number the platform can give.
+	 */
+	int want = (type == EPT_IRQ_MSI) ? (int)ii.count : n;
 
-		while (p < n) {
-			p <<= 1;	/* multi-message MSI: a power of two */
+	if (want > (int)ARRAY_SIZE(t->efd)) {
+		want = ARRAY_SIZE(t->efd);
+	}
+	for (;;) {
+		int r;
+
+		s = calloc(1, sizeof(struct vfio_irq_set) + sizeof(int32_t) * (size_t)want);
+		if (s == NULL) {
+			die("out of memory");
 		}
-		n = p;
-	}
-	if ((unsigned int)n > ii.count || n > (int)ARRAY_SIZE(t->efd)) {
-		die("%d vectors, the function has %u", n, ii.count);
-	}
-	s = calloc(1, sz);
-	if (s == NULL) {
-		die("out of memory");
-	}
-	s->argsz = (uint32_t)sz;
-	s->flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER;
-	s->index = index;
-	s->start = 0;
-	s->count = (uint32_t)n;
-	for (int i = 0; i < n; i++) {
-		t->efd[i] = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-		if (t->efd[i] < 0) {
-			die("eventfd: %s", strerror(errno));
+		s->argsz = (uint32_t)(sizeof(struct vfio_irq_set) + sizeof(int32_t) * (size_t)want);
+		s->flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER;
+		s->index = index;
+		s->count = (uint32_t)want;
+		for (int i = 0; i < want; i++) {
+			t->efd[i] = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+			if (t->efd[i] < 0) {
+				die("eventfd: %s", strerror(errno));
+			}
+			((int32_t *)s->data)[i] = t->efd[i];
 		}
-		((int32_t *)s->data)[i] = t->efd[i];
+		r = ioctl(t->dev, VFIO_DEVICE_SET_IRQS, s);
+		free(s);
+		if (r == 0) {
+			break;
+		}
+		for (int i = 0; i < want; i++) {
+			close(t->efd[i]);
+		}
+		if (r < 0 || r >= want) {
+			die("enable %d %s vectors: %s", want,
+			    type == EPT_IRQ_MSIX ? "MSI-X" : "MSI", r < 0 ? strerror(errno) : "?");
+		}
+		/* multi-message MSI: a power of two */
+		want = (type == EPT_IRQ_MSI) ? (1 << (31 - __builtin_clz((unsigned int)r))) : r;
 	}
-	if (ioctl(t->dev, VFIO_DEVICE_SET_IRQS, s) != 0) {
-		die("enable %d %s vectors: %s", n, type == EPT_IRQ_MSIX ? "MSI-X" : "MSI",
-		    strerror(errno));
+	if (want < n) {
+		die("%s%d: only %d vectors", type == EPT_IRQ_MSIX ? "MSI-X" : "MSI", n, want);
 	}
-	free(s);
-	t->nirq = n;
+	t->nirq = want;
 	t->irq_type = type;
 }
 
@@ -1486,7 +1568,7 @@ static size_t vt_xfer_off(const struct vt *t, size_t size, bool unaligned)
 
 static int vt_test_xfer(struct vt *t, const char *kind, size_t size, bool unaligned)
 {
-	struct dbuf a = hugebuf(t), b = {0};
+	struct dbuf a = hugebuf(t), b = {.fd = -1};
 	size_t off = vt_xfer_off(t, size, unaligned);
 	char what[48];
 	uint32_t crc = 0, st;
@@ -1549,10 +1631,8 @@ static int vt_test_xfer(struct vt *t, const char *kind, size_t size, bool unalig
 		 off ? ", unaligned" : "");
 	report(what, ok, ok ? us : (us < 0 ? -1 : 0), ok ? size : 0U);
 	/* bus mastering is off after a timeout: the pages can go */
-	munmap(a.va, HUGE_SIZE);
-	if (b.va != NULL) {
-		munmap(b.va, HUGE_SIZE);
-	}
+	dbuf_free(&a);
+	dbuf_free(&b);
 	return ok ? 0 : 1;
 }
 
