@@ -49,3 +49,20 @@ properties:
     type: int
     default: 0
     description: Number of MSI-X vectors to advertise (0 = MSI-X off).
+
+  resizable-bar:
+    type: int
+    default: -1
+    description: |
+      BAR the host may resize (Resizable BAR capability), -1 for none. It
+      becomes a 64-bit prefetchable BAR, so it needs an even number and the
+      next BAR unused; its bar-sizes entry is the size at enumeration. Where
+      the controller lists all BARs of the function in the capability, the
+      other BARs grow to its minimum resizable size (1 MiB on RK3399).
+
+  resizable-bar-max-size:
+    type: int
+    default: 0
+    description: |
+      Largest size of the resizable BAR in bytes, a power of two; that much
+      of the memory region is reserved for it, aligned to it.

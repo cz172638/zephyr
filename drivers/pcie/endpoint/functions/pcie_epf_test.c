@@ -113,6 +113,8 @@ struct epf_test_config {
 	uintptr_t mem_base;
 	size_t mem_size;
 	uint32_t bar_size[PCIE_EPC_NUM_BARS];
+	int8_t rebar;        /* resizable BAR, -1 none */
+	uint32_t rebar_max;  /* its largest size */
 	uint8_t reg_bar;
 	uint8_t msi_irqs;
 	uint16_t msix_irqs;
@@ -285,6 +287,10 @@ static int doorbell_enable(const struct device *dev, struct epf_test_data *d)
 	if (ret != 0) {
 		(void)pcie_epc_free_doorbell(cfg->epc, cfg->func);
 		return ret;
+	}
+	if (bar.size > KB(64)) {
+		LOG_WRN("doorbell BAR%u spans 0x%zx bytes around 0x%llx: the host reaches "
+			"whatever else is in that block", b, bar.size, (unsigned long long)db.phys);
 	}
 	d->db_bar = b;
 	d->db_on = true;
@@ -574,9 +580,6 @@ static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l
 {
 	struct epf_test_data *d = CONTAINER_OF(l, struct epf_test_data, listener);
 
-	ARG_UNUSED(epc);
-	ARG_UNUSED(func);
-
 	switch (evt) {
 	case PCIE_EPC_EVT_LINK_UP:
 		LOG_DBG("%s: link up", d->dev->name);
@@ -598,6 +601,16 @@ static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l
 	case PCIE_EPC_EVT_BME_CLEARED:
 		d->bme = false;
 		break;
+	case PCIE_EPC_EVT_BAR_RESIZED: {
+		const struct epf_test_config *cfg = d->dev->config;
+		size_t sz;
+
+		if (cfg->rebar >= 0 &&
+		    pcie_epc_get_bar_size(epc, func, (uint8_t)cfg->rebar, &sz) == 0) {
+			LOG_INF("BAR%d resized by the host to 0x%zx", cfg->rebar, sz);
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -610,12 +623,31 @@ static int epf_test_setup_bars(const struct device *dev)
 	const struct pcie_epc_features *feat = pcie_epc_get_features(cfg->epc, cfg->func);
 	uintptr_t next = cfg->mem_base;
 	uint32_t caps = 0;
+	size_t rebar_min = feat != NULL ? feat->rebar_min_size : 0U;
+	int8_t rebar = cfg->rebar;
 	int ret;
+
+	if (rebar >= 0 && (rebar_min == 0U || (rebar & 1) != 0 || rebar + 1 >= PCIE_EPC_NUM_BARS ||
+			   cfg->bar_size[rebar + 1] != 0U || cfg->rebar_max == 0U)) {
+		LOG_ERR("resizable-bar %d: needs controller support, an even BAR with the next "
+			"one unused and resizable-bar-max-size", rebar);
+		rebar = -1;
+	}
 
 	for (uint8_t b = 0; b < PCIE_EPC_NUM_BARS; b++) {
 		size_t want = cfg->bar_size[b];
 		size_t sz;
+		size_t span; /* reserved and aligned: the largest size for the resizable BAR */
 		uintptr_t base;
+		uint32_t flags = PCIE_EPC_BAR_MEM32;
+
+		if (rebar >= 0 && want != 0U) {
+			/* every memory BAR of the function goes into the capability */
+			want = MAX(want, rebar_min);
+		}
+		if (b == rebar + 1 && rebar >= 0) {
+			continue; /* upper half of the 64-bit resizable BAR */
+		}
 
 		if (b == cfg->reg_bar) {
 			want = MAX(want, REG_DSN_HI + 4);
@@ -634,19 +666,29 @@ static int epf_test_setup_bars(const struct device *dev)
 			continue;
 		}
 
-		base = ROUND_UP(next, MAX(sz, feat != NULL ? feat->align : 256));
-		if (base + sz > cfg->mem_base + cfg->mem_size) {
-			LOG_ERR("memory-region too small for BAR%u (0x%zx)", b, sz);
+		span = sz;
+		if (b == rebar) {
+			span = MAX(sz, (size_t)cfg->rebar_max);
+			if (!IS_POWER_OF_TWO(span)) {
+				LOG_ERR("resizable-bar-max-size 0x%zx: not a power of two", span);
+				return -EINVAL;
+			}
+			flags = PCIE_EPC_BAR_MEM64 | PCIE_EPC_BAR_PREFETCH | PCIE_EPC_BAR_RESIZABLE;
+		}
+		base = ROUND_UP(next, MAX(span, feat != NULL ? feat->align : 256));
+		if (base + span > cfg->mem_base + cfg->mem_size) {
+			LOG_ERR("memory-region too small for BAR%u (0x%zx)", b, span);
 			return -ENOMEM;
 		}
-		next = base + sz;
+		next = base + span;
 
-		memset((void *)(d->mem_virt + (base - cfg->mem_base)), 0, sz);
+		memset((void *)(d->mem_virt + (base - cfg->mem_base)), 0, span);
 		d->bar[b] = (struct pcie_epc_bar){
 			.barno = b,
-			.flags = PCIE_EPC_BAR_MEM32,
+			.flags = flags,
 			.phys = pcie_epc_cpu_to_axi(cfg->epc, base),
 			.size = sz,
+			.max_size = b == rebar ? span : 0U,
 			.virt = (void *)(d->mem_virt + (base - cfg->mem_base)),
 		};
 		ret = pcie_epc_set_bar(cfg->epc, cfg->func, &d->bar[b]);
@@ -954,6 +996,8 @@ static int epf_test_init(const struct device *dev)
 		.reg_bar = DT_INST_PROP(n, test_reg_bar),                                          \
 		.msi_irqs = DT_INST_PROP(n, msi_interrupts),                                       \
 		.msix_irqs = DT_INST_PROP(n, msix_interrupts),                                     \
+		.rebar = DT_INST_PROP(n, resizable_bar),                                           \
+		.rebar_max = DT_INST_PROP(n, resizable_bar_max_size),                              \
 	};                                                                                         \
 	static struct epf_test_data epf_test_data_##n;                                             \
 	DEVICE_DT_INST_DEFINE(n, epf_test_init, NULL, &epf_test_data_##n, &epf_test_cfg_##n,       \
