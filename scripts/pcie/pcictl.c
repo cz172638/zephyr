@@ -52,8 +52,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
-#include <linux/dma-heap.h>
 #include <linux/vfio.h>
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -1087,63 +1085,6 @@ struct dbuf {
 	int fd;		/* dma-buf of a heap, -1 for a hugepage */
 };
 
-/*
- * A contiguous CMA dma-buf when no hugepage lies in the RC's window: the
- * hugepage pool fills from the top of memory, CMA usually sits low.
- */
-static bool heapbuf(const struct vt *t, struct dbuf *b)
-{
-	DIR *dir = opendir("/dev/dma_heap");
-	struct dirent *e;
-	bool ok = false;
-
-	if (dir == NULL) {
-		return false;
-	}
-	while (!ok && (e = readdir(dir)) != NULL) {
-		struct dma_heap_allocation_data a = {.len = HUGE_SIZE, .fd_flags = O_RDWR | O_CLOEXEC};
-		char path[300];
-		int h;
-		void *p;
-
-		if (strstr(e->d_name, "cma") == NULL && strstr(e->d_name, "reserved") == NULL) {
-			continue;
-		}
-		snprintf(path, sizeof(path), "/dev/dma_heap/%s", e->d_name);
-		h = open(path, O_RDWR | O_CLOEXEC);
-		if (h < 0) {
-			continue;
-		}
-		if (ioctl(h, DMA_HEAP_IOCTL_ALLOC, &a) != 0) {
-			close(h);
-			continue;
-		}
-		close(h);
-		p = mmap(NULL, HUGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, (int)a.fd, 0);
-		if (p == MAP_FAILED) {
-			close((int)a.fd);
-			continue;
-		}
-		memset(p, 0, HUGE_SIZE);
-		b->va = p;
-		b->fd = (int)a.fd;
-		b->pa = virt_to_phys(p);
-		/* contiguous and in the window, checked page by page at both ends */
-		ok = b->pa + HUGE_SIZE <= t->limit &&
-		     virt_to_phys((uint8_t *)p + HUGE_SIZE - 4096) == b->pa + HUGE_SIZE - 4096;
-		if (!ok) {
-			munmap(p, HUGE_SIZE);
-			close(b->fd);
-			b->va = NULL;
-			b->fd = -1;
-		} else {
-			fprintf(stderr, "buffer from %s at 0x%" PRIx64 "\n", path, b->pa);
-		}
-	}
-	closedir(dir);
-	return ok;
-}
-
 static void dbuf_free(struct dbuf *b)
 {
 	if (b->va != NULL) {
@@ -1159,7 +1100,7 @@ static void dbuf_free(struct dbuf *b)
 /* a 2 MiB hugepage below vt->limit (tries a few, gives the others back) */
 static struct dbuf hugebuf(const struct vt *t)
 {
-	static void *tried[1024];
+	static void *tried[4096];
 	int n = 0;
 	struct dbuf b = {.fd = -1};
 
@@ -1185,9 +1126,15 @@ static struct dbuf hugebuf(const struct vt *t)
 	for (int i = 0; i < n; i++) {
 		munmap(tried[i], HUGE_SIZE);
 	}
-	if (b.va == NULL && !heapbuf(t, &b)) {
-		die("no 2 MiB buffer below 0x%" PRIx64 " (DMA window of the RC): %d hugepages above "
-		    "it, no CMA dma-heap (/dev/dma_heap) with room", t->limit, n);
+	/*
+	 * The pool fills from the top of memory: on a 4 GiB board the first
+	 * ~1000 pages lie above 4 GiB. A dma-heap buffer is no way out, its
+	 * mapping is VM_PFNMAP, which pagemap does not show.
+	 */
+	if (b.va == NULL) {
+		die("none of %d free hugepages below 0x%" PRIx64 " (DMA window of the RC): "
+		    "allocate enough to reach low memory, e.g. echo 1200 > "
+		    "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", n, t->limit);
 	}
 	return b;
 }
