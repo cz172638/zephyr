@@ -1368,6 +1368,21 @@ static void vt_open(struct vt *t, struct pci_dev *d)
 	    ioctl(t->container, VFIO_SET_IOMMU, VFIO_NOIOMMU_IOMMU) != 0) {
 		die("%s: container setup: %s", path, strerror(errno));
 	}
+	/* opening the device resets it: an endpoint that cannot do that hangs */
+	dev_path(d, "reset_method", path, sizeof(path));
+	{
+		FILE *f = fopen(path, "r");
+		char m[128] = "";
+
+		if (f != NULL && fgets(m, sizeof(m), f) != NULL && m[0] != '\n') {
+			fprintf(stderr, "note: vfio-pci resets the function on open (%.*s); if the "
+				"endpoint cannot, first: echo > %s\n",
+				(int)strcspn(m, "\n"), m, path);
+		}
+		if (f != NULL) {
+			fclose(f);
+		}
+	}
 	t->dev = ioctl(t->group, VFIO_GROUP_GET_DEVICE_FD, t->bdf);
 	if (t->dev < 0) {
 		die("%s: device fd: %s", t->bdf, strerror(errno));
