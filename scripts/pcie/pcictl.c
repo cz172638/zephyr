@@ -23,6 +23,9 @@
  *   pcictl ports  <bridge>                     links of a switch (or root port) and below
  *   pcictl watch  <bdf> [ms]                   link, device, slot status as they change
  *   pcictl aer    <bdf> [clear]                AER and Device Status errors
+ *   pcictl test   <bdf> [-b bar] [-t ms] [-d] [-l limit] <item>...
+ *                 pci-epf-test over vfio-pci (No-IOMMU): bars, bar<n>, msi, msi<n>,
+ *                 msix<n>, read:<size>, write:<size>, copy:<size> (u: unaligned), all
  *   pcictl remove <bdf> | rescan | reset <bdf> | unbind <bdf> | bind <bdf> <drv>
  *
  * Options before the command: -w 8|16|32|64 access width (default 32; cfg
@@ -48,7 +51,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <linux/vfio.h>
+#include <poll.h>
+#include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -83,6 +91,8 @@ static void __attribute__((noreturn)) usage(void)
 	      "       epf <bdf> [bar] | link <bdf> [status | retrain | disable | enable |\n"
 	      "       speed <1..6> | aspm off|l0s|l1|l0s+l1] | hotreset <bridge> [ms] |\n"
 	      "       ports <bridge> | watch <bdf> [ms] | aer <bdf> [clear] |\n"
+	      "       test <bdf> [-b bar] [-t ms] [-d] [-l limit] bars|bar<n>|msi[<n>]|msix<n>|\n"
+	      "            read:<size>[u]|write:<size>[u]|copy:<size>[u]|all |\n"
 	      "       remove <bdf> | rescan | reset <bdf> |\n"
 	      "       unbind <bdf> | bind <bdf> <driver>\n",
 	      stderr);
@@ -958,6 +968,662 @@ static void cmd_epf(struct pci_dev *d, int argc, char **argv)
 	       flags(r[12], cap_bit, cap_name, ARRAY_SIZE(cap_bit), buf, sizeof(buf)));
 }
 
+/* --- test: pci-epf-test over vfio-pci (No-IOMMU) --------------------------- */
+
+/*
+ * The function is bound to vfio-pci; with no IOMMU the group is
+ * /dev/vfio/noiommu-N and DMA addresses are physical: buffers are hugepages
+ * (physically contiguous), their address from /proc/self/pagemap. MSI and
+ * MSI-X arrive on eventfds, so every wait has a timeout, and a BAR that
+ * does not answer is a SIGBUS in this process.
+ */
+
+#define EPT_MAGIC	0x00
+#define EPT_COMMAND	0x04
+#define EPT_STATUS	0x08
+#define EPT_SRC_LO	0x0c
+#define EPT_SRC_HI	0x10
+#define EPT_DST_LO	0x14
+#define EPT_DST_HI	0x18
+#define EPT_SIZE	0x1c
+#define EPT_CHECKSUM	0x20
+#define EPT_IRQ_TYPE	0x24
+#define EPT_IRQ_NUMBER	0x28
+#define EPT_FLAGS	0x2c
+#define EPT_CAPS	0x30
+
+#define EPT_CMD_RAISE_MSI  0x02
+#define EPT_CMD_RAISE_MSIX 0x04
+#define EPT_CMD_READ	   0x08
+#define EPT_CMD_WRITE	   0x10
+#define EPT_CMD_COPY	   0x20
+#define EPT_ST_READ_OK	   0x01
+#define EPT_ST_WRITE_OK	   0x04
+#define EPT_ST_COPY_OK	   0x10
+#define EPT_ST_IRQ	   0x40
+#define EPT_IRQ_MSI	   1
+#define EPT_IRQ_MSIX	   2
+#define EPT_FLAG_DMA	   0x1
+#define EPT_CAP_UNALIGNED  0x1
+
+#define HUGE_SIZE	(2UL << 20)
+
+struct vt {
+	struct pci_dev *d;
+	char bdf[16];
+	int container, group, dev;
+	struct bar_map bar[6];
+	uint64_t cfg_off;
+	unsigned int reg_bar;
+	int irq_type;			/* EPT_IRQ_MSI / EPT_IRQ_MSIX, 0 = none */
+	int nirq;
+	int efd[64];
+	unsigned int timeout_ms;
+	bool dma;
+	uint64_t limit;			/* buffers must end below this bus address */
+	uint32_t caps;
+};
+
+static struct vt *vt_cur;	/* for the exit handler: bus mastering off */
+
+static uint32_t crc32_le(uint32_t crc, const uint8_t *p, size_t n)
+{
+	/* the kernel's crc32_le(~0, ...): reflected 0xedb88320, no final xor */
+	while (n--) {
+		crc ^= *p++;
+		for (int k = 0; k < 8; k++) {
+			crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+		}
+	}
+	return crc;
+}
+
+static void cache_flush(const void *p, size_t n)
+{
+#if defined(__aarch64__)
+	/* DC CIVAC at EL0 (Linux sets SCTLR_EL1.UCI): buffers may not be coherent */
+	uint64_t ctr;
+	uintptr_t line, a, end = (uintptr_t)p + n;
+
+	__asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+	line = 4U << ((ctr >> 16) & 0xfU);
+	for (a = (uintptr_t)p & ~(line - 1U); a < end; a += line) {
+		__asm__ volatile("dc civac, %0" : : "r"(a) : "memory");
+	}
+	__asm__ volatile("dsb sy" : : : "memory");
+#else
+	(void)p;
+	(void)n;
+	__sync_synchronize();
+#endif
+}
+
+static uint64_t virt_to_phys(const void *v)
+{
+	uint64_t ent;
+	long ps = sysconf(_SC_PAGESIZE);
+	int fd = open("/proc/self/pagemap", O_RDONLY);
+
+	if (fd < 0) {
+		die("/proc/self/pagemap: %s", strerror(errno));
+	}
+	if (pread(fd, &ent, sizeof(ent), ((uintptr_t)v / (uint64_t)ps) * sizeof(ent)) !=
+	    (ssize_t)sizeof(ent)) {
+		die("/proc/self/pagemap: %s", strerror(errno));
+	}
+	close(fd);
+	if (!(ent & (1ULL << 63)) || (ent & ((1ULL << 55) - 1U)) == 0U) {
+		die("no physical address for %p (not root?)", v);
+	}
+	return (ent & ((1ULL << 55) - 1U)) * (uint64_t)ps + ((uintptr_t)v % (uint64_t)ps);
+}
+
+struct dbuf {
+	uint8_t *va;
+	uint64_t pa;
+};
+
+/* a 2 MiB hugepage below vt->limit (tries a few, gives the others back) */
+static struct dbuf hugebuf(const struct vt *t)
+{
+	void *tried[16];
+	int n = 0;
+	struct dbuf b = {0};
+
+	while (n < (int)ARRAY_SIZE(tried)) {
+		void *p = mmap(NULL, HUGE_SIZE, PROT_READ | PROT_WRITE,
+			       MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE, -1, 0);
+
+		if (p == MAP_FAILED && n > 0) {
+			break;	/* only pages above the limit left */
+		}
+		if (p == MAP_FAILED) {
+			die("hugepage: %s (echo 8 > /sys/kernel/mm/hugepages/hugepages-2048kB/"
+			    "nr_hugepages)", strerror(errno));
+		}
+		memset(p, 0, HUGE_SIZE);
+		if (mlock(p, HUGE_SIZE) != 0) {
+			die("mlock: %s", strerror(errno));
+		}
+		b.va = p;
+		b.pa = virt_to_phys(p);
+		if (b.pa + HUGE_SIZE <= t->limit) {
+			break;
+		}
+		tried[n++] = p;
+		b.va = NULL;
+	}
+	for (int i = 0; i < n; i++) {
+		munmap(tried[i], HUGE_SIZE);
+	}
+	if (b.va == NULL) {
+		die("no hugepage below 0x%" PRIx64 " (DMA window of the RC)", t->limit);
+	}
+	return b;
+}
+
+static uint32_t cfg_rd(struct vt *t, unsigned int off, unsigned int n)
+{
+	uint32_t v = 0;
+
+	if (pread(t->dev, &v, n, (off_t)(t->cfg_off + off)) != (ssize_t)n) {
+		die("vfio config read 0x%x: %s", off, strerror(errno));
+	}
+	return v;
+}
+
+static void cfg_wr(struct vt *t, unsigned int off, unsigned int n, uint32_t v)
+{
+	if (pwrite(t->dev, &v, n, (off_t)(t->cfg_off + off)) != (ssize_t)n) {
+		die("vfio config write 0x%x: %s", off, strerror(errno));
+	}
+}
+
+static void vt_master(struct vt *t, bool on)
+{
+	uint16_t cmd = (uint16_t)cfg_rd(t, PCI_COMMAND, 2);
+
+	cmd = on ? (cmd | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER) : (cmd & ~PCI_COMMAND_MASTER);
+	cfg_wr(t, PCI_COMMAND, 2, cmd);
+}
+
+static void vt_exit(void)
+{
+	if (vt_cur != NULL && vt_cur->dev >= 0) {
+		uint16_t cmd = 0;
+
+		/* no late DMA into pages this process gives back */
+		if (pread(vt_cur->dev, &cmd, 2, (off_t)(vt_cur->cfg_off + PCI_COMMAND)) == 2) {
+			cmd &= ~PCI_COMMAND_MASTER;
+			off_t off = (off_t)(vt_cur->cfg_off + PCI_COMMAND);
+
+			if (pwrite(vt_cur->dev, &cmd, 2, off) != 2) {
+				fputs("bus mastering not turned off\n", stderr);
+			}
+		}
+	}
+}
+
+static uint32_t reg_rd(struct vt *t, unsigned int off)
+{
+	unsigned int w = width;
+	uint32_t v;
+
+	width = 32;
+	v = (uint32_t)bar_rd(&t->bar[t->reg_bar], t->reg_bar, off);
+	width = w;
+	return v;
+}
+
+static void reg_wr(struct vt *t, unsigned int off, uint32_t v)
+{
+	unsigned int w = width;
+
+	width = 32;
+	bar_wr(&t->bar[t->reg_bar], t->reg_bar, off, v);
+	width = w;
+}
+
+/*
+ * The real config space (sysfs, not vfio's virtualized copy): an endpoint
+ * that rebooted shows Memory Space off and BARs zero; a BAR access would
+ * then fault. Checked before every test.
+ */
+static int vt_alive(struct vt *t)
+{
+	uint16_t vendor = pci_read_word(t->d, PCI_VENDOR_ID);
+	uint16_t cmd = pci_read_word(t->d, PCI_COMMAND);
+	uint32_t bar = pci_read_long(t->d, PCI_BASE_ADDRESS_0 + 4 * t->reg_bar);
+	uint32_t want = (uint32_t)(t->d->base_addr[t->reg_bar] & PCI_ADDR_MEM_MASK);
+
+	if (vendor != t->d->vendor_id) {
+		fprintf(stderr, "endpoint does not answer config requests (vendor %04x)\n",
+			vendor);
+		return -1;
+	}
+	if (!(cmd & PCI_COMMAND_MEMORY) || (bar & PCI_BASE_ADDRESS_MEM_MASK) != want) {
+		fprintf(stderr,
+			"endpoint lost its config space (command %04x, BAR%u %08x, was %08x): "
+			"rebooted? pcictl remove %s; pcictl rescan\n",
+			cmd, t->reg_bar, bar, want, t->bdf);
+		return -1;
+	}
+	return 0;
+}
+
+static void vt_irq_off(struct vt *t)
+{
+	struct vfio_irq_set s = {
+		.argsz = sizeof(s),
+		.flags = VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER,
+		.index = t->irq_type == EPT_IRQ_MSIX ? VFIO_PCI_MSIX_IRQ_INDEX
+						     : VFIO_PCI_MSI_IRQ_INDEX,
+	};
+
+	if (t->nirq == 0) {
+		return;
+	}
+	ioctl(t->dev, VFIO_DEVICE_SET_IRQS, &s);
+	for (int i = 0; i < t->nirq; i++) {
+		close(t->efd[i]);
+	}
+	t->nirq = 0;
+	t->irq_type = 0;
+}
+
+/* MSI or MSI-X with n vectors on eventfds; the kernel programs the capability */
+static void vt_irq_on(struct vt *t, int type, int n)
+{
+	unsigned int index = type == EPT_IRQ_MSIX ? VFIO_PCI_MSIX_IRQ_INDEX
+						  : VFIO_PCI_MSI_IRQ_INDEX;
+	struct vfio_irq_info ii = {.argsz = sizeof(ii), .index = index};
+	size_t sz = sizeof(struct vfio_irq_set) + sizeof(int32_t) * (size_t)n;
+	struct vfio_irq_set *s;
+
+	if (t->irq_type == type && t->nirq >= n) {
+		return;
+	}
+	vt_irq_off(t);
+	if (ioctl(t->dev, VFIO_DEVICE_GET_IRQ_INFO, &ii) != 0 || ii.count == 0U) {
+		die("%s not available", type == EPT_IRQ_MSIX ? "MSI-X" : "MSI");
+	}
+	if (type == EPT_IRQ_MSI) {
+		int p = 1;
+
+		while (p < n) {
+			p <<= 1;	/* multi-message MSI: a power of two */
+		}
+		n = p;
+	}
+	if ((unsigned int)n > ii.count || n > (int)ARRAY_SIZE(t->efd)) {
+		die("%d vectors, the function has %u", n, ii.count);
+	}
+	s = calloc(1, sz);
+	if (s == NULL) {
+		die("out of memory");
+	}
+	s->argsz = (uint32_t)sz;
+	s->flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER;
+	s->index = index;
+	s->start = 0;
+	s->count = (uint32_t)n;
+	for (int i = 0; i < n; i++) {
+		t->efd[i] = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+		if (t->efd[i] < 0) {
+			die("eventfd: %s", strerror(errno));
+		}
+		((int32_t *)s->data)[i] = t->efd[i];
+	}
+	if (ioctl(t->dev, VFIO_DEVICE_SET_IRQS, s) != 0) {
+		die("enable %d %s vectors: %s", n, type == EPT_IRQ_MSIX ? "MSI-X" : "MSI",
+		    strerror(errno));
+	}
+	free(s);
+	t->nirq = n;
+	t->irq_type = type;
+}
+
+/* drain stale events, so a late interrupt is not taken for the next one */
+static void vt_irq_drain(struct vt *t)
+{
+	uint64_t c;
+
+	for (int i = 0; i < t->nirq; i++) {
+		while (read(t->efd[i], &c, sizeof(c)) == (ssize_t)sizeof(c)) {
+		}
+	}
+}
+
+/* wait for vector v (0-based); returns microseconds, or -1 on timeout */
+static long vt_wait(struct vt *t, int v, const struct timespec *t0)
+{
+	struct pollfd p = {.fd = t->efd[v], .events = POLLIN};
+	struct timespec t1;
+	uint64_t c;
+	int r = poll(&p, 1, (int)t->timeout_ms);
+
+	if (r <= 0 || read(t->efd[v], &c, sizeof(c)) != (ssize_t)sizeof(c)) {
+		return -1;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	return (t1.tv_sec - t0->tv_sec) * 1000000L + (t1.tv_nsec - t0->tv_nsec) / 1000L;
+}
+
+static int vt_command(struct vt *t, uint32_t cmd, int vec, long *us)
+{
+	struct timespec t0;
+
+	vt_irq_drain(t);
+	reg_wr(t, EPT_STATUS, 0);
+	reg_wr(t, EPT_IRQ_TYPE, (uint32_t)t->irq_type);
+	reg_wr(t, EPT_IRQ_NUMBER, (uint32_t)vec);
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	reg_wr(t, EPT_COMMAND, cmd);
+	*us = vt_wait(t, vec - 1, &t0);
+	if (*us < 0) {
+		/* the endpoint may still be moving data: stop it before going on */
+		vt_master(t, false);
+		return -1;
+	}
+	return 0;
+}
+
+static void vt_open(struct vt *t, struct pci_dev *d)
+{
+	char path[PATH_MAX], link[256], *g;
+	struct vfio_group_status gs = {.argsz = sizeof(gs)};
+	struct vfio_device_info di = {.argsz = sizeof(di)};
+	struct vfio_region_info ri = {.argsz = sizeof(ri)};
+	ssize_t n;
+
+	t->d = d;
+	snprintf(t->bdf, sizeof(t->bdf), "%04x:%02x:%02x.%u", d->domain, d->bus, d->dev, d->func);
+	dev_path(d, "iommu_group", path, sizeof(path));
+	n = readlink(path, link, sizeof(link) - 1);
+	if (n < 0) {
+		die("%s: no IOMMU group: not bound to vfio-pci "
+		    "(driverctl set-override %s vfio-pci)", t->bdf, t->bdf);
+	}
+	link[n] = '\0';
+	g = strrchr(link, '/');
+	t->container = open("/dev/vfio/vfio", O_RDWR | O_CLOEXEC);
+	if (t->container < 0) {
+		die("/dev/vfio/vfio: %s (modprobe vfio-pci)", strerror(errno));
+	}
+	if (ioctl(t->container, VFIO_GET_API_VERSION) != VFIO_API_VERSION ||
+	    ioctl(t->container, VFIO_CHECK_EXTENSION, VFIO_NOIOMMU_IOMMU) <= 0) {
+		die("no No-IOMMU support (modprobe vfio enable_unsafe_noiommu_mode=1)");
+	}
+	snprintf(path, sizeof(path), "/dev/vfio/noiommu-%s", g != NULL ? g + 1 : link);
+	t->group = open(path, O_RDWR | O_CLOEXEC);
+	if (t->group < 0) {
+		die("%s: %s (bound to vfio-pci? an IOMMU group would be /dev/vfio/N, not handled)",
+		    path, strerror(errno));
+	}
+	if (ioctl(t->group, VFIO_GROUP_GET_STATUS, &gs) != 0 ||
+	    !(gs.flags & VFIO_GROUP_FLAGS_VIABLE)) {
+		die("%s: group not viable (other functions in it not bound to vfio-pci)", path);
+	}
+	if (ioctl(t->group, VFIO_GROUP_SET_CONTAINER, &t->container) != 0 ||
+	    ioctl(t->container, VFIO_SET_IOMMU, VFIO_NOIOMMU_IOMMU) != 0) {
+		die("%s: container setup: %s", path, strerror(errno));
+	}
+	t->dev = ioctl(t->group, VFIO_GROUP_GET_DEVICE_FD, t->bdf);
+	if (t->dev < 0) {
+		die("%s: device fd: %s", t->bdf, strerror(errno));
+	}
+	if (ioctl(t->dev, VFIO_DEVICE_GET_INFO, &di) != 0) {
+		die("%s: device info: %s", t->bdf, strerror(errno));
+	}
+	ri.index = VFIO_PCI_CONFIG_REGION_INDEX;
+	if (ioctl(t->dev, VFIO_DEVICE_GET_REGION_INFO, &ri) != 0) {
+		die("%s: config region: %s", t->bdf, strerror(errno));
+	}
+	t->cfg_off = ri.offset;
+	for (unsigned int i = 0; i < 6U; i++) {
+		void *va;
+
+		ri = (struct vfio_region_info){.argsz = sizeof(ri), .index = i};
+		if (ioctl(t->dev, VFIO_DEVICE_GET_REGION_INFO, &ri) != 0 || ri.size == 0U ||
+		    !(ri.flags & VFIO_REGION_INFO_FLAG_MMAP)) {
+			continue;
+		}
+		va = mmap(NULL, ri.size, PROT_READ | PROT_WRITE, MAP_SHARED, t->dev,
+			  (off_t)ri.offset);
+		if (va == MAP_FAILED) {
+			die("BAR%u mmap: %s", i, strerror(errno));
+		}
+		t->bar[i].va = va;
+		t->bar[i].size = ri.size;
+	}
+	if (t->bar[t->reg_bar].va == NULL) {
+		die("test register BAR%u not mappable", t->reg_bar);
+	}
+	vt_cur = t;
+	atexit(vt_exit);
+	if (vt_alive(t) != 0) {
+		exit(4);
+	}
+	vt_master(t, true);
+	t->caps = reg_rd(t, EPT_CAPS);
+}
+
+static void report(const char *what, int ok, long us, size_t bytes)
+{
+	if (ok && bytes != 0U && us > 0) {
+		printf("%-28s OKAY  %7ld us %8.1f MB/s\n", what, us, (double)bytes / (double)us);
+	} else if (ok) {
+		printf("%-28s OKAY  %7ld us\n", what, us);
+	} else {
+		printf("%-28s NOT OKAY%s\n", what, us < 0 ? " (timeout, bus mastering off)" : "");
+	}
+}
+
+static int vt_test_bar(struct vt *t, unsigned int b)
+{
+	struct bar_map *m = &t->bar[b];
+	unsigned int w = width;
+	uint64_t n, i;
+	uint32_t pat = 0xa0a0a0a0U + 0x01010101U * b;
+	char what[32];
+	int ok = 1;
+
+	if (m->va == NULL) {
+		return 0;
+	}
+	/* the register block: only the first word, as pci_endpoint_test does */
+	n = (b == t->reg_bar) ? 0 : (m->size < (1U << 20) ? m->size : (1U << 20));
+	width = 32;
+	for (i = 0; i < n; i += 4) {
+		bar_wr(m, b, i, pat);
+	}
+	for (i = 0; i < n && ok; i += 4) {
+		ok = bar_rd(m, b, i) == pat;
+	}
+	width = w;
+	snprintf(what, sizeof(what), "BAR%u (%" PRIu64 " bytes)", b, n);
+	if (n != 0U) {
+		report(what, ok, 0, 0);
+	}
+	return ok ? 0 : 1;
+}
+
+static int vt_test_irq(struct vt *t, int type, int vec)
+{
+	char what[32];
+	long us;
+	int ok;
+
+	vt_irq_on(t, type, vec);
+	ok = vt_command(t, type == EPT_IRQ_MSIX ? EPT_CMD_RAISE_MSIX : EPT_CMD_RAISE_MSI, vec,
+			&us) == 0;
+	snprintf(what, sizeof(what), "%s%d", type == EPT_IRQ_MSIX ? "MSI-X" : "MSI", vec);
+	report(what, ok, us, 0);
+	return ok ? 0 : 1;
+}
+
+/* host buffer offset: the EP's alignment unless it takes unaligned addresses */
+static size_t vt_xfer_off(const struct vt *t, size_t size, bool unaligned)
+{
+	(void)size;
+	return (unaligned && (t->caps & EPT_CAP_UNALIGNED)) ? 3U : 0U;
+}
+
+static int vt_test_xfer(struct vt *t, const char *kind, size_t size, bool unaligned)
+{
+	struct dbuf a = hugebuf(t), b = {0};
+	size_t off = vt_xfer_off(t, size, unaligned);
+	char what[48];
+	uint32_t crc = 0, st;
+	long us;
+	int ok;
+
+	if (size == 0U || size + off > HUGE_SIZE) {
+		die("%s: size 1..%lu", kind, HUGE_SIZE - off);
+	}
+	if (t->irq_type == 0) {
+		vt_irq_on(t, EPT_IRQ_MSI, 1);
+	}
+	reg_wr(t, EPT_FLAGS, t->dma ? EPT_FLAG_DMA : 0U);
+	reg_wr(t, EPT_SIZE, (uint32_t)size);
+	if (strcmp(kind, "write") == 0) {
+		/* host -> EP: the EP reads our buffer and checks the CRC */
+		if (getrandom(a.va + off, size, 0) != (ssize_t)size) {
+			die("getrandom: %s", strerror(errno));
+		}
+		crc = crc32_le(~0U, a.va + off, size);
+		cache_flush(a.va, size + off);
+		reg_wr(t, EPT_CHECKSUM, crc);
+		reg_wr(t, EPT_SRC_LO, (uint32_t)(a.pa + off));
+		reg_wr(t, EPT_SRC_HI, (uint32_t)((a.pa + off) >> 32));
+		ok = vt_command(t, EPT_CMD_READ, 1, &us) == 0;
+		ok = ok && (reg_rd(t, EPT_STATUS) & EPT_ST_READ_OK);
+	} else if (strcmp(kind, "read") == 0) {
+		/* EP -> host: the EP fills our buffer and gives its CRC */
+		cache_flush(a.va, size + off);
+		reg_wr(t, EPT_DST_LO, (uint32_t)(a.pa + off));
+		reg_wr(t, EPT_DST_HI, (uint32_t)((a.pa + off) >> 32));
+		ok = vt_command(t, EPT_CMD_WRITE, 1, &us) == 0;
+		if (ok) {
+			cache_flush(a.va, size + off);
+			st = reg_rd(t, EPT_STATUS);
+			ok = (st & EPT_ST_WRITE_OK) &&
+			     crc32_le(~0U, a.va + off, size) == reg_rd(t, EPT_CHECKSUM);
+		}
+	} else {
+		/* copy: the EP copies between two host buffers */
+		b = hugebuf(t);
+		if (getrandom(a.va + off, size, 0) != (ssize_t)size) {
+			die("getrandom: %s", strerror(errno));
+		}
+		crc = crc32_le(~0U, a.va + off, size);
+		cache_flush(a.va, size + off);
+		cache_flush(b.va, size + off);
+		reg_wr(t, EPT_SRC_LO, (uint32_t)(a.pa + off));
+		reg_wr(t, EPT_SRC_HI, (uint32_t)((a.pa + off) >> 32));
+		reg_wr(t, EPT_DST_LO, (uint32_t)(b.pa + off));
+		reg_wr(t, EPT_DST_HI, (uint32_t)((b.pa + off) >> 32));
+		ok = vt_command(t, EPT_CMD_COPY, 1, &us) == 0;
+		if (ok) {
+			cache_flush(b.va, size + off);
+			ok = (reg_rd(t, EPT_STATUS) & EPT_ST_COPY_OK) &&
+			     crc32_le(~0U, b.va + off, size) == crc;
+		}
+	}
+	snprintf(what, sizeof(what), "%s %s(%zu bytes%s)", kind, t->dma ? "DMA " : "", size,
+		 off ? ", unaligned" : "");
+	report(what, ok, ok ? us : (us < 0 ? -1 : 0), ok ? size : 0U);
+	/* bus mastering is off after a timeout: the pages can go */
+	munmap(a.va, HUGE_SIZE);
+	if (b.va != NULL) {
+		munmap(b.va, HUGE_SIZE);
+	}
+	return ok ? 0 : 1;
+}
+
+/*
+ * test <bdf> [-b bar] [-t ms] [-d] [-l limit] item...
+ *   bars | bar<n> | msi<n> | msi | msix<n> | read:<size> | write:<size> |
+ *   copy:<size> (suffix u: unaligned host buffer) | all
+ */
+static int cmd_test(struct pci_dev *d, int argc, char **argv)
+{
+	struct vt t = {.container = -1, .group = -1, .dev = -1, .timeout_ms = 2000,
+		       .limit = 1ULL << 32};
+	int fails = 0, i = 0;
+
+	for (; i < argc && argv[i][0] == '-'; i++) {
+		if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
+			t.reg_bar = (unsigned int)num(argv[++i]);
+		} else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
+			t.timeout_ms = (unsigned int)num(argv[++i]);
+		} else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) {
+			t.limit = num(argv[++i]);
+		} else if (strcmp(argv[i], "-d") == 0) {
+			t.dma = true;
+		} else {
+			usage();
+		}
+	}
+	if (i == argc || t.reg_bar > 5U) {
+		usage();
+	}
+	vt_open(&t, d);
+	printf("%s %04x:%04x, test registers in BAR%u, caps %08x, timeout %u ms\n", t.bdf,
+	       d->vendor_id, d->device_id, t.reg_bar, t.caps, t.timeout_ms);
+
+	for (; i < argc; i++) {
+		const char *a = argv[i];
+		char *colon = strchr(a, ':');
+		size_t size = colon != NULL ? (size_t)strtoull(colon + 1, NULL, 0) : 0;
+		bool unaligned = colon != NULL && colon[strlen(colon) - 1] == 'u';
+
+		if (vt_alive(&t) != 0) {
+			fails++;
+			break;
+		}
+		vt_master(&t, true);	/* back on after a timeout */
+		if (strcmp(a, "all") == 0) {
+			for (unsigned int b = 0; b < 6U; b++) {
+				fails += vt_test_bar(&t, b);
+			}
+			for (int v = 1; v <= 16 && fails == 0; v++) {
+				fails += vt_test_irq(&t, EPT_IRQ_MSI, v);
+			}
+			vt_irq_on(&t, EPT_IRQ_MSI, 1);
+			for (size_t s = 1; s <= (1U << 20); s *= 32) {
+				fails += vt_test_xfer(&t, "write", s, false);
+				fails += vt_test_xfer(&t, "read", s, false);
+				fails += vt_test_xfer(&t, "copy", s, false);
+			}
+		} else if (strcmp(a, "bars") == 0) {
+			for (unsigned int b = 0; b < 6U; b++) {
+				fails += vt_test_bar(&t, b);
+			}
+		} else if (strncmp(a, "bar", 3) == 0) {
+			fails += vt_test_bar(&t, (unsigned int)num(a + 3));
+		} else if (strncmp(a, "msix", 4) == 0) {
+			fails += vt_test_irq(&t, EPT_IRQ_MSIX, (int)num(a + 4));
+		} else if (strcmp(a, "msi") == 0) {
+			for (int v = 1; v <= 16; v++) {
+				fails += vt_test_irq(&t, EPT_IRQ_MSI, v);
+			}
+		} else if (strncmp(a, "msi", 3) == 0) {
+			fails += vt_test_irq(&t, EPT_IRQ_MSI, (int)num(a + 3));
+		} else if (colon != NULL && (strncmp(a, "read:", 5) == 0 ||
+					     strncmp(a, "write:", 6) == 0 ||
+					     strncmp(a, "copy:", 5) == 0)) {
+			*colon = '\0';
+			fails += vt_test_xfer(&t, a, size, unaligned);
+		} else {
+			die("%s: bars, bar<n>, msi, msi<n>, msix<n>, read:<size>, write:<size>, "
+			    "copy:<size>[u], all", a);
+		}
+	}
+	vt_irq_off(&t);
+	return fails ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct sigaction sa = {.sa_handler = on_sigbus};
@@ -965,6 +1631,7 @@ int main(int argc, char **argv)
 	const char *c;
 	int opt;
 	const char *dump_file = NULL;
+	int ret = 0;
 
 	while ((opt = getopt(argc, argv, "+w:qF:")) != -1) {
 		switch (opt) {
@@ -1039,6 +1706,8 @@ int main(int argc, char **argv)
 			cmd_watch(d, n, a);
 		} else if (strcmp(c, "aer") == 0) {
 			cmd_aer(d, n, a);
+		} else if (strcmp(c, "test") == 0) {
+			ret = cmd_test(d, n, a);
 		} else if (strcmp(c, "remove") == 0) {
 			dev_path(d, "remove", path, sizeof(path));
 			sysfs_write(path, "1");
@@ -1066,5 +1735,5 @@ int main(int argc, char **argv)
 		}
 	}
 	pci_cleanup(pacc);
-	return 0;
+	return ret;
 }
