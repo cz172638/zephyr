@@ -139,9 +139,35 @@ proc rk_pcie_ob {{n 4}} {
 	}
 }
 
+# power state and error status of a function (PM cap 0x80, AER 0x100)
+proc rk_pcie_err {{fn 0}} {
+	global rk_pcie_core
+	set b [expr {$rk_pcie_core + ($fn << 12)}]
+	lassign [rk_rd [expr {$b + 0x84}]] pmcsr
+	lassign [rk_rd [expr {$b + 0xc8}]] devctl
+	lassign [rk_rd [expr {$b + 0x100}] 8] aer unc unm uns cor com cap hdr
+	set ds [expr {$devctl >> 16}]
+	echo [format "        power D%d, devsta %04x (%s%s%s%s)" [expr {$pmcsr & 3}] $ds \
+		[expr {$ds & 1 ? "corr " : ""}] [expr {$ds & 2 ? "nonfatal " : ""}] \
+		[expr {$ds & 4 ? "fatal " : ""}] [expr {$ds & 8 ? "UR" : ""}]]
+	if {($aer & 0xffff) == 1} {
+		set n {}
+		foreach {bit name} {0 rx-err 6 bad-TLP 7 bad-DLLP 8 replay-rollover 12 replay-timeout 13 advisory 14 internal 15 header-overflow} {
+			if {$cor & (1 << $bit)} { lappend n $name }
+		}
+		set u {}
+		foreach {bit name} {4 DLP 5 SDES 12 poisoned 13 FCP 14 cpl-timeout 15 cpl-abort 16 unexp-cpl 17 rx-overflow 18 malformed 19 ECRC 20 UR 22 internal} {
+			if {$unc & (1 << $bit)} { lappend u $name }
+		}
+		echo [format "        AER uncorrectable %s (%s), correctable %s (%s)" [rk_hex $unc] \
+			[join $u " "] [rk_hex $cor] [join $n " "]]
+	}
+}
+
 proc rk_pcie {{fn 0}} {
 	rk_pcie_client
 	rk_pcie_hdr $fn
+	rk_pcie_err $fn
 	rk_pcie_bars $fn
 	rk_pcie_ob
 }
