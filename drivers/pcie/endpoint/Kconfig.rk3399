@@ -30,3 +30,14 @@ config PCIE_EPC_RK3399_SRIOV
 	  endpoint mode, so the core exposes its SR-IOV capability. VF BARs,
 	  inbound windows and MSI per VF are not handled yet: this only shows
 	  the capability and its reset values to the host.
+
+config PCIE_EPC_RK3399_MSI_TRACE
+	bool "Log the controller state before every MSI write"
+	depends on PCIE_EPC_RK3399
+	help
+	  One line per MSI with LTSSM, client and LM link status, the
+	  function's Command register, the MSI outbound region and the
+	  client interrupt status, flushed before the write (the log is
+	  switched to panic mode, i.e. synchronous, at the first MSI), so
+	  the state is on the console even when the write faults. Debug
+	  only.

@@ -30,6 +30,7 @@
 #endif
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
@@ -566,6 +567,20 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 		d->irq_pci_addr = base;
 		d->irq_pci_fn = func;
 	}
+	if (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSI_TRACE)) {
+		/* the state an MSI write meets, to compare one that faults with one that works */
+		LOG_INF("msi fn%u #%u -> 0x%llx/0x%04x: ltssm 0x%02x st0 %08x st1 %08x pl0 %08x "
+			"cmd %08x ob %08x/%08x int %08x", func, irq_num,
+			(unsigned long long)pci_addr, data, rk3399_pcie_ltssm(apb(dev)),
+			rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS0),
+			rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS1),
+			cdns_ep_read(&d->core, CDNS_LM_PL_CONFIG0),
+			cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG),
+			cdns_ep_read(&d->core, CDNS_AT_OB_PCI_ADDR0(0x20U, OB_IRQ_REGION)),
+			cdns_ep_read(&d->core, CDNS_AT_OB_DESC0(0x20U, OB_IRQ_REGION)),
+			rk_client_read(apb(dev), RK_CLIENT_INT_STATUS));
+		LOG_PANIC();
+	}
 	/*
 	 * One DWORD with the message data in the low half, as an MSI write is
 	 * on the link: the outbound AXI slave answers a 16-bit write to the
@@ -585,7 +600,14 @@ static int epc_raise_irq(const struct device *dev, uint8_t func, enum pcie_epc_i
 	if (!d->link_up) {
 		return -ENOTCONN;
 	}
-	if ((type == PCIE_EPC_IRQ_MSI || type == PCIE_EPC_IRQ_MSIX) && !(d->bme & BIT(func))) {
+	if ((type == PCIE_EPC_IRQ_MSI || type == PCIE_EPC_IRQ_MSIX) && !(d->bme & BIT(func)) &&
+	    (cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG) &
+	     PCI_COMMAND_MASTER) == 0U) {
+		/*
+		 * The cached bit lags the link work by up to a poll period; a
+		 * function that saw BME in its own Command register raises
+		 * right away. Only a clear register refuses.
+		 */
 		return -EACCES; /* no Bus Master Enable: the write would be dropped */
 	}
 	switch (type) {
