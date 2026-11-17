@@ -776,6 +776,56 @@ static int sh_link(const struct device *dev, const struct shell *sh, bool do_ret
 	return 0;
 }
 
+/*
+ * Busy-poll LTSSM, the client's data link status and LM link ready for ms
+ * milliseconds and print every change with its time: recovery passes and
+ * short drops the link work's polling never sees. Interrupts stay on.
+ */
+static int sh_link_trace(const struct device *dev, const struct shell *sh, uint32_t ms)
+{
+	struct epc_rk3399_data *d = dev->data;
+	static struct {
+		uint32_t t_us;
+		uint8_t ltssm;
+		uint8_t dl;
+		uint8_t ls;
+	} ev[256];
+	unsigned int n = 0, lost = 0;
+	uint64_t t0 = k_cycle_get_64(), end = t0 + k_us_to_cyc_ceil64((uint64_t)ms * 1000U);
+	uint32_t prev = UINT32_MAX;
+
+	if (!d->active) {
+		return -EBUSY;
+	}
+	for (uint64_t now = t0; now < end; now = k_cycle_get_64()) {
+		uint8_t s = rk3399_pcie_ltssm(apb(dev));
+		uint8_t dl = (rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS1) >> 20) & 3U;
+		uint8_t ls = cdns_ep_read(&d->core, CDNS_LM_PL_CONFIG0) & 1U;
+		uint32_t cur = ((uint32_t)s << 16) | ((uint32_t)dl << 8) | ls;
+
+		if (cur == prev) {
+			continue;
+		}
+		prev = cur;
+		if (n < ARRAY_SIZE(ev)) {
+			ev[n].t_us = (uint32_t)k_cyc_to_us_floor64(now - t0);
+			ev[n].ltssm = s;
+			ev[n].dl = dl;
+			ev[n].ls = ls;
+			n++;
+		} else {
+			lost++;
+		}
+	}
+	for (unsigned int i = 0; i < n; i++) {
+		shell_print(sh, "%10u us  ltssm 0x%02x %-24s dl %u ls %u", ev[i].t_us, ev[i].ltssm,
+			    rk3399_pcie_ltssm_name(ev[i].ltssm), ev[i].dl, ev[i].ls);
+	}
+	shell_print(sh, "%u changes in %u ms%s", n + lost, ms,
+		    lost ? " (later ones not kept)" : "");
+	return 0;
+}
+
 static int sh_id_get(const struct device *dev, pcie_bdf_t bdf, struct pcie_shell_id *id)
 {
 	struct epc_rk3399_data *d = dev->data;
@@ -864,6 +914,7 @@ static int epc_rk3399_init(const struct device *dev)
 		.mode_saved = sh_mode_saved,
 #endif
 		.link = sh_link,
+		.link_trace = sh_link_trace,
 		.id_get = sh_id_get,
 		.id_set = sh_id_set,
 		.cfg_read = sh_cfg_read,

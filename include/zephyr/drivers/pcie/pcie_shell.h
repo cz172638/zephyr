@@ -63,6 +63,8 @@ struct pcie_shell_ctrl {
 	bool (*mode_saved)(const struct device *dev, enum pcie_shell_role *role);
 	/** Link state; retrain: take it down and up again (RC: PERST#, rescan) */
 	int (*link)(const struct device *dev, const struct shell *sh, bool retrain);
+	/** Sample the link state for ms milliseconds and print each change */
+	int (*link_trace)(const struct device *dev, const struct shell *sh, uint32_t ms);
 	/** Enumerate again (root complex) */
 	int (*scan)(const struct device *dev, const struct shell *sh);
 	/** Interrupt counters */

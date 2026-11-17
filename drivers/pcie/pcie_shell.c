@@ -638,6 +638,14 @@ static int cmd_ctrl_link(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct pcie_shell_ctrl *c = active_ctrl(sh);
 
+	if (argc > 1 && strcmp(argv[1], "trace") == 0) {
+		if (c == NULL || c->link_trace == NULL) {
+			return -ENOTSUP;
+		}
+		uint32_t ms = argc > 2 ? (uint32_t)strtoul(argv[2], NULL, 0) : 1000U;
+
+		return c->link_trace(c->dev, sh, ms);
+	}
 	if (c == NULL || c->link == NULL) {
 		return -ENOTSUP;
 	}
@@ -1168,8 +1176,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ctrl_cmds,
 	SHELL_CMD_ARG(info, NULL, "Controllers, role, link and state of the active one",
 		      cmd_ctrl_info, 1, 0),
 	SHELL_CMD_ARG(mode, NULL, "[rc|ep] Role, saved for the next boot", cmd_ctrl_mode, 1, 1),
-	SHELL_CMD_ARG(link, NULL, "[retrain] Link state; retrain it (RC: PERST#, rescan)",
-		      cmd_ctrl_link, 1, 1),
+	SHELL_CMD_ARG(link, NULL,
+		      "[retrain | trace [ms]] Link state; retrain it (RC: PERST#, rescan); "
+		      "sample LTSSM and link status, print the changes",
+		      cmd_ctrl_link, 1, 2),
 	SHELL_CMD_ARG(scan, NULL, "Enumerate again (root complex)", cmd_ctrl_scan, 1, 0),
 	SHELL_CMD_ARG(irq, NULL, "Interrupt counters", cmd_ctrl_irq, 1, 0),
 	SHELL_CMD_ARG(id, NULL,
