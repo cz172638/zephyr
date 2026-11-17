@@ -134,10 +134,24 @@ static bool active_role(void)
 
 /* --- link supervision ------------------------------------------------------ */
 
+/*
+ * The configuration a hot reset or link down clears may include the
+ * outbound translation (the TRM does not say): program the MSI region
+ * again on the next interrupt instead of trusting the cached address.
+ */
+static void irq_region_forget(struct epc_rk3399_data *d)
+{
+	k_spinlock_key_t key = k_spin_lock(&d->lock);
+
+	d->irq_pci_addr = UINT64_MAX;
+	k_spin_unlock(&d->lock, key);
+}
+
 static void link_down(const struct device *dev)
 {
 	struct epc_rk3399_data *d = dev->data;
 
+	irq_region_forget(d);
 	if (d->link_up) {
 		d->link_up = false;
 		d->bme = 0;
@@ -174,6 +188,7 @@ static void link_work(struct k_work *work)
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
+		irq_region_forget(d);
 		pcie_epc_notify(dev, PCIE_EPC_EVT_HOT_RESET, 0);
 	}
 
