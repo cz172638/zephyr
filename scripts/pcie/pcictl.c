@@ -23,9 +23,11 @@
  *   pcictl ports  <bridge>                     links of a switch (or root port) and below
  *   pcictl watch  <bdf> [ms]                   link, device, slot status as they change
  *   pcictl aer    <bdf> [clear]                AER and Device Status errors
- *   pcictl test   <bdf> [-b bar] [-t ms] [-d] [-l limit] <item>...
+ *   pcictl test   <bdf> [-b bar] [-t ms] [-d] [-k] [-l limit] <item>...
  *                 pci-epf-test over vfio-pci (No-IOMMU): bars, bar<n>, msi, msi<n>,
- *                 msix<n>, read:<size>, write:<size>, copy:<size> (u: unaligned), all
+ *                 msix<n>, read:<size>, write:<size>, copy:<size> (u: unaligned),
+ *                 doorbell, all; -k rings the endpoint's doorbell after each
+ *                 command (no waiting for its poll)
  *   pcictl buf    [-l limit] [ms]              DMA buffer for the endpoint's requests
  *   pcictl remove <bdf> | rescan | reset <bdf> | unbind <bdf> | bind <bdf> <drv>
  *
@@ -92,7 +94,7 @@ static void __attribute__((noreturn)) usage(void)
 	      "       epf <bdf> [bar] | link <bdf> [status | retrain | disable | enable |\n"
 	      "       speed <1..6> | aspm off|l0s|l1|l0s+l1] | hotreset <bridge> [ms] |\n"
 	      "       ports <bridge> | watch <bdf> [ms] | aer <bdf> [clear] |\n"
-	      "       test <bdf> [-b bar] [-t ms] [-d] [-l limit] bars|bar<n>|msi[<n>]|msix<n>|\n"
+	      "       test <bdf> [-b bar] [-t ms] [-d] [-k] [-l limit] bars|bar<n>|msi[<n>]|msix<n>|doorbell|\n"
 	      "            read:<size>[u]|write:<size>[u]|copy:<size>[u]|all |\n"
 	      "       buf [-l limit] [ms] | remove <bdf> | rescan | reset <bdf> |\n"
 	      "       unbind <bdf> | bind <bdf> <driver>\n",
@@ -992,20 +994,29 @@ static void cmd_epf(struct pci_dev *d, int argc, char **argv)
 #define EPT_IRQ_NUMBER	0x28
 #define EPT_FLAGS	0x2c
 #define EPT_CAPS	0x30
+#define EPT_DB_BAR	0x34
+#define EPT_DB_OFFSET	0x38
+#define EPT_DB_DATA	0x3c
 
 #define EPT_CMD_RAISE_MSI  0x02
 #define EPT_CMD_RAISE_MSIX 0x04
 #define EPT_CMD_READ	   0x08
 #define EPT_CMD_WRITE	   0x10
 #define EPT_CMD_COPY	   0x20
+#define EPT_CMD_DB_ON	   0x40
+#define EPT_CMD_DB_OFF	   0x80
 #define EPT_ST_READ_OK	   0x01
 #define EPT_ST_WRITE_OK	   0x04
 #define EPT_ST_COPY_OK	   0x10
 #define EPT_ST_IRQ	   0x40
+#define EPT_ST_DB	   0x200
+#define EPT_ST_DB_ON	   0x400
+#define EPT_ST_DB_OFF	   0x1000
 #define EPT_IRQ_MSI	   1
 #define EPT_IRQ_MSIX	   2
 #define EPT_FLAG_DMA	   0x1
 #define EPT_CAP_UNALIGNED  0x1
+#define EPT_CAP_DOORBELL   0x20	/* CAP_DYNAMIC_INBOUND_MAPPING */
 
 #define HUGE_SIZE	(2UL << 20)
 
@@ -1023,6 +1034,9 @@ struct vt {
 	bool dma;
 	uint64_t limit;			/* buffers must end below this bus address */
 	uint32_t caps;
+	bool kick;			/* ring the doorbell after each command */
+	int db_bar;			/* doorbell BAR while enabled, -1 off */
+	uint32_t db_off, db_data;
 };
 
 static struct vt *vt_cur;	/* for the exit handler: bus mastering off */
@@ -1339,6 +1353,15 @@ static long vt_wait(struct vt *t, int v, const struct timespec *t0)
 	return (t1.tv_sec - t0->tv_sec) * 1000000L + (t1.tv_nsec - t0->tv_nsec) / 1000L;
 }
 
+static void vt_ring(struct vt *t)
+{
+	unsigned int w = width;
+
+	width = 32;
+	bar_wr(&t->bar[t->db_bar], (unsigned int)t->db_bar, t->db_off, t->db_data);
+	width = w;
+}
+
 static int vt_command(struct vt *t, uint32_t cmd, int vec, long *us)
 {
 	struct timespec t0;
@@ -1349,6 +1372,10 @@ static int vt_command(struct vt *t, uint32_t cmd, int vec, long *us)
 	reg_wr(t, EPT_IRQ_NUMBER, (uint32_t)vec);
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	reg_wr(t, EPT_COMMAND, cmd);
+	if (t->kick && t->db_bar >= 0) {
+		/* the endpoint runs the command now instead of at its next poll */
+		vt_ring(t);
+	}
 	*us = vt_wait(t, vec - 1, &t0);
 	if (*us < 0) {
 		/* the endpoint may still be moving data: stop it before going on */
@@ -1464,6 +1491,96 @@ static void report(const char *what, int ok, long us, size_t bytes)
 	}
 }
 
+/* COMMAND_ENABLE_DOORBELL: the endpoint retargets a BAR at its doorbell */
+static int vt_db_on(struct vt *t)
+{
+	bool kick = t->kick;
+	long us;
+	uint32_t bar;
+
+	if (!(t->caps & EPT_CAP_DOORBELL)) {
+		printf("doorbell: not offered by the endpoint (caps %08x)\n", t->caps);
+		return -1;
+	}
+	if (t->irq_type == 0) {
+		vt_irq_on(t, EPT_IRQ_MSI, 1);
+	}
+	t->kick = false;
+	if (vt_command(t, EPT_CMD_DB_ON, 1, &us) != 0 || !(reg_rd(t, EPT_STATUS) & EPT_ST_DB_ON)) {
+		t->kick = kick;
+		printf("doorbell: enable failed, status %08x\n", reg_rd(t, EPT_STATUS));
+		return -1;
+	}
+	t->kick = kick;
+	bar = reg_rd(t, EPT_DB_BAR);
+	if (bar > 5U || t->bar[bar].va == NULL) {
+		printf("doorbell: BAR %u not mapped\n", bar);
+		return -1;
+	}
+	t->db_bar = (int)bar;
+	t->db_off = reg_rd(t, EPT_DB_OFFSET);
+	t->db_data = reg_rd(t, EPT_DB_DATA);
+	printf("doorbell: BAR%u+0x%x, data 0x%x\n", bar, t->db_off, t->db_data);
+	return 0;
+}
+
+static void vt_db_off(struct vt *t)
+{
+	long us;
+
+	if (t->db_bar < 0) {
+		return;
+	}
+	t->kick = false;
+	t->db_bar = -1;
+	if (vt_command(t, EPT_CMD_DB_OFF, 1, &us) != 0 ||
+	    !(reg_rd(t, EPT_STATUS) & EPT_ST_DB_OFF)) {
+		printf("doorbell: disable failed, status %08x\n", reg_rd(t, EPT_STATUS));
+	}
+}
+
+/* as pci_endpoint_test: ring with no command, the endpoint answers with an IRQ */
+static int vt_test_doorbell(struct vt *t, int n)
+{
+	bool was_on = t->db_bar >= 0;
+	long us, min = -1, max = 0, sum = 0;
+	int fails = 0;
+
+	if (!was_on && vt_db_on(t) != 0) {
+		report("doorbell", 0, 0, 0);
+		return 1;
+	}
+	for (int i = 0; i < n; i++) {
+		struct timespec t0;
+
+		vt_irq_drain(t);
+		reg_wr(t, EPT_STATUS, 0);
+		reg_wr(t, EPT_IRQ_TYPE, (uint32_t)t->irq_type);
+		reg_wr(t, EPT_IRQ_NUMBER, 1);
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		vt_ring(t);
+		us = vt_wait(t, 0, &t0);
+		if (us < 0 || !(reg_rd(t, EPT_STATUS) & EPT_ST_DB)) {
+			fails++;
+			continue;
+		}
+		min = (min < 0 || us < min) ? us : min;
+		max = us > max ? us : max;
+		sum += us;
+	}
+	if (fails == 0) {
+		printf("%-28s OKAY  %7ld us (min %ld, max %ld, %d rings)\n", "doorbell",
+		       sum / n, min, max, n);
+	} else {
+		printf("%-28s NOT OKAY (%d of %d rings unanswered, status %08x)\n", "doorbell",
+		       fails, n, reg_rd(t, EPT_STATUS));
+	}
+	if (!was_on) {
+		vt_db_off(t);
+	}
+	return fails != 0;
+}
+
 static int vt_test_bar(struct vt *t, unsigned int b)
 {
 	struct bar_map *m = &t->bar[b];
@@ -1474,6 +1591,10 @@ static int vt_test_bar(struct vt *t, unsigned int b)
 	int ok = 1;
 
 	if (m->va == NULL) {
+		return 0;
+	}
+	if ((int)b == t->db_bar) {
+		printf("BAR%u                         skipped (doorbell)\n", b);
 		return 0;
 	}
 	/* the register block: only the first word, as pci_endpoint_test does */
@@ -1592,7 +1713,7 @@ static int vt_test_xfer(struct vt *t, const char *kind, size_t size, bool unalig
 static int cmd_test(struct pci_dev *d, int argc, char **argv)
 {
 	struct vt t = {.container = -1, .group = -1, .dev = -1, .timeout_ms = 2000,
-		       .limit = 1ULL << 32};
+		       .limit = 1ULL << 32, .db_bar = -1};
 	int fails = 0, i = 0;
 
 	for (; i < argc && argv[i][0] == '-'; i++) {
@@ -1604,6 +1725,8 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 			t.limit = num(argv[++i]);
 		} else if (strcmp(argv[i], "-d") == 0) {
 			t.dma = true;
+		} else if (strcmp(argv[i], "-k") == 0) {
+			t.kick = true;
 		} else {
 			usage();
 		}
@@ -1614,6 +1737,9 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 	vt_open(&t, d);
 	printf("%s %04x:%04x, test registers in BAR%u, caps %08x, timeout %u ms\n", t.bdf,
 	       d->vendor_id, d->device_id, t.reg_bar, t.caps, t.timeout_ms);
+	if (t.kick && vt_db_on(&t) != 0) {
+		die("-k: the endpoint has no doorbell");
+	}
 
 	for (; i < argc; i++) {
 		const char *a = argv[i];
@@ -1639,6 +1765,8 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 				fails += vt_test_xfer(&t, "read", s, false);
 				fails += vt_test_xfer(&t, "copy", s, false);
 			}
+		} else if (strcmp(a, "doorbell") == 0) {
+			fails += vt_test_doorbell(&t, 16);
 		} else if (strcmp(a, "bars") == 0) {
 			for (unsigned int b = 0; b < 6U; b++) {
 				fails += vt_test_bar(&t, b);
@@ -1660,9 +1788,10 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 			fails += vt_test_xfer(&t, a, size, unaligned);
 		} else {
 			die("%s: bars, bar<n>, msi, msi<n>, msix<n>, read:<size>, write:<size>, "
-			    "copy:<size>[u], all", a);
+			    "copy:<size>[u], doorbell, all", a);
 		}
 	}
+	vt_db_off(&t);
 	vt_irq_off(&t);
 	return fails ? 1 : 0;
 }
