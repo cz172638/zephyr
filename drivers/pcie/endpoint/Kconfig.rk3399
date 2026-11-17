@@ -41,3 +41,24 @@ config PCIE_EPC_RK3399_MSI_TRACE
 	  switched to panic mode, i.e. synchronous, at the first MSI), so
 	  the state is on the console even when the write faults. Debug
 	  only.
+
+config PCIE_EPC_RK3399_DOORBELL
+	bool "Doorbell through the GIC ITS"
+	default y
+	depends on PCIE_EPC_RK3399 && GIC_V3_ITS
+	help
+	  pcie_epc_alloc_doorbell(): a host write to a BAR mapped onto the
+	  ITS translation register (msi-parent of the endpoint node) becomes
+	  an LPI on the endpoint, so a function can react to the host
+	  without polling.
+
+config PCIE_EPC_RK3399_DOORBELL_DEVID
+	int "ITS DeviceID of inbound writes"
+	default -1
+	range -1 65535
+	depends on PCIE_EPC_RK3399_DOORBELL
+	help
+	  DeviceID the controller presents to the ITS with an inbound write.
+	  -1 maps a set of candidates (0-7 and bus numbers 1-15 with device
+	  and function 0), each to its own LPI, and reports the one that
+	  fires in "pcie controller info".

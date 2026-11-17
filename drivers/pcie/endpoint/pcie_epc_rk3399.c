@@ -22,6 +22,10 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
+#include <zephyr/drivers/interrupt_controller/gicv3_its.h>
+#include <zephyr/irq.h>
+#endif
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_ep_cdns.h>
 #if defined(CONFIG_PCIE_ROLE)
@@ -114,6 +118,10 @@ struct udma_desc {
 } __packed;
 
 #define UDMA_DESCS               2U
+
+/* doorbell DeviceID candidates: 0-7 and bus 1-15 (device 0, function 0) */
+#define DB_SLOTS (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_DOORBELL) &&                                  \
+		  CONFIG_PCIE_EPC_RK3399_DOORBELL_DEVID < 0 ? 23 : 1)
 #define UDMA_DESC_ALIGN          64U
 
 static const char *const client_int_name[16] = {
@@ -150,6 +158,10 @@ struct epc_rk3399_config {
 	uint8_t msi_vectors;
 	bool autostart;
 	void (*irq_config)(void);
+#if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
+	const struct device *its;
+	uint32_t db_prio;
+#endif
 };
 
 struct epc_rk3399_data {
@@ -192,6 +204,20 @@ struct epc_rk3399_data {
 		uint64_t bytes_to, bytes_from, cyc_to, cyc_from;
 		uint32_t last_err; /* descriptor status word */
 	} udma_stat;
+#if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
+	/* doorbell: one LPI per candidate ITS DeviceID, mapped at the first allocation */
+	struct db_slot {
+		const struct device *dev;
+		uint32_t devid;
+		uint32_t intid;
+		uint32_t hits;
+	} db_slot[DB_SLOTS];
+	uint8_t db_nslots;
+	int32_t db_seen; /* DeviceID of the first doorbell, -1 none yet */
+	pcie_epc_doorbell_cb_t db_cb;
+	void *db_user;
+	uint8_t db_func;
+#endif
 	int64_t last_up_log; /* uptime of the last "link up" INF line */
 };
 
@@ -1109,6 +1135,103 @@ static int epc_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_add
 	return ret;
 }
 
+#if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
+static void db_isr(const void *arg)
+{
+	struct db_slot *slot = (struct db_slot *)arg;
+	const struct device *dev = slot->dev;
+	struct epc_rk3399_data *d = dev->data;
+	pcie_epc_doorbell_cb_t cb = d->db_cb;
+
+	slot->hits++;
+	if (d->db_seen < 0) {
+		d->db_seen = (int32_t)slot->devid;
+	}
+	if (cb != NULL) {
+		cb(dev, d->db_func, d->db_user);
+	}
+}
+
+static uint32_t db_candidate(unsigned int i)
+{
+	if (CONFIG_PCIE_EPC_RK3399_DOORBELL_DEVID >= 0) {
+		return (uint32_t)CONFIG_PCIE_EPC_RK3399_DOORBELL_DEVID;
+	}
+	return i < 8U ? i : (i - 7U) << 8;
+}
+
+/* EventID 0 of each candidate DeviceID to its own LPI */
+static int db_map(const struct device *dev)
+{
+	const struct epc_rk3399_config *cfg = dev->config;
+	struct epc_rk3399_data *d = dev->data;
+
+	for (unsigned int i = d->db_nslots; i < DB_SLOTS; i++) {
+		struct db_slot *slot = &d->db_slot[i];
+		int ret;
+
+		slot->dev = dev;
+		slot->devid = db_candidate(i);
+		ret = its_setup_deviceid(cfg->its, slot->devid, 1);
+		if (ret != 0) {
+			LOG_ERR("doorbell: DeviceID 0x%x: %d", slot->devid, ret);
+			return ret;
+		}
+		slot->intid = its_alloc_intid(cfg->its);
+		ret = its_map_intid(cfg->its, slot->devid, 0, slot->intid);
+		if (ret != 0) {
+			LOG_ERR("doorbell: map DeviceID 0x%x to %u: %d", slot->devid, slot->intid,
+				ret);
+			return ret;
+		}
+		if (irq_connect_dynamic(slot->intid, cfg->db_prio, db_isr, slot, 0) < 0) {
+			return -ENOMEM;
+		}
+		irq_enable(slot->intid);
+		d->db_nslots = (uint8_t)(i + 1U);
+	}
+	return 0;
+}
+
+static int epc_alloc_doorbell(const struct device *dev, uint8_t func, pcie_epc_doorbell_cb_t cb,
+			      void *user_data, struct pcie_epc_doorbell *db)
+{
+	const struct epc_rk3399_config *cfg = dev->config;
+	struct epc_rk3399_data *d = dev->data;
+	int ret;
+
+	if (func >= nfuncs(dev) || cb == NULL || db == NULL) {
+		return -EINVAL;
+	}
+	if (d->db_cb != NULL) {
+		return -EBUSY;
+	}
+	ret = db_map(dev);
+	if (ret != 0) {
+		return ret;
+	}
+	d->db_func = func;
+	d->db_user = user_data;
+	d->db_cb = cb;
+	/* the ITS sits on the same AXI interconnect: CPU and inbound addresses agree */
+	db->phys = its_get_msi_addr(cfg->its);
+	db->data = 0U;
+	return 0;
+}
+
+static int epc_free_doorbell(const struct device *dev, uint8_t func)
+{
+	struct epc_rk3399_data *d = dev->data;
+
+	if (d->db_cb == NULL || d->db_func != func) {
+		return -EINVAL;
+	}
+	/* the LPIs stay mapped and enabled for the next allocation; db_isr ignores them */
+	d->db_cb = NULL;
+	return 0;
+}
+#endif /* CONFIG_PCIE_EPC_RK3399_DOORBELL */
+
 static DEVICE_API(pcie_epc, epc_rk3399_api) = {
 	.start = epc_start,
 	.stop = epc_stop,
@@ -1121,6 +1244,10 @@ static DEVICE_API(pcie_epc, epc_rk3399_api) = {
 	.get_msi = epc_get_msi,
 	.raise_irq = epc_raise_irq,
 	.xfer_dma = epc_xfer_dma,
+#if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
+	.alloc_doorbell = epc_alloc_doorbell,
+	.free_doorbell = epc_free_doorbell,
+#endif
 	.cfg_read = epc_cfg_read,
 	.cfg_write = epc_cfg_write,
 	.get_features = epc_get_features,
@@ -1186,6 +1313,21 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 	shell_print(sh, "udma       errors %u (last status %08x), timeouts %u, irq lost %u",
 		    d->udma_stat.n_err, d->udma_stat.last_err, d->udma_stat.n_timeout,
 		    d->udma_stat.n_polled);
+#if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
+	shell_fprintf(sh, SHELL_NORMAL, "doorbell   %s, fn %u, %u DeviceIDs mapped, seen ",
+		      d->db_cb != NULL ? "on" : "off", d->db_func, d->db_nslots);
+	if (d->db_seen < 0) {
+		shell_fprintf(sh, SHELL_NORMAL, "none\n");
+	} else {
+		shell_fprintf(sh, SHELL_NORMAL, "0x%x\n", (unsigned int)d->db_seen);
+	}
+	for (unsigned int i = 0; i < d->db_nslots; i++) {
+		if (d->db_slot[i].hits != 0U) {
+			shell_print(sh, "doorbell   DeviceID 0x%04x LPI %u: %u",
+				    d->db_slot[i].devid, d->db_slot[i].intid, d->db_slot[i].hits);
+		}
+	}
+#endif
 	for (unsigned int i = 0; i < ARRAY_SIZE(d->lm_cnt); i++) {
 		if (d->lm_cnt[i] != 0U) {
 			shell_print(sh, "core error %-18s %u",
@@ -1390,6 +1532,9 @@ static int epc_rk3399_init(const struct device *dev)
 	k_work_init_delayable(&d->link_work, link_work);
 	k_mutex_init(&d->udma_lock);
 	k_sem_init(&d->udma_done, 0, 1);
+#if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
+	d->db_seen = -1;
+#endif
 	k_timer_init(&d->sriov_timer, sriov_timer_fn, NULL);
 
 	/* the slot's 3.3 V belongs to the host now */
@@ -1554,6 +1699,9 @@ static int epc_rk3399_init(const struct device *dev)
 		.msi_vectors = DT_INST_PROP(n, msi_vectors),                                       \
 		.autostart = !DT_INST_PROP(n, zephyr_no_autostart),                                \
 		.irq_config = epc_rk3399_irq_config_##n,                                           \
+		IF_ENABLED(CONFIG_PCIE_EPC_RK3399_DOORBELL,                                        \
+			   (.its = DEVICE_DT_GET(DT_INST_PHANDLE(n, msi_parent)),                  \
+			    .db_prio = DT_INST_IRQ_BY_NAME(n, client, priority),))                 \
 	};                                                                                         \
 	static struct epc_rk3399_data epc_rk3399_data_##n;                                         \
 	static void epc_rk3399_irq_config_##n(void)                                                \

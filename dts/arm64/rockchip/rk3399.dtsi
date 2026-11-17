@@ -141,6 +141,7 @@
 			     <GIC_SPI 50 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
 			     <GIC_SPI 51 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 		interrupt-names = "sys", "legacy", "client";
+		msi-parent = <&its>; /* doorbell, with CONFIG_GIC_V3_ITS */
 		clocks = <&cru_clk ACLK_PCIE>, <&cru_clk ACLK_PERF_PCIE>,
 			 <&cru_clk PCLK_PCIE>, <&cru_clk SCLK_PCIE_PM>;
 		clock-names = "aclk", "aclk-perf", "hclk", "pm";

@@ -90,6 +90,12 @@ properties:
     type: int
     default: 0
 
+  msi-parent:
+    type: phandle
+    description: |
+      GIC ITS that turns host writes into a BAR mapped onto its translation
+      register into an interrupt on the endpoint (doorbell).
+
   msi-vectors:
     type: int
     default: 1
