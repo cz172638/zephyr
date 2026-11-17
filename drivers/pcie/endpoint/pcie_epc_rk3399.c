@@ -213,6 +213,7 @@ static void link_work(struct k_work *work)
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
+		cdns_ep_write(&d->core, CDNS_AT_LINKDOWN, 0U);
 		irq_region_forget(d);
 		pcie_epc_notify(dev, PCIE_EPC_EVT_HOT_RESET, 0);
 	}
@@ -240,6 +241,8 @@ static void link_work(struct k_work *work)
 		} else {
 			LOG_DBG("%s: link up, Gen%u x%u", dev->name, gen, width);
 		}
+		/* the outbound window answers SLVERR until this is cleared */
+		cdns_ep_write(&d->core, CDNS_AT_LINKDOWN, 0U);
 		d->link_up = true;
 		d->ups++;
 		pcie_epc_notify(dev, PCIE_EPC_EVT_LINK_UP, 0);
@@ -464,6 +467,18 @@ static void epc_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
 }
 
 /* cpu_addr: physical address in the window; up to 1 MiB per region */
+/*
+ * The link work clears the AXI link-down status within a poll period of
+ * the link coming back; an access that comes sooner (host restores the
+ * config and sends a command right after a hot reset) clears it here.
+ */
+static void ob_unblock(struct epc_rk3399_data *d)
+{
+	if (cdns_ep_read(&d->core, CDNS_AT_LINKDOWN) != 0U) {
+		cdns_ep_write(&d->core, CDNS_AT_LINKDOWN, 0U);
+	}
+}
+
 static int epc_map_addr(const struct device *dev, uint8_t func, uintptr_t cpu_addr,
 			uint64_t pci_addr, size_t size)
 {
@@ -482,6 +497,7 @@ static int epc_map_addr(const struct device *dev, uint8_t func, uintptr_t cpu_ad
 		return -EINVAL; /* translation replaces the low bits */
 	}
 
+	ob_unblock(d);
 	key = k_spin_lock(&d->lock);
 	for (uint32_t i = 0; i < n; i++) {
 		uint64_t chunk = MIN((uint64_t)size, (uint64_t)OB_REGION);
@@ -585,6 +601,7 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 	base = pci_addr & ~(uint64_t)0xffU;
 
 	barrier_dsync_fence_full(); /* data written through the window goes first */
+	ob_unblock(d);
 	key = k_spin_lock(&d->lock);
 	if (d->irq_pci_addr != base || d->irq_pci_fn != func) {
 		cdns_ep_ob_program(&d->core, func, OB_IRQ_REGION, cfg->mem_base, base, 8U);
@@ -594,7 +611,7 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 	if (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSI_TRACE)) {
 		/* the state an MSI write meets, to compare one that faults with one that works */
 		LOG_INF("msi fn%u #%u -> 0x%llx/0x%04x: ltssm 0x%02x st0 %08x st1 %08x pl0 %08x "
-			"cmd %08x ob %08x/%08x int %08x", func, irq_num,
+			"cmd %08x ob %08x/%08x int %08x linkdown %u", func, irq_num,
 			(unsigned long long)pci_addr, data, rk3399_pcie_ltssm(apb(dev)),
 			rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS0),
 			rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS1),
@@ -602,7 +619,8 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 			cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG),
 			cdns_ep_read(&d->core, CDNS_AT_OB_PCI_ADDR0(0x20U, OB_IRQ_REGION)),
 			cdns_ep_read(&d->core, CDNS_AT_OB_DESC0(0x20U, OB_IRQ_REGION)),
-			rk_client_read(apb(dev), RK_CLIENT_INT_STATUS));
+			rk_client_read(apb(dev), RK_CLIENT_INT_STATUS),
+			cdns_ep_read(&d->core, CDNS_AT_LINKDOWN));
 		LOG_PANIC();
 	}
 	/*

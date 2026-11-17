@@ -65,6 +65,12 @@
 #define CDNS_AT_BASE			0x400000U
 #define CDNS_AT_OB_PCI_ADDR0(base, r)	(CDNS_AT_BASE + (base) + ((r) * 0x20U) + 0x00U)
 #define CDNS_AT_OB_PCI_ADDR1(base, r)	(CDNS_AT_BASE + (base) + ((r) * 0x20U) + 0x04U)
+/*
+ * AXI link-down status: set by the core on link down or hot reset; while
+ * set, the AXI slave (outbound window) answers every access with an error.
+ * Software clears it (Linux cadence host: before each config access).
+ */
+#define CDNS_AT_LINKDOWN		(CDNS_AT_BASE + 0x824U)
 #define CDNS_AT_OB_DESC0(base, r)	(CDNS_AT_BASE + (base) + ((r) * 0x20U) + 0x08U)
 #define CDNS_AT_OB_DESC1(base, r)	(CDNS_AT_BASE + (base) + ((r) * 0x20U) + 0x0cU)
 #define CDNS_AT_OB_CPU_ADDR0(base, r)	(CDNS_AT_BASE + (base) + ((r) * 0x20U) + 0x18U)
