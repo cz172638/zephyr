@@ -87,12 +87,21 @@
 
 	gic: interrupt-controller@fee00000 {
 		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
 		compatible = "arm,gic-v3", "arm,gic";
 		reg = <0xfee00000 0x10000>, /* GICD */
 		      <0xfef00000 0xc0000>; /* GICR, 6 cores */
 		interrupt-controller;
 		#interrupt-cells = <4>;
 		status = "okay";
+
+		/* used only with CONFIG_GIC_V3_ITS; one image per SoC may own it */
+		its: msi-controller@fee20000 {
+			compatible = "arm,gic-v3-its";
+			reg = <0xfee20000 0x20000>;
+			msi-controller;
+		};
 	};
 
 	/* The same controller as endpoint, see pcie0_ep; CONFIG_PCIE_ROLE picks */
