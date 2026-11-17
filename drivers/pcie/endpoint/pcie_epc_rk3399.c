@@ -137,8 +137,9 @@ static bool active_role(void)
  * Rockchip tuning of the Cadence core that Linux applies on the RK3399 (as
  * root complex): the FTS count to leave L0s at its maximum (no common
  * reference clock on a crossover link), and the Tx credit maximum update
- * interval, which a link change sets back and Linux rewrites on every PHY
- * link interrupt ("need this to enter L1 again").
+ * interval (Linux also rewrites it on every PHY link interrupt, "need this
+ * to enter L1 again"). Both once, before the link trains: rewriting them
+ * with the link up left the endpoint without memory read completions.
  */
 #define LM_PLC1                 (CDNS_LM_BASE + 0x004U)
 #define  LM_PLC1_FTS            GENMASK(23, 8)
@@ -212,7 +213,6 @@ static void link_work(struct k_work *work)
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
-		core_tune(d);
 		irq_region_forget(d);
 		pcie_epc_notify(dev, PCIE_EPC_EVT_HOT_RESET, 0);
 	}
@@ -240,7 +240,6 @@ static void link_work(struct k_work *work)
 		} else {
 			LOG_DBG("%s: link up, Gen%u x%u", dev->name, gen, width);
 		}
-		core_tune(d);
 		d->link_up = true;
 		d->ups++;
 		pcie_epc_notify(dev, PCIE_EPC_EVT_LINK_UP, 0);
