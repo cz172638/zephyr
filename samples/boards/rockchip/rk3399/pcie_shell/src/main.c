@@ -189,11 +189,130 @@ SHELL_CMD_ARG_REGISTER(epmem, NULL,
 		       "the first word",
 		       cmd_epmem, 2, 2);
 
+/*
+ * Watchdog: a hang (SError halt, deadlock, stuck system work queue) resets
+ * the board after WDT_TIMEOUT_MS instead of waiting for a power cycle. The
+ * system work queue feeds a task watchdog channel; the task watchdog feeds
+ * the hardware one, so a dead kernel stops both. A running DesignWare
+ * watchdog cannot be stopped: "wdt off" keeps it off from the next boot,
+ * for looking at a hung board over SWD.
+ */
+#if DT_HAS_ALIAS(watchdog0) && defined(CONFIG_TASK_WDT)
+#include <zephyr/settings/settings.h>
+#include <zephyr/sys/device_mmio.h>
+#include <zephyr/task_wdt/task_wdt.h>
+
+#define WDT_TIMEOUT_MS 10000U
+#define CRU_BASE       0xff760000UL
+#define CRU_GLB_RST_ST 0x514U
+
+static bool wdt_disabled;
+static int wdt_channel = -1;
+
+static void wdt_feed(struct k_work *work)
+{
+	(void)task_wdt_feed(wdt_channel);
+	(void)k_work_reschedule(k_work_delayable_from_work(work), K_SECONDS(1));
+}
+
+static K_WORK_DELAYABLE_DEFINE(wdt_work, wdt_feed);
+
+static int wdt_settings_set(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	uint8_t v;
+
+	if (strcmp(key, "wdt") != 0 || len != 1U) {
+		return -ENOENT;
+	}
+	if (read_cb(cb_arg, &v, 1) == 1) {
+		wdt_disabled = v == 0U;
+	}
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(pshell, "pshell", NULL, wdt_settings_set, NULL, NULL);
+
+/* why the last reset happened (CRU_GLB_RST_ST, sticky until the next one) */
+static void reset_reason(void)
+{
+	static const char *const why[] = {"first global", "second global", "tsadc first",
+					  "tsadc second", "watchdog first", "watchdog second"};
+	mm_reg_t cru;
+	uint32_t st;
+
+	device_map(&cru, CRU_BASE, 0x1000, K_MEM_CACHE_NONE);
+	st = sys_read32(cru + CRU_GLB_RST_ST);
+	printk("reset: 0x%02x", st);
+	for (unsigned int i = 0; i < ARRAY_SIZE(why); i++) {
+		if ((st & BIT(i)) != 0U) {
+			printk(" %s", why[i]);
+		}
+	}
+	printk("%s\n", st == 0U ? " power-on" : "");
+}
+
+static void wdt_start(void)
+{
+	const struct device *hw = DEVICE_DT_GET(DT_ALIAS(watchdog0));
+	int ret;
+
+	reset_reason();
+	(void)settings_load_subtree("pshell");
+	if (wdt_disabled) {
+		printk("watchdog off (\"wdt on\" for the next boot)\n");
+		return;
+	}
+	ret = task_wdt_init(device_is_ready(hw) ? hw : NULL);
+	if (ret == 0) {
+		wdt_channel = task_wdt_add(WDT_TIMEOUT_MS, NULL, NULL);
+	}
+	if (ret != 0 || wdt_channel < 0) {
+		printk("watchdog: %d %d\n", ret, wdt_channel);
+		return;
+	}
+	(void)k_work_schedule(&wdt_work, K_NO_WAIT);
+	printk("watchdog: reset after %u ms without the system work queue%s\n", WDT_TIMEOUT_MS,
+	       device_is_ready(hw) ? "" : " (no hardware watchdog: a dead kernel is not caught)");
+}
+
+static int cmd_wdt(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t on;
+	int ret;
+
+	if (argc < 2) {
+		shell_print(sh, "watchdog %s, saved for the next boot: %s",
+			    wdt_channel >= 0 ? "running" : "off", wdt_disabled ? "off" : "on");
+		return 0;
+	}
+	if (strcmp(argv[1], "on") != 0 && strcmp(argv[1], "off") != 0) {
+		shell_error(sh, "on | off");
+		return -EINVAL;
+	}
+	on = strcmp(argv[1], "on") == 0;
+	ret = settings_save_one("pshell/wdt", &on, 1);
+	if (ret == 0) {
+		wdt_disabled = !on;
+	}
+	shell_print(sh, "watchdog %s from the next boot%s (%d)", argv[1],
+		    (!on && wdt_channel >= 0) ? "; the running one cannot be stopped" : "", ret);
+	return ret;
+}
+
+SHELL_CMD_ARG_REGISTER(wdt, NULL, "[on|off] Watchdog: state, or on/off from the next boot",
+		       cmd_wdt, 1, 1);
+#else
+static void wdt_start(void)
+{
+}
+#endif
+
 int main(void)
 {
 	enum pcie_role saved;
 	bool have = pcie_role_saved(&saved);
 
+	wdt_start();
 	printk("eMMC: %s (%d)\n", emmc_mount_ret == 0 ? "mounted at /EMMC:" : "no FAT",
 	       emmc_mount_ret);
 	printk("RK3399 PCIe %s (saved: %s, in %s); \"pcie controller mode rc|ep\", "
