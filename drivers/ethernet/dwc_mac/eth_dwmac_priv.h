@@ -1475,10 +1475,18 @@ extern const struct ethernet_driver_api dwmac_api;
 #define DWMAC_MACHTHR    (DWMAC_MAC_OFFSET + 0x0008)
 #define DWMAC_MACHTLR    (DWMAC_MAC_OFFSET + 0x000C)
 #define DWMAC_MACVERR    (DWMAC_MAC_OFFSET + 0x0020)
+#define DWMAC_MACISR     (DWMAC_MAC_OFFSET + 0x0038)
+#define DWMAC_MACIMR     (DWMAC_MAC_OFFSET + 0x003C)
 #define DWMAC_MACAHR(n)  (DWMAC_MAC_OFFSET + 0x0040 + 8 * (n))
 #define DWMAC_MACALR(n)  (DWMAC_MAC_OFFSET + 0x0044 + 8 * (n))
 #define DWMAC_MACA0HR    DWMAC_MACAHR(0)
 #define DWMAC_MACA0LR    DWMAC_MACALR(0)
+
+/*
+ * MAC interrupt mask register bits (1 = masked): RGMII/SMII link status,
+ * PCS link status, PCS auto-negotiation, PMT, timestamp, LPI
+ */
+#define DWMAC_MACIMR_ALL (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(9) | BIT(10))
 
 /* MAC version register bits */
 #define DWMAC_MACVERR_SNPSVER GENMASK(7, 0)
