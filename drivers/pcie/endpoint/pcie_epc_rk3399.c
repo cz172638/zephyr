@@ -47,6 +47,33 @@ LOG_MODULE_REGISTER(pcie_epc_rk3399, CONFIG_PCIE_EP_LOG_LEVEL);
 #define PCI_EXP_LNKCTL           0x10U
 #define  PCI_EXP_LNKCTL_RL       BIT(5)
 #define CLIENT_INT_HOT_RST       BIT(13)
+/*
+ * Client interrupts (status RK_CLIENT_INT_STATUS, write 1 to clear; mask
+ * RK_CLIENT_INT_MASK, 1 = masked, high half write enable), on the "sys"
+ * and "client" lines. INTA..D (8:5) are root complex only, uDMA unused.
+ */
+#define CLIENT_INT_PHY           BIT(2)  /* link state change */
+#define CLIENT_INT_LOCAL         BIT(4)  /* core error, detail in LM_INT_STATUS */
+#define CLIENT_INT_EVENTS        (BIT(0) | BIT(1) | CLIENT_INT_PHY | CLIENT_INT_LOCAL | BIT(9) | \
+				  BIT(10) | BIT(11) | BIT(12) | CLIENT_INT_HOT_RST)
+/* core error interrupts (LM): status write 1 to clear, mask 1 = masked */
+#define LM_INT_STATUS            (CDNS_LM_BASE + 0x20cU)
+#define LM_INT_MASK              (CDNS_LM_BASE + 0x210U)
+#define LM_INT_ALL               (GENMASK(11, 0) | BIT(18) | BIT(19))
+
+static const char *const client_int_name[16] = {
+	[0] = "power-state", [1] = "hot-plug", [2] = "phy/link", [4] = "local",
+	[9] = "correctable", [10] = "nonfatal", [11] = "fatal", [12] = "dpa",
+	[13] = "hot-reset",
+};
+
+static const char *const lm_int_name[20] = {
+	[0] = "pnp-fifo-parity", [1] = "cpl-fifo-parity", [2] = "replay-ram-parity",
+	[3] = "pnp-fifo-overflow", [4] = "cpl-fifo-overflow", [5] = "replay-timeout",
+	[6] = "replay-rollover", [7] = "phy-rx-error", [8] = "malformed-tlp",
+	[9] = "unexpected-cpl", [10] = "fc-error", [11] = "cpl-timeout",
+	[18] = "unmapped-tc", [19] = "msi-mask-change",
+};
 
 #define OB_REGIONS    32U
 #define OB_REGION     MB(1)
@@ -67,6 +94,7 @@ struct epc_rk3399_config {
 	uint8_t max_vfs; /* SR-IOV VFs of function 0, routing functions 1..max_vfs */
 	uint8_t msi_vectors;
 	bool autostart;
+	void (*irq_config)(void);
 };
 
 struct epc_rk3399_data {
@@ -94,6 +122,12 @@ struct epc_rk3399_data {
 	struct k_timer sriov_timer; /* ARI Capable Hierarchy for the VFs, see link_work */
 	atomic_t arie_set;
 	uint32_t ups, downs, hot_resets;
+	/* interrupt events: counted in the ISR, logged and acted on in the link work */
+	atomic_t int_pending; /* client status bits not yet seen by the link work */
+	uint32_t client_cnt[16];
+	uint32_t lm_cnt[20];
+	uint32_t client_logged[16];
+	uint32_t lm_logged[20];
 	int64_t last_up_log; /* uptime of the last "link up" INF line */
 };
 
@@ -198,6 +232,61 @@ static void sriov_timer_fn(struct k_timer *t)
 	}
 }
 
+static void epc_rk3399_isr(const struct device *dev)
+{
+	struct epc_rk3399_data *d = dev->data;
+	uint32_t ist = rk_client_read(apb(dev), RK_CLIENT_INT_STATUS) & CLIENT_INT_EVENTS;
+
+	if ((ist & CLIENT_INT_LOCAL) != 0U) {
+		uint32_t lst = cdns_ep_read(&d->core, LM_INT_STATUS) & LM_INT_ALL;
+
+		cdns_ep_write(&d->core, LM_INT_STATUS, lst);
+		for (unsigned int i = 0; i < ARRAY_SIZE(d->lm_cnt); i++) {
+			if ((lst & BIT(i)) != 0U) {
+				d->lm_cnt[i]++;
+			}
+		}
+	}
+	rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, ist);
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->client_cnt); i++) {
+		if ((ist & BIT(i)) != 0U) {
+			d->client_cnt[i]++;
+		}
+	}
+	(void)atomic_or(&d->int_pending, (atomic_val_t)ist);
+	/* link change, hot reset or error: let the link work look now, not in 20 ms */
+	if (d->running) {
+		(void)k_work_reschedule(&d->link_work, K_NO_WAIT);
+	}
+}
+
+/* one line for the interrupt events since the last one */
+static void int_log(struct epc_rk3399_data *d)
+{
+	char buf[160];
+	size_t o = 0;
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->client_cnt); i++) {
+		uint32_t n = d->client_cnt[i] - d->client_logged[i];
+
+		if (n != 0U && i != 4U && client_int_name[i] != NULL && o < sizeof(buf)) {
+			o += snprintf(buf + o, sizeof(buf) - o, " %s %u", client_int_name[i], n);
+		}
+		d->client_logged[i] += n;
+	}
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->lm_cnt); i++) {
+		uint32_t n = d->lm_cnt[i] - d->lm_logged[i];
+
+		if (n != 0U && lm_int_name[i] != NULL && o < sizeof(buf)) {
+			o += snprintf(buf + o, sizeof(buf) - o, " %s %u", lm_int_name[i], n);
+		}
+		d->lm_logged[i] += n;
+	}
+	if (o != 0U) {
+		LOG_WRN("%s: irq:%s", d->dev->name, buf);
+	}
+}
+
 static void link_work(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -209,7 +298,9 @@ static void link_work(struct k_work *work)
 		return;
 	}
 
-	ist = rk_client_read(apb(dev), RK_CLIENT_INT_STATUS);
+	ist = (uint32_t)atomic_clear(&d->int_pending) |
+	      rk_client_read(apb(dev), RK_CLIENT_INT_STATUS);
+	int_log(d);
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
@@ -352,6 +443,11 @@ static int epc_start(const struct device *dev)
 	if (cfg->max_vfs != 0U) {
 		k_timer_start(&d->sriov_timer, K_MSEC(1), K_MSEC(1));
 	}
+	/* events as interrupts; the link work's polling stays as the fallback */
+	cdns_ep_write(&d->core, LM_INT_STATUS, LM_INT_ALL);
+	cdns_ep_write(&d->core, LM_INT_MASK, (uint32_t)~LM_INT_ALL);
+	rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_EVENTS);
+	rk_client_write(apb(dev), RK_CLIENT_INT_MASK, CLIENT_INT_EVENTS << 16);
 	if (cfg->perst.port != NULL) {
 		ret = gpio_pin_get_dt(&cfg->perst);
 		if (ret < 0) {
@@ -380,6 +476,9 @@ static void epc_stop(const struct device *dev)
 		(void)gpio_pin_interrupt_configure_dt(&cfg->perst, GPIO_INT_DISABLE);
 	}
 	d->running = false;
+	rk_client_write(apb(dev), RK_CLIENT_INT_MASK,
+			(CLIENT_INT_EVENTS << 16) | CLIENT_INT_EVENTS);
+	cdns_ep_write(&d->core, LM_INT_MASK, LM_INT_ALL);
 	k_timer_stop(&d->sriov_timer);
 	(void)k_work_cancel_delayable(&d->link_work);
 	link_down(dev);
@@ -757,6 +856,19 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 			    cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(0) + 0x10 + 4 * b));
 	}
 	shell_print(sh, "events     up %u down %u hot-reset %u", d->ups, d->downs, d->hot_resets);
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->client_cnt); i++) {
+		if (d->client_cnt[i] != 0U) {
+			shell_print(sh, "irq        %-18s %u",
+				    client_int_name[i] != NULL ? client_int_name[i] : "?",
+				    d->client_cnt[i]);
+		}
+	}
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->lm_cnt); i++) {
+		if (d->lm_cnt[i] != 0U) {
+			shell_print(sh, "core error %-18s %u",
+				    lm_int_name[i] != NULL ? lm_int_name[i] : "?", d->lm_cnt[i]);
+		}
+	}
 }
 
 #if defined(CONFIG_PCIE_ROLE)
@@ -969,6 +1081,7 @@ static int epc_rk3399_init(const struct device *dev)
 		return ret;
 	}
 	core_tune(d);
+	cfg->irq_config();
 	LOG_INF("%s: core up, reset VID/SSVID 0x%08x", dev->name,
 		cdns_ep_read(&d->core, CDNS_LM_ID));
 
@@ -1071,6 +1184,7 @@ static int epc_rk3399_init(const struct device *dev)
 		      DT_INST_PROP(n, max_functions) == 1 &&                                         \
 		      DT_INST_PROP(n, max_virtual_functions) <= 8),                                \
 		     "max-virtual-functions: 1..8 VFs of the one PF, needs PCIE_EPC_RK3399_SRIOV"); \
+	static void epc_rk3399_irq_config_##n(void);                                               \
 	static const struct epc_rk3399_config epc_rk3399_config_##n = {                            \
 		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(apb, DT_DRV_INST(n)),                           \
 		.mem_base = DT_INST_REG_ADDR_BY_NAME(n, mem),                                      \
@@ -1114,8 +1228,20 @@ static int epc_rk3399_init(const struct device *dev)
 		.max_vfs = DT_INST_PROP(n, max_virtual_functions),                                 \
 		.msi_vectors = DT_INST_PROP(n, msi_vectors),                                       \
 		.autostart = !DT_INST_PROP(n, zephyr_no_autostart),                                \
+		.irq_config = epc_rk3399_irq_config_##n,                                           \
 	};                                                                                         \
 	static struct epc_rk3399_data epc_rk3399_data_##n;                                         \
+	static void epc_rk3399_irq_config_##n(void)                                                \
+	{                                                                                          \
+		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, sys, irq),                                      \
+			    DT_INST_IRQ_BY_NAME(n, sys, priority), epc_rk3399_isr,                 \
+			    DEVICE_DT_INST_GET(n), DT_INST_IRQ_BY_NAME(n, sys, flags));            \
+		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, client, irq),                                   \
+			    DT_INST_IRQ_BY_NAME(n, client, priority), epc_rk3399_isr,              \
+			    DEVICE_DT_INST_GET(n), DT_INST_IRQ_BY_NAME(n, client, flags));         \
+		irq_enable(DT_INST_IRQ_BY_NAME(n, sys, irq));                                      \
+		irq_enable(DT_INST_IRQ_BY_NAME(n, client, irq));                                   \
+	}                                                                                          \
 	DEVICE_DT_INST_DEFINE(n, epc_rk3399_init, NULL, &epc_rk3399_data_##n,                      \
 			      &epc_rk3399_config_##n, POST_KERNEL, CONFIG_PCIE_EPC_INIT_PRIORITY,  \
 			      &epc_rk3399_api);
