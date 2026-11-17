@@ -30,6 +30,10 @@
  *                 command (no waiting for its poll)
  *   pcictl buf    [-l limit] [ms]              DMA buffer for the endpoint's requests
  *   pcictl remove <bdf> | rescan | reset <bdf> | unbind <bdf> | bind <bdf> <drv>
+ *   pcictl resize <bdf> [<bar> <size>]
+ *                 Resizable BAR: the sizes on offer and the current ones;
+ *                 with bar and size (1M, 4M, ...) unbind the driver, let the
+ *                 kernel resize and reassign the windows, rebind
  *
  * Options before the command: -w 8|16|32|64 access width (default 32; cfg
  * takes 8, 16 or 32), -q bare values from rd, -F <file> config space from an
@@ -97,7 +101,7 @@ static void __attribute__((noreturn)) usage(void)
 	      "       test <bdf> [-b bar] [-t ms] [-d] [-k] [-l limit] bars|bar<n>|msi[<n>]|msix<n>|doorbell|\n"
 	      "            read:<size>[u]|write:<size>[u]|copy:<size>[u]|all |\n"
 	      "       buf [-l limit] [ms] | remove <bdf> | rescan | reset <bdf> |\n"
-	      "       unbind <bdf> | bind <bdf> <driver>\n",
+	      "       unbind <bdf> | bind <bdf> <driver> | resize <bdf> [<bar> <size>]\n",
 	      stderr);
 	exit(2);
 }
@@ -177,6 +181,127 @@ static const char *driver(const struct pci_dev *d, char *buf, size_t len)
 	buf[n] = '\0';
 	p = strrchr(buf, '/');
 	return p != NULL ? p + 1 : buf;
+}
+
+#define EXT_CAP_REBAR 0x15
+
+/* size with an optional K/M/G suffix */
+static uint64_t num_size(const char *s)
+{
+	char *end;
+	uint64_t v;
+
+	errno = 0;
+	v = strtoull(s, &end, 0);
+	if (errno != 0 || end == s) {
+		die("%s: not a size", s);
+	}
+	switch (*end) {
+	case 'K':
+	case 'k':
+		v <<= 10;
+		end++;
+		break;
+	case 'M':
+	case 'm':
+		v <<= 20;
+		end++;
+		break;
+	case 'G':
+	case 'g':
+		v <<= 30;
+		end++;
+		break;
+	default:
+		break;
+	}
+	if (*end != '\0') {
+		die("%s: not a size", s);
+	}
+	return v;
+}
+
+/*
+ * Resizable BAR (PCIe ext. capability 0x15): list the entries, or resize
+ * one through the kernel (resourceN_resize), which also moves the bridge
+ * windows above. Only a 64-bit prefetchable BAR usually finds room: the
+ * kernel grows prefetchable windows at run time, non-prefetchable ones
+ * rarely.
+ */
+static void cmd_resize(struct pci_dev *d, int n, char **a)
+{
+	char path[PATH_MAX], drv[256], bdf[16], val[16];
+	struct pci_cap *cap;
+	const char *bound;
+	bool had;
+
+	pci_fill_info(d, PCI_FILL_EXT_CAPS | PCI_FILL_BASES | PCI_FILL_SIZES);
+	cap = pci_find_cap(d, EXT_CAP_REBAR, PCI_CAP_EXTENDED);
+	if (cap == NULL) {
+		die("%02x:%02x.%u: no Resizable BAR capability", d->bus, d->dev, d->func);
+	}
+	if (n == 0) {
+		uint32_t ctrl0 = pci_read_long(d, cap->addr + 8);
+		unsigned int nbar = (ctrl0 >> 5) & 7U;
+
+		for (unsigned int i = 0; i < nbar; i++) {
+			uint32_t c = pci_read_long(d, cap->addr + 4 + 8 * i);
+			uint32_t ctl = pci_read_long(d, cap->addr + 8 + 8 * i);
+			unsigned int bar = ctl & 7U;
+
+			printf("BAR%u: %" PRIu64 "M of", bar, (uint64_t)1 << ((ctl >> 8) & 0x1fU));
+			for (unsigned int b = 4; b < 24; b++) {
+				if (c & (1U << b)) {
+					printf(" %" PRIu64 "M", (uint64_t)1 << (b - 4));
+				}
+			}
+			printf(", window %" PRIx64 "\n", (uint64_t)(d->base_addr[bar] & ~0xfULL));
+		}
+		return;
+	}
+	if (n != 2) {
+		usage();
+	}
+	unsigned int bar = (unsigned int)num(a[0]);
+	uint64_t size = num_size(a[1]);
+	unsigned int log = 0;
+
+	if (bar > 5U || size < (1ULL << 20) || (size & (size - 1)) != 0) {
+		die("BAR 0..5 and a power of two from 1M");
+	}
+	while ((1ULL << (log + 20)) < size) {
+		log++;
+	}
+	snprintf(bdf, sizeof(bdf), "%04x:%02x:%02x.%u", d->domain, d->bus, d->dev, d->func);
+	bound = driver(d, drv, sizeof(drv));
+	had = strcmp(bound, "-") != 0;
+	if (had) {
+		memmove(drv, bound, strlen(bound) + 1);
+		dev_path(d, "driver/unbind", path, sizeof(path));
+		sysfs_write(path, bdf);
+	}
+	snprintf(path, sizeof(path), "%s/%s/resource%u_resize", SYSFS, bdf, bar);
+	snprintf(val, sizeof(val), "%u", log);
+	{
+		int fd = open(path, O_WRONLY);
+		int err = 0;
+
+		if (fd < 0 || write(fd, val, strlen(val)) != (ssize_t)strlen(val)) {
+			err = errno;
+		}
+		if (fd >= 0) {
+			close(fd);
+		}
+		if (had) {
+			snprintf(path, sizeof(path), "/sys/bus/pci/drivers/%s/bind", drv);
+			sysfs_write(path, bdf);
+		}
+		if (err != 0) {
+			die("%s: %s (dmesg: window too small?)", bdf, strerror(err));
+		}
+	}
+	printf("%s BAR%u: %" PRIu64 "M%s%s\n", bdf, bar, size >> 20, had ? ", rebound to " : "",
+	       had ? drv : "");
 }
 
 static const char *size_str(uint64_t s, char *buf, size_t len)
@@ -1934,6 +2059,8 @@ int main(int argc, char **argv)
 			cmd_aer(d, n, a);
 		} else if (strcmp(c, "test") == 0) {
 			ret = cmd_test(d, n, a);
+		} else if (strcmp(c, "resize") == 0) {
+			cmd_resize(d, n, a);
 		} else if (strcmp(c, "remove") == 0) {
 			dev_path(d, "remove", path, sizeof(path));
 			sysfs_write(path, "1");
