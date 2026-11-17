@@ -226,3 +226,21 @@ proc rk_wdt {{op ""}} {
 		[expr {$cr & 1 ? "ENABLED" : "off"}] [expr {$cr & 2 ? "irq first" : "reset"}] \
 		[expr {$torr & 0xf}] [expr {16 + ($torr & 0xf)}] [rk_hex $ccvr] [expr {$stat & 1}]]
 }
+
+# Raw dumps of the PCIe controller's register blocks, to diff two states
+# (e.g. before and after a hot reset):
+#   rk_pcie_snap /tmp/a; ...; rk_pcie_snap /tmp/b
+# writes <prefix>.txt, one "address value" line per word (blocks client,
+# function 0 configuration, LM, address translation)
+proc rk_pcie_snap {prefix} {
+	set f [open $prefix.txt w]
+	foreach {name addr len} {client 0xfd000000 0x100 cfg 0xfd800000 0x1000 lm 0xfd900000 0x400 at 0xfdc00000 0x1000} {
+		set a $addr
+		foreach v [rk_rd $addr [expr {$len / 4}]] {
+			puts $f [format "%08x %08x %s" $a $v $name]
+			incr a 4
+		}
+	}
+	close $f
+	echo "$prefix.txt"
+}
