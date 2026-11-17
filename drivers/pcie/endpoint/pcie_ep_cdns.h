@@ -96,6 +96,20 @@
 /* PCI Express capability: Device Capabilities */
 #define CDNS_EXP_DEVCAP			0x04U
 #define  CDNS_EXP_DEVCAP_FLR		BIT(28)
+
+/*
+ * Resizable BAR capability of a physical function, in its configuration
+ * space; enabled by ERBC in the function's BAR configuration register 1.
+ * With ERBC set the capability sets the apertures of all memory BARs of
+ * the function, also of those it does not list (1 MiB then, on RK3399).
+ */
+#define CDNS_EP_REBAR_CAP(i)		(0x184U + 8U * (i))
+#define CDNS_EP_REBAR_CTRL(i)		(0x188U + 8U * (i))
+#define  CDNS_EP_REBAR_CTRL_BAR		GENMASK(2, 0)
+#define  CDNS_EP_REBAR_CTRL_NBAR	GENMASK(7, 5)
+#define  CDNS_EP_REBAR_CTRL_SIZE	GENMASK(12, 8)
+#define CDNS_EP_REBAR_MAX		6U
+#define CDNS_LM_BAR_CFG1_ERBC		BIT(31)
 #define CDNS_MSI_ADDR_LO		0x04U
 #define CDNS_MSI_ADDR_HI		0x08U
 #define CDNS_MSI_DATA_64		0x0cU
@@ -167,5 +181,33 @@ void cdns_ep_hide_msix_cap(const struct cdns_ep_core *core);
  * @retval false The bit stayed set.
  */
 bool cdns_ep_hide_flr(const struct cdns_ep_core *core, uint8_t fn);
+
+/** One entry of the Resizable BAR capability. */
+struct cdns_ep_rebar {
+	uint8_t bar;
+	/** Sizes the host may choose: bit n = 1 MiB << n */
+	uint32_t sizes;
+	/** Size at enumeration, as n */
+	uint8_t size;
+};
+
+/**
+ * @brief Program the Resizable BAR capability of physical function fn.
+ *
+ * @param n Number of entries; 0 disables the capability (ERBC clear) and
+ *	    the BAR configuration registers set the apertures again.
+ * @retval 0 Programmed.
+ * @retval -EINVAL More than CDNS_EP_REBAR_MAX entries.
+ */
+int cdns_ep_rebar_program(const struct cdns_ep_core *core, uint8_t fn,
+			  const struct cdns_ep_rebar *ent, uint8_t n);
+
+/** @brief Current size of Resizable BAR entry i of function fn, as n (1 MiB << n). */
+static inline uint8_t cdns_ep_rebar_size(const struct cdns_ep_core *core, uint8_t fn, uint8_t i)
+{
+	uint32_t ctrl = cdns_ep_read(core, CDNS_EP_FUNC_BASE(fn) + CDNS_EP_REBAR_CTRL(i));
+
+	return (uint8_t)FIELD_GET(CDNS_EP_REBAR_CTRL_SIZE, ctrl);
+}
 
 #endif /* ZEPHYR_DRIVERS_PCIE_ENDPOINT_PCIE_EP_CDNS_H_ */
