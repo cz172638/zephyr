@@ -221,6 +221,7 @@ struct epc_rk3399_data {
 	pcie_epc_doorbell_cb_t db_cb;
 	void *db_user;
 	uint8_t db_func;
+	int8_t db_cpu; /* CPU the LPIs are delivered to, -1 where mapped */
 #endif
 	/*
 	 * Resizable BAR, per physical function: the memory BARs as set (all
@@ -1468,6 +1469,20 @@ static int epc_alloc_doorbell(const struct device *dev, uint8_t func, pcie_epc_d
 	if (ret != 0) {
 		return ret;
 	}
+	/* deliver the doorbell to the CPU of its user (the thread allocating it) */
+	if (arch_num_cpus() > 1 && d->db_cpu != (int8_t)arch_curr_cpu()->id) {
+		unsigned int cpu = arch_curr_cpu()->id;
+
+		for (unsigned int i = 0; i < d->db_nslots; i++) {
+			ret = its_move_intid(cfg->its, d->db_slot[i].devid, 0, cpu);
+			if (ret != 0) {
+				LOG_WRN("doorbell: LPI %u to CPU%u: %d", d->db_slot[i].intid, cpu,
+					ret);
+				break;
+			}
+		}
+		d->db_cpu = ret == 0 ? (int8_t)cpu : -1;
+	}
 	d->db_func = func;
 	d->db_user = user_data;
 	d->db_cb = cb;
@@ -1588,8 +1603,8 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 		}
 	}
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
-	shell_fprintf(sh, SHELL_NORMAL, "doorbell   %s, fn %u, %u DeviceIDs mapped, seen ",
-		      d->db_cb != NULL ? "on" : "off", d->db_func, d->db_nslots);
+	shell_fprintf(sh, SHELL_NORMAL, "doorbell   %s, fn %u, CPU %d, %u DeviceIDs mapped, seen ",
+		      d->db_cb != NULL ? "on" : "off", d->db_func, d->db_cpu, d->db_nslots);
 	if (d->db_seen < 0) {
 		shell_fprintf(sh, SHELL_NORMAL, "none\n");
 	} else {
@@ -1808,6 +1823,7 @@ static int epc_rk3399_init(const struct device *dev)
 	k_sem_init(&d->udma_done, 0, 1);
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
 	d->db_seen = -1;
+	d->db_cpu = -1;
 #endif
 	k_timer_init(&d->sriov_timer, sriov_timer_fn, NULL);
 
