@@ -70,15 +70,17 @@ config GIC_V3_ITS
 # - Devices table: 128x4K, 4K aligned
 # - Interrupt collections table: 1x4K, 4K aligned
 #
-# 13x64K covers those on a four-CPU system. It does not include the interrupt
-# translation tables, which are 256-byte aligned and sized per device: a 32-ITE
-# table needs 256 bytes, so the remainder leaves room for a useful number of
-# them. Boards needing more can raise CONFIG_HEAP_MEM_POOL_SIZE, and an
+# That is 13x64K on a four-CPU system, but every 64K-aligned block also costs
+# its alignment padding in the heap: with 13x64K the pending table of the
+# second CPU of qemu_cortex_a53/smp is not allocated, so 16x64K is reserved.
+# It does not include the interrupt translation tables, which are 256-byte
+# aligned and sized per device: a 32-ITE table needs 256 bytes, so the
+# remainder leaves room for a useful number of them. Boards needing more can raise CONFIG_HEAP_MEM_POOL_SIZE, and an
 # application that has measured its own requirement can opt out of the minimum
 # with CONFIG_HEAP_MEM_POOL_IGNORE_MIN.
 config HEAP_MEM_POOL_ADD_SIZE_GIC_V3_ITS
 	int
-	default 851968 if GIC_V3_ITS
+	default 1048576 if GIC_V3_ITS
 
 config GIC_SAFE_CONFIG
 	bool "GIC Distributor Safe Configuration"
