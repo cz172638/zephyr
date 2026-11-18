@@ -32,10 +32,18 @@
 		device-id = <0x3399>;
 		class-code = <0xff0000>;
 		memory-region = <&pcie_ep_mem>;
-		memory-size = <0x400000>;
+		memory-size = <0x2000000>;
 		/* BAR0 registers, 64-bit BARs need even numbers: 32-bit here */
 		bar-sizes = <8192 65536 0 0 0x100000 0>;
+		/*
+		 * BAR4 (with BAR5, 64-bit prefetchable) resizable 1..16 MiB;
+		 * BAR0 and BAR1 then grow to 1 MiB, the doorbell block too
+		 */
+		resizable-bar = <4>;
+		resizable-bar-max-size = <0x1000000>;
 		msi-interrupts = <16>;
+		/* table and PBA after the register block in BAR0 */
+		msix-interrupts = <16>;
 	};
 };
 
@@ -55,7 +63,7 @@
 		device-id = <0x339a>;
 		class-code = <0xff0000>;
 		memory-region = <&pcie_ep_mem>;
-		memory-offset = <0x400000>;
+		memory-offset = <0x2000000>;
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
@@ -68,7 +76,7 @@
 		device-id = <0x339a>;
 		class-code = <0xff0000>;
 		memory-region = <&pcie_ep_mem>;
-		memory-offset = <0x800000>;
+		memory-offset = <0x2400000>;
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
@@ -81,7 +89,7 @@
 		device-id = <0x339a>;
 		class-code = <0xff0000>;
 		memory-region = <&pcie_ep_mem>;
-		memory-offset = <0xc00000>;
+		memory-offset = <0x2800000>;
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
@@ -94,7 +102,7 @@
 		device-id = <0x339a>;
 		class-code = <0xff0000>;
 		memory-region = <&pcie_ep_mem>;
-		memory-offset = <0x1000000>;
+		memory-offset = <0x2c00000>;
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
