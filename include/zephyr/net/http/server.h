@@ -350,6 +350,7 @@ enum http_server_state {
 	HTTP_SERVER_FRAME_WINDOW_UPDATE_STATE,
 	HTTP_SERVER_FRAME_CONTINUATION_STATE,
 	HTTP_SERVER_FRAME_PING_STATE,
+	HTTP_SERVER_FRAME_UNKNOWN_STATE,
 	HTTP_SERVER_FRAME_RST_STREAM_STATE,
 	HTTP_SERVER_FRAME_GOAWAY_STATE,
 	HTTP_SERVER_FRAME_PADDING_STATE,
@@ -489,6 +490,8 @@ struct http_client_ctx {
 
 	/** HTTP/2 header parser context. */
 	struct http_hpack_header_buf header_field;
+	/** HPACK dynamic table, held while the client may still use one. */
+	struct http_hpack_dynamic_table *hpack_table;
 
 	/** HTTP/2 streams context. */
 	struct http2_stream_ctx streams[HTTP_SERVER_MAX_STREAMS];
@@ -622,6 +625,15 @@ struct http_client_ctx {
 
 	/** The next frame on the stream is expected to be a continuation frame. */
 	bool expect_continuation : 1;
+	/** A field of the header block being decoded referred to a dynamic
+	 *  table entry the server does not have.
+	 */
+	bool hpack_unresolved : 1;
+	/** The client added an entry while no dynamic table was free. It
+	 *  gets none until its SETTINGS ACK: a table taken later would miss
+	 *  that entry.
+	 */
+	bool hpack_table_missed : 1;
 /** @endcond */
 };
 
