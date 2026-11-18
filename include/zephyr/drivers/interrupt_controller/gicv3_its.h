@@ -16,6 +16,11 @@
 #ifndef ZEPHYR_INCLUDE_DRIVERS_INTERRUPT_CONTROLLER_GICV3_ITS_H_
 #define ZEPHYR_INCLUDE_DRIVERS_INTERRUPT_CONTROLLER_GICV3_ITS_H_
 
+#include <errno.h>
+#include <stdint.h>
+
+#include <zephyr/device.h>
+
 /**
  * @brief Callback type for allocating an INTID.
  *
@@ -80,6 +85,19 @@ typedef int (*its_api_send_int_t)(const struct device *dev, uint32_t device_id, 
 typedef uint64_t (*its_api_get_msi_addr_t)(const struct device *dev);
 
 /**
+ * @brief Callback type for moving a mapped EventID to another CPU.
+ *
+ * @param dev ITS device instance.
+ * @param device_id Device ID.
+ * @param event_id Event ID.
+ * @param cpu Zephyr CPU index the interrupt is delivered to from now on.
+ *
+ * @return 0 on success, negative errno otherwise.
+ */
+typedef int (*its_api_move_intid_t)(const struct device *dev, uint32_t device_id,
+				    uint32_t event_id, unsigned int cpu);
+
+/**
  * @brief ITS driver API.
  */
 __subsystem struct its_driver_api {
@@ -93,6 +111,8 @@ __subsystem struct its_driver_api {
 	its_api_send_int_t send_int;
 	/** @brief Get the physical MSI target address. */
 	its_api_get_msi_addr_t get_msi_addr;
+	/** @brief Optional: move a mapped EventID to another CPU. */
+	its_api_move_intid_t move_intid;
 };
 
 /**
@@ -174,6 +194,30 @@ static inline int its_send_int(const struct device *dev, uint32_t device_id, uin
 static inline uint64_t its_get_msi_addr(const struct device *dev)
 {
 	return DEVICE_API_GET(its, dev)->get_msi_addr(dev);
+}
+
+/**
+ * @brief Deliver a mapped EventID to another CPU.
+ *
+ * its_map_intid() routes the LPI to the CPU that maps it; this moves it to
+ * @p cpu, for example the CPU that runs the code handling the interrupt.
+ *
+ * @param dev ITS device instance.
+ * @param device_id Device ID.
+ * @param event_id Event ID.
+ * @param cpu Zephyr CPU index.
+ *
+ * @retval 0 Moved.
+ * @retval -EINVAL @p cpu is not a running CPU.
+ * @retval -ENOSYS The ITS driver cannot move interrupts.
+ */
+static inline int its_move_intid(const struct device *dev, uint32_t device_id,
+				 uint32_t event_id, unsigned int cpu)
+{
+	const struct its_driver_api *api = DEVICE_API_GET(its, dev);
+
+	return api->move_intid != NULL ? api->move_intid(dev, device_id, event_id, cpu)
+				       : -ENOSYS;
 }
 
 #endif /* ZEPHYR_INCLUDE_DRIVERS_INTERRUPT_CONTROLLER_GICV3_ITS_H_ */

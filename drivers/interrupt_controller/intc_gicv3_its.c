@@ -412,6 +412,19 @@ static int its_send_mapti_cmd(struct gicv3_its_data *data, uint32_t device_id,
 	return its_post_command(data, &cmd);
 }
 
+static int its_send_movi_cmd(struct gicv3_its_data *data, uint32_t device_id,
+			     uint32_t event_id, uint32_t icid)
+{
+	struct its_cmd_block cmd;
+
+	cmd.raw_cmd[0] = MASK_SET(GITS_CMD_ID_MOVI, GITS_CMD_ID) |
+			  MASK_SET(device_id, GITS_CMD_DEVICEID);
+	cmd.raw_cmd[1] = MASK_SET(event_id, GITS_CMD_EVENTID);
+	cmd.raw_cmd[2] = MASK_SET(icid, GITS_CMD_ICID);
+
+	return its_post_command(data, &cmd);
+}
+
 static int its_send_int_cmd(struct gicv3_its_data *data, uint32_t device_id,
 			    uint32_t event_id)
 {
@@ -518,6 +531,26 @@ static int gicv3_its_map_intid(const struct device *dev, uint32_t device_id, uin
 	}
 
 	return its_send_sync_cmd(data, gicv3_rdist_get_rdbase(dev, arch_curr_cpu()->id));
+}
+
+static int gicv3_its_move_intid(const struct device *dev, uint32_t device_id, uint32_t event_id,
+				unsigned int cpu)
+{
+	struct gicv3_its_data *data = dev->data;
+	int ret;
+
+	/* each CPU maps its redistributor as collection <CPU id> when it starts */
+	if (cpu >= arch_num_cpus()) {
+		return -EINVAL;
+	}
+	ret = its_send_movi_cmd(data, device_id, event_id, cpu);
+	if (ret != 0) {
+		LOG_ERR("Failed to move eventid %d of deviceid %x to CPU%u", event_id,
+			device_id, cpu);
+		return ret;
+	}
+
+	return its_send_sync_cmd(data, gicv3_rdist_get_rdbase(dev, cpu));
 }
 
 static int gicv3_its_init_device_id(const struct device *dev, uint32_t device_id,
@@ -702,6 +735,7 @@ DEVICE_API(its, gicv3_its_api) = {
 	.map_intid = gicv3_its_map_intid,
 	.send_int = gicv3_its_send_int,
 	.get_msi_addr = gicv3_its_get_msi_addr,
+	.move_intid = gicv3_its_move_intid,
 };
 
 #define GICV3_ITS_INIT(n)						       \
