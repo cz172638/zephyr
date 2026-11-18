@@ -90,6 +90,13 @@ oob:
 	cmp	x0, x1
 	b.hi	spurious_continue
 
+#ifdef CONFIG_ARM64_IRQ_STORM_GUARD
+	/* Count the interrupt; a line that fires without pause is disabled */
+	str	x0, [sp, #-16]!
+	bl	z_arm64_irq_storm_check
+	ldr	x0, [sp], #16
+#endif
+
 	/* Retrieve the interrupt service routine */
 	ldr	x1, =_sw_isr_table
 	add	x1, x1, x0, lsl #4	/* table is 16-byte wide */
