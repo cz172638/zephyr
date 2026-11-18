@@ -148,6 +148,16 @@ static int setup_h1_h2_socket(const struct http_service_desc *svc, int af,
 			return -errno;
 		}
 
+		/* Run the TLS handshake in the server loop rather than in
+		 * accept(), so that a client slow to complete it does not
+		 * hold up the other clients. Sockets that do not support it
+		 * keep the handshake in accept().
+		 */
+		if (zsock_setsockopt(fd, ZSOCK_SOL_TLS, ZSOCK_TLS_HANDSHAKE_ON_ACCEPT, &(int){0},
+				     sizeof(int)) < 0) {
+			LOG_DBG("%s: setsockopt(%s): %d", "h1/2", "TLS_HANDSHAKE_ON_ACCEPT", errno);
+		}
+
 #if defined(CONFIG_HTTP_SERVER_TLS_USE_ALPN)
 #if defined(CONFIG_HTTP_SERVER_VERSION_1) || defined(CONFIG_HTTP_SERVER_VERSION_2)
 		if (zsock_setsockopt(fd, ZSOCK_SOL_TLS, ZSOCK_TLS_ALPN_LIST,
@@ -608,6 +618,11 @@ void http_server_release_client(struct http_client_ctx *client)
 
 	client_release_resources(client);
 
+#if defined(CONFIG_HTTP_SERVER_VERSION_2)
+	http_hpack_dynamic_table_free(client->hpack_table);
+	client->hpack_table = NULL;
+#endif
+
 	client->service->data->num_clients--;
 
 	for (i = 0; i < server_ctx.listen_fds; i++) {
@@ -756,6 +771,8 @@ static void init_client_ctx(struct http_client_ctx *client, const struct http_se
 	client->preface_sent = false;
 	client->settings_acked = false;
 	client->window_size = HTTP_SERVER_INITIAL_WINDOW_SIZE;
+	client->hpack_table = NULL;
+	client->hpack_table_missed = false;
 
 	if (IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_3)) {
 		client->is_h3 = false;
@@ -871,6 +888,14 @@ static int handle_http_request(struct http_client_ctx *client)
 		case HTTP_SERVER_FRAME_PRIORITY_STATE:
 			ret = IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_2) ?
 				handle_http_frame_priority(client) : -ENOTSUP;
+			break;
+		case HTTP_SERVER_FRAME_PING_STATE:
+			ret = IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_2) ?
+				handle_http_frame_ping(client) : -ENOTSUP;
+			break;
+		case HTTP_SERVER_FRAME_UNKNOWN_STATE:
+			ret = IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_2) ?
+				handle_http_frame_unknown(client) : -ENOTSUP;
 			break;
 		case HTTP_SERVER_FRAME_PADDING_STATE:
 			ret = IS_ENABLED(CONFIG_HTTP_SERVER_VERSION_2) ?
