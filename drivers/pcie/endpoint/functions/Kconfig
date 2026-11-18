@@ -22,6 +22,35 @@ config PCIE_EPF_TEST_POLL_US
 	default 1000
 	depends on PCIE_EPF_TEST
 
+config PCIE_EPF_TEST_WORKQ
+	bool "Commands on a work queue of their own"
+	default y
+	depends on PCIE_EPF_TEST
+	help
+	  Run the command handling on a dedicated work queue instead of the
+	  system work queue, so a doorbell or the poll is not queued behind
+	  other work, and the queue can get a priority and a CPU of its own.
+
+config PCIE_EPF_TEST_WORKQ_PRIORITY
+	int "Work queue thread priority"
+	default -2
+	depends on PCIE_EPF_TEST_WORKQ
+
+config PCIE_EPF_TEST_WORKQ_STACK_SIZE
+	int "Work queue thread stack size"
+	default 3072
+	depends on PCIE_EPF_TEST_WORKQ
+
+config PCIE_EPF_TEST_CPU
+	int "CPU the work queue runs on"
+	default -1
+	range -1 63
+	depends on PCIE_EPF_TEST_WORKQ && SCHED_CPU_MASK
+	help
+	  -1 lets the scheduler choose. With a CPU set aside for the endpoint
+	  (its interrupts routed there too) the command latency no longer
+	  depends on what the other CPUs do.
+
 config PCIE_EPF_TEST_SETTINGS
 	bool "Keep a header set by the epf_hdr shell command in settings"
 	default y if !PCIE_CTRL_SHELL

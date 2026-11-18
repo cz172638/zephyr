@@ -137,6 +137,7 @@ struct epf_test_data {
 	bool db_on;
 	uint8_t db_bar;
 	atomic_t db_rang;
+	atomic_t db_drop; /* link down: give the doorbell BAR back (in the command work) */
 	/* per command, in cycles: transfers, CRC, pattern fill */
 	uint64_t t_xfer;
 	uint64_t t_crc;
@@ -241,6 +242,42 @@ static inline uint32_t crc_linux(uint32_t zephyr_crc)
 
 static void raise_irq(const struct device *dev, struct epf_test_data *d);
 
+#if defined(CONFIG_PCIE_EPF_TEST_WORKQ)
+static K_THREAD_STACK_DEFINE(epf_test_stack, CONFIG_PCIE_EPF_TEST_WORKQ_STACK_SIZE);
+static struct k_work_q epf_test_q;
+
+static void epf_test_q_start(void)
+{
+	static bool started;
+	const struct k_work_queue_config qcfg = {.name = "epf_test"};
+
+	if (started) {
+		return;
+	}
+	started = true;
+	k_work_queue_start(&epf_test_q, epf_test_stack, K_THREAD_STACK_SIZEOF(epf_test_stack),
+			   CONFIG_PCIE_EPF_TEST_WORKQ_PRIORITY, &qcfg);
+#if defined(CONFIG_PCIE_EPF_TEST_CPU) && CONFIG_PCIE_EPF_TEST_CPU >= 0
+	k_tid_t t = k_work_queue_thread_get(&epf_test_q);
+
+	/* a thread is pinned while it cannot run */
+	k_thread_suspend(t);
+	if (k_thread_cpu_pin(t, CONFIG_PCIE_EPF_TEST_CPU) != 0) {
+		LOG_ERR("cannot pin the command work queue to CPU%d", CONFIG_PCIE_EPF_TEST_CPU);
+	}
+	k_thread_resume(t);
+#endif
+}
+
+#define EPF_TEST_Q (&epf_test_q)
+#else
+static void epf_test_q_start(void)
+{
+}
+
+#define EPF_TEST_Q (&k_sys_work_q)
+#endif
+
 /* interrupt context: run the command work now instead of at the next poll */
 static void doorbell_cb(const struct device *epc, uint8_t func, void *user_data)
 {
@@ -250,7 +287,7 @@ static void doorbell_cb(const struct device *epc, uint8_t func, void *user_data)
 	ARG_UNUSED(func);
 
 	(void)atomic_set(&d->db_rang, 1);
-	(void)k_work_reschedule(&d->cmd_work, K_NO_WAIT);
+	(void)k_work_reschedule_for_queue(EPF_TEST_Q, &d->cmd_work, K_NO_WAIT);
 }
 
 /*
@@ -455,6 +492,9 @@ static void cmd_work_handler(struct k_work *work)
 	uint32_t cmd = reg_rd(d, REG_COMMAND);
 	int ret;
 
+	if (atomic_cas(&d->db_drop, 1, 0) && d->db_on) {
+		(void)doorbell_disable(dev, d);
+	}
 	if (reg_rd(d, REG_DSN_CTRL) == DSN_MAGIC) {
 		uint64_t v = ((uint64_t)reg_rd(d, REG_DSN_HI) << 32) | reg_rd(d, REG_DSN_LO);
 
@@ -572,7 +612,7 @@ static void cmd_work_handler(struct k_work *work)
 	}
 
 resched:
-	k_work_reschedule(dwork, K_USEC(CONFIG_PCIE_EPF_TEST_POLL_US));
+	k_work_reschedule_for_queue(EPF_TEST_Q, dwork, K_USEC(CONFIG_PCIE_EPF_TEST_POLL_US));
 }
 
 static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l,
@@ -586,10 +626,9 @@ static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l
 		d->link = true;
 		break;
 	case PCIE_EPC_EVT_LINK_DOWN:
-		/* the host forgets it: give the BAR back to the BAR test */
-		if (d->db_on) {
-			(void)doorbell_disable(d->dev, d);
-		}
+		/* the host forgets it: the command work gives the BAR back to the BAR test */
+		(void)atomic_set(&d->db_drop, 1);
+		(void)k_work_reschedule_for_queue(EPF_TEST_Q, &d->cmd_work, K_NO_WAIT);
 		LOG_DBG("%s: link down", d->dev->name);
 		d->link = false;
 		d->bme = false;
@@ -968,8 +1007,9 @@ static int epf_test_init(const struct device *dev)
 	d->listener.event = epf_test_event;
 	pcie_epc_add_listener(cfg->epc, &d->listener);
 
+	epf_test_q_start();
 	k_work_init_delayable(&d->cmd_work, cmd_work_handler);
-	k_work_schedule(&d->cmd_work, K_NO_WAIT);
+	k_work_schedule_for_queue(EPF_TEST_Q, &d->cmd_work, K_NO_WAIT);
 
 	LOG_INF("%s: fn%u %04x:%04x on %s, test regs in BAR%u", dev->name, cfg->func,
 		cfg->hdr.vendor_id, cfg->hdr.device_id, cfg->epc->name, cfg->reg_bar);
