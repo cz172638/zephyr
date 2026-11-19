@@ -149,6 +149,7 @@ static const char *const lm_int_name[20] = {
 };
 
 #define REBAR_FUNCS   8U /* physical functions tracked for the Resizable BAR capability */
+#define MSIX_FUNCS    16U /* routing functions with MSI-X state: PFs, then VFs */
 #define OB_REGIONS    32U
 #define OB_REGION     MB(1)
 #define OB_IRQ_REGION 0U
@@ -249,12 +250,17 @@ struct epc_rk3399_data {
 		uint8_t listed;     /* BARs in the programmed capability */
 		void *virt[6];      /* CPU view of the BAR memory, for the MSI-X table */
 	} rebar[REBAR_FUNCS];
-	/* MSI-X per physical function: table in BAR memory, written by the host */
+	/* CPU view of the VF BARs, for the MSI-X table */
+	struct {
+		void *virt[6];
+		size_t size[6];
+	} vf_bar[MSIX_FUNCS];
+	/* MSI-X per function: table in BAR memory, written by the host */
 	struct {
 		volatile uint32_t *tbl;
 		uint16_t nr;
 		uint32_t sent, masked;
-	} msix[REBAR_FUNCS];
+	} msix[MSIX_FUNCS];
 	int64_t last_up_log; /* uptime of the last "link up" INF line */
 };
 
@@ -724,6 +730,10 @@ static int epc_set_bar(const struct device *dev, uint8_t func, const struct pcie
 
 		if (ret == 0) {
 			d->vf_bar_users[bar->barno] |= BIT(func);
+			if (func < MSIX_FUNCS && bar->barno < 6U) {
+				d->vf_bar[func].virt[bar->barno] = bar->virt;
+				d->vf_bar[func].size[bar->barno] = bar->size;
+			}
 		}
 		return ret;
 	}
@@ -864,6 +874,10 @@ static void epc_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
 	if (is_vf(dev, func) && barno < 6U) {
 		d->vf_bar_users[barno] &= ~BIT(func);
 		(void)cdns_ep_clear_vf_bar(&d->core, 0, func, barno, d->vf_bar_users[barno] == 0U);
+		if (func < MSIX_FUNCS) {
+			d->vf_bar[func].virt[barno] = NULL;
+			d->vf_bar[func].size[barno] = 0U;
+		}
 		return;
 	}
 	if (func < nfuncs(dev)) {
@@ -1065,7 +1079,7 @@ static int raise_msix(const struct device *dev, uint8_t func, uint16_t irq_num)
 	uint64_t addr;
 	uint16_t v = irq_num - 1U;
 
-	if (func >= REBAR_FUNCS || d->msix[func].tbl == NULL || irq_num == 0U ||
+	if (func >= MSIX_FUNCS || d->msix[func].tbl == NULL || irq_num == 0U ||
 	    irq_num > d->msix[func].nr) {
 		return -EINVAL;
 	}
@@ -1096,13 +1110,20 @@ static int epc_set_msix(const struct device *dev, uint8_t func, uint16_t nr_irqs
 	struct epc_rk3399_data *d = dev->data;
 	size_t len = nr_irqs * 16U + DIV_ROUND_UP(nr_irqs, 64U) * 8U; /* table, QWORD PBA */
 	volatile uint32_t *tbl;
+	void *virt;
+	size_t size;
 	int ret;
 
-	if (!IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSIX) || is_vf(dev, func)) {
+	if (!IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSIX)) {
 		return -ENOTSUP;
 	}
-	if (func >= REBAR_FUNCS || bir >= 6U || d->rebar[func].virt[bir] == NULL ||
-	    offset + len > d->rebar[func].size[bir]) {
+	if (bir >= 6U || func >= MSIX_FUNCS || (!is_vf(dev, func) && func >= REBAR_FUNCS)) {
+		return -EINVAL;
+	}
+	/* a VF has its own MSI-X capability (TRM 17.6.5.4), the table in its BAR */
+	virt = is_vf(dev, func) ? d->vf_bar[func].virt[bir] : d->rebar[func].virt[bir];
+	size = is_vf(dev, func) ? d->vf_bar[func].size[bir] : d->rebar[func].size[bir];
+	if (virt == NULL || offset + len > size) {
 		return -EINVAL;
 	}
 	ret = cdns_ep_set_msix(&d->core, func, nr_irqs, bir, offset);
@@ -1110,7 +1131,7 @@ static int epc_set_msix(const struct device *dev, uint8_t func, uint16_t nr_irqs
 		return ret;
 	}
 	/* reset state: every vector masked, nothing pending */
-	tbl = (volatile uint32_t *)((uint8_t *)d->rebar[func].virt[bir] + offset);
+	tbl = (volatile uint32_t *)((uint8_t *)virt + offset);
 	for (uint16_t v = 0; v < nr_irqs; v++) {
 		tbl[v * 4U + 0U] = 0U;
 		tbl[v * 4U + 1U] = 0U;
@@ -1130,7 +1151,7 @@ static int epc_get_msix(const struct device *dev, uint8_t func)
 	struct epc_rk3399_data *d = dev->data;
 	uint32_t ctrl;
 
-	if (func >= REBAR_FUNCS || d->msix[func].tbl == NULL) {
+	if (func >= MSIX_FUNCS || d->msix[func].tbl == NULL) {
 		return -EINVAL;
 	}
 	ctrl = cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + CDNS_EP_FUNC_MSIX_CAP);
@@ -2010,7 +2031,7 @@ static int epc_rk3399_init(const struct device *dev)
 	};
 	d->vf_features = d->features;
 	d->vf_features.intx_capable = false;
-	d->vf_features.msix_capable = false; /* the VF MSI-X capability is not driven */
+	d->vf_features.msix_capable = IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSIX);
 	d->vf_features.rebar_min_size = 0; /* VF Resizable BAR: not in this core */
 
 	ret = pcie_epc_init_common(dev, &ob, cfg->autostart);
