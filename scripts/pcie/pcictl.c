@@ -104,7 +104,7 @@ static void __attribute__((noreturn)) usage(void)
 	      "            read:<size>[u]|write:<size>[u]|copy:<size>[u]|all |\n"
 	      "       buf [-l limit] [ms] | remove <bdf> | rescan | reset <bdf> |\n"
 	      "       unbind <bdf> | bind <bdf> <driver> | resize <bdf> [<bar> <size>] |\n"
-	      "       sriov <pf> [<numvfs>]\n",
+	      "       sriov <pf> [<numvfs> [vfio]]\n",
 	      stderr);
 	exit(2);
 }
@@ -246,6 +246,9 @@ static void bind_override(const char *bdf, const char *drv)
 	sysfs_write("/sys/bus/pci/drivers_probe", bdf);
 }
 
+static void vf_token_set(const char *bdf);
+static const char *vf_token(void);
+
 /*
  * sriov <pf>: TotalVFs, NumVFs and the VFs with their drivers.
  * sriov <pf> <n>: n VFs ready for pcictl test. A PF without a driver, or
@@ -253,6 +256,12 @@ static void bind_override(const char *bdf, const char *drv)
  * the function); the PF gets Memory Space (the VF BARs decode only with
  * it) and Bus Master (an endpoint DMA engine shared by the functions may
  * need it, RK3399's does), and the VFs go to vfio-pci.
+ * sriov <pf> <n> vfio: the PF on vfio-pci as well (vfio-pci enable_sriov),
+ * so that the PF and its VFs can be tested at the same time. A VF of a
+ * vfio-pci PF opens only with the PF's VF token: pcictl sets its own
+ * (PCICTL_VF_TOKEN overrides it) and passes it when it opens a VF. The
+ * PF's reset method is cleared, as a bus reset at its open would reset
+ * the VFs under their users too.
  */
 static void cmd_sriov(struct pci_dev *d, int n, char **a)
 {
@@ -279,6 +288,7 @@ static void cmd_sriov(struct pci_dev *d, int n, char **a)
 	if (n >= 1) {
 		unsigned int want = (unsigned int)num(a[0]);
 		const char *pfdrv = driver(d, drv, sizeof(drv));
+		bool vfio = n >= 2 && strcmp(a[1], "vfio") == 0;
 
 		if (want > total) {
 			die("%s: %u VFs at most", bdf, total);
@@ -287,7 +297,29 @@ static void cmd_sriov(struct pci_dev *d, int n, char **a)
 			sysfs_write(path, "0"); /* the kernel takes a new count only from 0 */
 		}
 		if (want != 0U) {
-			if (strcmp(pfdrv, "-") == 0 || strcmp(pfdrv, "vfio-pci") == 0) {
+			if (vfio) {
+				char en[4] = "";
+
+				f = fopen("/sys/module/vfio_pci/parameters/enable_sriov", "r");
+				if (f == NULL || fgets(en, sizeof(en), f) == NULL || en[0] != 'Y') {
+					if (f != NULL) {
+						fclose(f);
+					}
+					die("vfio-pci without SR-IOV: echo Y > "
+					    "/sys/module/vfio_pci/parameters/enable_sriov "
+					    "(or modprobe vfio-pci enable_sriov=1)");
+				}
+				fclose(f);
+				if (strcmp(pfdrv, "vfio-pci") != 0) {
+					bind_override(bdf, "vfio-pci");
+				}
+				dev_path(d, "reset_method", path, sizeof(path));
+				if (access(path, W_OK) == 0) {
+					sysfs_write(path, "\n");
+				}
+				vf_token_set(bdf);
+				dev_path(d, "sriov_numvfs", path, sizeof(path));
+			} else if (strcmp(pfdrv, "-") == 0 || strcmp(pfdrv, "vfio-pci") == 0) {
 				if (access("/sys/bus/pci/drivers/pci-pf-stub", F_OK) != 0) {
 					die("pci-pf-stub not loaded: modprobe pci-pf-stub");
 				}
@@ -317,6 +349,9 @@ static void cmd_sriov(struct pci_dev *d, int n, char **a)
 
 	printf("%s: %u of %u VFs, PF driver %s, command %04x\n", bdf, cur, total,
 	       driver(d, drv, sizeof(drv)), pci_read_word(d, PCI_COMMAND));
+	if (strcmp(driver(d, drv, sizeof(drv)), "vfio-pci") == 0 && cur != 0U) {
+		printf("  VF token %s\n", vf_token());
+	}
 	for (unsigned int i = 0; i < cur; i++) {
 		char vfdrv[PATH_MAX];
 		ssize_t k;
@@ -1741,6 +1776,106 @@ static int vt_command(struct vt *t, uint32_t cmd, int vec, long *us)
 	return 0;
 }
 
+/* pcictl's VF token, "pcictl" in the first bytes; PCICTL_VF_TOKEN overrides it */
+static const char *vf_token(void)
+{
+	const char *t = getenv("PCICTL_VF_TOKEN");
+
+	return t != NULL ? t : "70636963-746c-4000-8000-000000000000";
+}
+
+static int uuid_parse(const char *s, uint8_t u[16])
+{
+	unsigned int i = 0;
+
+	while (*s != '\0' && i < 16U) {
+		unsigned int b;
+
+		if (*s == '-') {
+			s++;
+			continue;
+		}
+		if (sscanf(s, "%2x", &b) != 1) {
+			return -1;
+		}
+		u[i++] = (uint8_t)b;
+		s += 2;
+	}
+	return i == 16U && *s == '\0' ? 0 : -1;
+}
+
+/* the driver of the PF a VF belongs to, "" for a PF */
+static const char *pf_driver(const char *bdf, char *buf, size_t len)
+{
+	char path[PATH_MAX], link[256];
+	ssize_t n;
+	const char *p;
+
+	snprintf(path, sizeof(path), "%s/%s/physfn/driver", SYSFS, bdf);
+	n = readlink(path, link, sizeof(link) - 1);
+	if (n <= 0) {
+		snprintf(path, sizeof(path), "%s/%s/physfn", SYSFS, bdf);
+		snprintf(buf, len, "%s", access(path, F_OK) == 0 ? "-" : "");
+		return buf;
+	}
+	link[n] = '\0';
+	p = strrchr(link, '/');
+	snprintf(buf, len, "%s", p != NULL ? p + 1 : link);
+	return buf;
+}
+
+/* VFIO_DEVICE_FEATURE_PCI_VF_TOKEN on an open vfio-pci PF; 0 if it has none */
+static int vf_token_feature(int dev)
+{
+	struct {
+		struct vfio_device_feature f;
+		uint8_t uuid[16];
+	} req = {.f = {.argsz = sizeof(req),
+		       .flags = VFIO_DEVICE_FEATURE_SET | VFIO_DEVICE_FEATURE_PCI_VF_TOKEN}};
+
+	if (uuid_parse(vf_token(), req.uuid) != 0) {
+		die("PCICTL_VF_TOKEN %s: not a UUID", vf_token());
+	}
+	if (ioctl(dev, VFIO_DEVICE_FEATURE, &req) != 0) {
+		return errno == ENOTTY ? 0 : -errno; /* no SR-IOV, or enable_sriov off */
+	}
+	return 0;
+}
+
+/* open the vfio-pci PF just to set the VF token (it stays after close) */
+static void vf_token_set(const char *bdf)
+{
+	char path[PATH_MAX], link[256], *g;
+	int container, group, dev, ret;
+	ssize_t n;
+
+	snprintf(path, sizeof(path), "%s/%s/iommu_group", SYSFS, bdf);
+	n = readlink(path, link, sizeof(link) - 1);
+	if (n < 0) {
+		die("%s: no IOMMU group after binding vfio-pci", bdf);
+	}
+	link[n] = '\0';
+	g = strrchr(link, '/');
+	container = open("/dev/vfio/vfio", O_RDWR | O_CLOEXEC);
+	snprintf(path, sizeof(path), "/dev/vfio/noiommu-%s", g != NULL ? g + 1 : link);
+	group = open(path, O_RDWR | O_CLOEXEC);
+	if (container < 0 || group < 0 || ioctl(group, VFIO_GROUP_SET_CONTAINER, &container) != 0 ||
+	    ioctl(container, VFIO_SET_IOMMU, VFIO_NOIOMMU_IOMMU) != 0) {
+		die("%s: vfio group %s: %s", bdf, path, strerror(errno));
+	}
+	dev = ioctl(group, VFIO_GROUP_GET_DEVICE_FD, bdf);
+	if (dev < 0) {
+		die("%s: device fd: %s", bdf, strerror(errno));
+	}
+	ret = vf_token_feature(dev);
+	if (ret != 0) {
+		die("%s: VF token: %s", bdf, strerror(-ret));
+	}
+	close(dev);
+	close(group);
+	close(container);
+}
+
 static void vt_open(struct vt *t, struct pci_dev *d)
 {
 	char path[PATH_MAX], link[256], *g;
@@ -1796,9 +1931,24 @@ static void vt_open(struct vt *t, struct pci_dev *d)
 			fclose(f);
 		}
 	}
-	t->dev = ioctl(t->group, VFIO_GROUP_GET_DEVICE_FD, t->bdf);
-	if (t->dev < 0) {
-		die("%s: device fd: %s", t->bdf, strerror(errno));
+	{
+		/* a VF of a vfio-pci PF opens only with the PF's VF token */
+		char name[128], pfdrv[256];
+
+		if (strcmp(pf_driver(t->bdf, pfdrv, sizeof(pfdrv)), "vfio-pci") == 0) {
+			snprintf(name, sizeof(name), "%s vf_token=%s", t->bdf, vf_token());
+		} else {
+			snprintf(name, sizeof(name), "%s", t->bdf);
+		}
+		t->dev = ioctl(t->group, VFIO_GROUP_GET_DEVICE_FD, name);
+		if (t->dev < 0) {
+			die("%s: device fd: %s%s", t->bdf, strerror(errno),
+			    strcmp(pfdrv, "vfio-pci") == 0 ? " (VF token: PCICTL_VF_TOKEN?)" : "");
+		}
+		/* a PF with SR-IOV on vfio-pci: keep the VF token pcictl's own */
+		if (pfdrv[0] == '\0' && vf_token_feature(t->dev) != 0) {
+			fprintf(stderr, "note: %s: VF token not set\n", t->bdf);
+		}
 	}
 	if (ioctl(t->dev, VFIO_DEVICE_GET_INFO, &di) != 0) {
 		die("%s: device info: %s", t->bdf, strerror(errno));
