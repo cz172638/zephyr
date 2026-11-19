@@ -37,6 +37,7 @@
 #define   CDNS_SRIOV_CTRL_VFMSE		BIT(3)
 #define   CDNS_SRIOV_CTRL_ARIE		BIT(4)
 #define  CDNS_SRIOV_NUM_VFS		0x10U
+#define  CDNS_SRIOV_VF_OFFSET		0x14U /* [15:0] First VF Offset, [31:16] VF Stride */
 #define  CDNS_SRIOV_VF_DID		0x18U /* [31:16] */
 
 /* Local management */
@@ -44,6 +45,8 @@
 #define CDNS_LM_PL_CONFIG0		(CDNS_LM_BASE + 0x000U)
 #define  CDNS_LM_PL_CONFIG0_LS_READY	BIT(0)
 #define CDNS_LM_ID			(CDNS_LM_BASE + 0x044U)
+/* EP: bus [15:8] and device [4:0] number function 0 captured from a config write */
+#define CDNS_LM_EP_BUS_DEV		(CDNS_LM_BASE + 0x22cU)
 #define CDNS_LM_EP_FUNC_BAR_CFG(fn, bar) \
 	(CDNS_LM_BASE + 0x240U + ((uint32_t)(fn) * 8U) + (((bar) < 4U) ? 0U : 4U))
 #define  CDNS_LM_BAR_APERTURE_MASK(b)	(GENMASK(4, 0) << ((b) * 8U))
