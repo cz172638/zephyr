@@ -1,0 +1,11 @@
+common:
+  tags:
+    - arch
+    - interrupt
+    - smp
+  arch_allow: arm64
+  filter: (CONFIG_MP_MAX_NUM_CPUS > 1) and dt_compat_enabled("arm,gic-v3-its")
+  integration_platforms:
+    - qemu_cortex_a53/qemu_cortex_a53/smp
+tests:
+  arch.arm64.gicv3_its_movi: {}

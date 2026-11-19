@@ -439,10 +439,18 @@ static void gicv3_rdist_setup_lpis(mem_addr_t rdist)
 	/* If not, alloc a common prop table for all redistributors */
 	if (!lpi_prop_table) {
 		lpi_prop_table = (uintptr_t)k_aligned_alloc(4 * 1024, LPI_PROPBASE_SZ(lpi_id_bits));
+		if (lpi_prop_table == 0U) {
+			printk("GICv3: no heap for the LPI property table\n");
+			k_panic();
+		}
 		memset((void *)lpi_prop_table, 0, LPI_PROPBASE_SZ(lpi_id_bits));
 	}
 
 	lpi_pend_table = (uintptr_t)k_aligned_alloc(64 * 1024, LPI_PENDBASE_SZ(lpi_id_bits));
+	if (lpi_pend_table == 0U) {
+		printk("GICv3: no heap for the LPI pending table of CPU%u\n", arch_curr_cpu()->id);
+		k_panic();
+	}
 	memset((void *)lpi_pend_table, 0, LPI_PENDBASE_SZ(lpi_id_bits));
 
 #ifdef CONFIG_GIC_V3_RDIST_DMA_NONCOHERENT
