@@ -20,6 +20,11 @@ config GIC_V3_ITS_DMA_NONCOHERENT
 config GIC_V3_RDIST_DMA_NONCOHERENT
 	default y if GIC_V3_ITS
 
+# ITS device and collection tables, the LPI property table, a 64 KiB
+# aligned pending table per CPU and the ITTs of the endpoint doorbell
+config HEAP_MEM_POOL_ADD_SIZE_GIC_V3_ITS
+	default 2097152 if GIC_V3_ITS
+
 config SYS_CLOCK_HW_CYCLES_PER_SEC
 	default $(dt_node_int_prop_int,/cpus,timebase-frequency)
 
