@@ -193,6 +193,7 @@ struct epc_rk3399_data {
 	struct k_timer sriov_timer; /* ARI Capable Hierarchy for the VFs, see link_work */
 	atomic_t arie_set;
 	uint32_t ups, downs, hot_resets;
+	uint32_t bus_dev; /* last bus and device number captured by function 0, LM layout */
 	/* interrupt events: counted in the ISR, logged and acted on in the link work */
 	atomic_t int_pending; /* client status bits not yet seen by the link work */
 	uint32_t client_cnt[16];
@@ -453,6 +454,19 @@ static void link_work(struct k_work *work)
 	      rk_client_read(apb(dev), RK_CLIENT_INT_STATUS);
 	int_log(d);
 	rebar_poll(dev);
+	{
+		/* captured from the host's first config write, after the link came up */
+		uint32_t bd = cdns_ep_read(&d->core, CDNS_LM_EP_BUS_DEV) &
+			      (GENMASK(15, 8) | GENMASK(4, 0));
+
+		if (bd != d->bus_dev) {
+			d->bus_dev = bd;
+			if (bd != 0U) {
+				LOG_INF("%s: bus %02x, device %02x (%02x:%02x.0)", dev->name,
+					bd >> 8, bd & 0x1fU, bd >> 8, bd & 0x1fU);
+			}
+		}
+	}
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
@@ -1186,14 +1200,40 @@ static struct udma_desc udma_desc[UDMA_DESCS] __aligned(UDMA_DESC_ALIGN);
 static uint8_t udma_flush_buf[UDMA_DESC_ALIGN] __aligned(UDMA_DESC_ALIGN);
 static uint8_t udma_bounce[KB(16)] __aligned(CONFIG_DCACHE_LINE_SIZE);
 
+/* TLP attributes of a descriptor: bit 9 takes the requester ID from [25:10] */
+#define UDMA_TLP_RID_EN  BIT(9)
+#define UDMA_TLP_RID(rid) (((uint32_t)(rid) & 0xffffU) << 10)
+
+/*
+ * Requester ID for a transfer of func: function 0 leaves it to the core
+ * (its captured bus and device number), a VF needs its own so that the
+ * completions of its reads come back to it and an IOMMU on the host sees
+ * the VF. With ARI the VF routing IDs follow the PF's: First VF Offset,
+ * then VF Stride apart.
+ */
+static uint32_t udma_tlp_attr(const struct device *dev, uint8_t func)
+{
+	struct epc_rk3399_data *d = dev->data;
+	uint32_t bd, os, rid;
+
+	if (!is_vf(dev, func)) {
+		return 0U;
+	}
+	bd = cdns_ep_read(&d->core, CDNS_LM_EP_BUS_DEV);
+	os = cdns_ep_read(&d->core, CDNS_EP_FUNC_SRIOV_CAP + CDNS_SRIOV_VF_OFFSET);
+	rid = (bd & GENMASK(15, 8)) | ((bd & GENMASK(4, 0)) << 3);
+	rid += (os & 0xffffU) + (uint32_t)(func - DEV_CFG(dev)->max_functions) * (os >> 16);
+	return UDMA_TLP_RID_EN | UDMA_TLP_RID(rid);
+}
+
 static void udma_desc_fill(struct udma_desc *dsc, uint32_t axi, uint64_t pci, uint32_t len,
-			   uint8_t ctrl, uint32_t next)
+			   uint8_t ctrl, uint32_t next, uint32_t tlp)
 {
 	dsc->axi_addr = axi;
 	dsc->axi_attr = 0U;
 	dsc->pci_addr_lo = (uint32_t)pci;
 	dsc->pci_addr_hi = (uint32_t)(pci >> 32);
-	dsc->tlp_attr_lo = 0U; /* requester ID of function 0, TC0, strict ordering */
+	dsc->tlp_attr_lo = tlp; /* requester ID, TC0, strict ordering */
 	dsc->tlp_attr_hi = 0U;
 	dsc->len_ctrl = (len & GENMASK(23, 0)) | ((uint32_t)ctrl << 24);
 	dsc->status = 0U;
@@ -1263,7 +1303,7 @@ static int udma_run(const struct device *dev, unsigned int n, bool outbound)
 
 /* aligned run: phys and size multiples of UDMA_ALIGN, mutex held */
 static int udma_xfer(const struct device *dev, uint64_t pci_addr, uintptr_t phys, size_t size,
-		     bool to_host)
+		     bool to_host, uint32_t tlp)
 {
 	int ret = 0;
 
@@ -1271,7 +1311,7 @@ static int udma_xfer(const struct device *dev, uint64_t pci_addr, uintptr_t phys
 		uint32_t len = (uint32_t)MIN(size - off, (size_t)UDMA_MAX_LEN);
 
 		udma_desc_fill(&udma_desc[0], (uint32_t)(phys + off), pci_addr + off, len,
-			       UDMA_DC_IRQ, 0U);
+			       UDMA_DC_IRQ, 0U, tlp);
 		ret = udma_run(dev, 1U, to_host);
 		if (ret == 0 && to_host) {
 			/*
@@ -1282,7 +1322,7 @@ static int udma_xfer(const struct device *dev, uint64_t pci_addr, uintptr_t phys
 			 * before the caller's MSI.
 			 */
 			udma_desc_fill(&udma_desc[0], (uint32_t)k_mem_phys_addr(udma_flush_buf),
-				       pci_addr + off + len - 4U, 4U, UDMA_DC_IRQ, 0U);
+				       pci_addr + off + len - 4U, 4U, UDMA_DC_IRQ, 0U, tlp);
 			sys_cache_data_flush_and_invd_range(udma_flush_buf,
 							    sizeof(udma_flush_buf));
 			ret = udma_run(dev, 1U, false);
@@ -1299,7 +1339,7 @@ static int udma_xfer(const struct device *dev, uint64_t pci_addr, uintptr_t phys
  * data.
  */
 static int udma_mid(const struct device *dev, uint64_t pci_addr, uint8_t *local, size_t size,
-		    bool to_host)
+		    bool to_host, uint32_t tlp)
 {
 	uintptr_t phys = k_mem_phys_addr(local);
 	bool bounce = to_host ? (phys & (UDMA_ALIGN - 1U)) != 0U
@@ -1312,7 +1352,7 @@ static int udma_mid(const struct device *dev, uint64_t pci_addr, uint8_t *local,
 		} else {
 			sys_cache_data_flush_and_invd_range(local, size);
 		}
-		ret = udma_xfer(dev, pci_addr, phys, size, to_host);
+		ret = udma_xfer(dev, pci_addr, phys, size, to_host, tlp);
 		if (!to_host) {
 			sys_cache_data_invd_range(local, size);
 		}
@@ -1327,7 +1367,8 @@ static int udma_mid(const struct device *dev, uint64_t pci_addr, uint8_t *local,
 		} else {
 			sys_cache_data_flush_and_invd_range(udma_bounce, sizeof(udma_bounce));
 		}
-		ret = udma_xfer(dev, pci_addr + off, k_mem_phys_addr(udma_bounce), n, to_host);
+		ret = udma_xfer(dev, pci_addr + off, k_mem_phys_addr(udma_bounce), n, to_host,
+				tlp);
 		if (ret == 0 && !to_host) {
 			sys_cache_data_invd_range(udma_bounce, sizeof(udma_bounce));
 			memcpy(local + off, udma_bounce, n);
@@ -1354,12 +1395,17 @@ static int epc_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_add
 	if (!d->link_up) {
 		return -ENOTCONN;
 	}
-	if (func != 0U) {
-		return -ENOTSUP; /* descriptors carry function 0's requester ID */
+	if (func >= nfuncs(dev)) {
+		return -EINVAL;
 	}
 	if (!(d->bme & BIT(func)) &&
 	    (cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG) &
 	     PCI_COMMAND_MASTER) == 0U) {
+		return -EACCES;
+	}
+	/* the uDMA issues nothing, not even a VF's TLPs, while function 0 may not master */
+	if (is_vf(dev, func) && (cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(0) + PCI_COMMAND_REG) &
+				 PCI_COMMAND_MASTER) == 0U) {
 		return -EACCES;
 	}
 	if (size == 0U) {
@@ -1380,7 +1426,8 @@ static int epc_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_add
 		ret = pcie_epc_xfer_memcpy(dev, func, pci_addr, buf, head, to_host);
 	}
 	if (ret == 0 && mid != 0U) {
-		ret = udma_mid(dev, pci_addr + head, buf + head, mid, to_host);
+		ret = udma_mid(dev, pci_addr + head, buf + head, mid, to_host,
+			       udma_tlp_attr(dev, func));
 	}
 	if (ret == 0 && tail != 0U) {
 		ret = pcie_epc_xfer_memcpy(dev, func, pci_addr + head + mid, buf + head + mid,
@@ -1562,10 +1609,13 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 		    cfg->perst.port == NULL ? "-" : (d->perst_asserted ? "asserted" : "released"));
 	if (d->link_up) {
 		unsigned int gen, width;
+		uint32_t bd;
 
 		rk3399_pcie_link_info(apb(dev), &gen, &width);
-		shell_print(sh, "link       Gen%u x%u (of x%u, max Gen%u)", gen, width,
-			    cfg->port.lanes, cfg->port.link_gen);
+		bd = cdns_ep_read(&d->core, CDNS_LM_EP_BUS_DEV);
+		shell_print(sh, "link       Gen%u x%u (of x%u, max Gen%u), bus %02x device %02x", gen,
+			    width, cfg->port.lanes, cfg->port.link_gen, (bd >> 8) & 0xffU,
+			    bd & 0x1fU);
 	}
 	shell_print(sh, "id         %08x  cmd/sts %08x  class %08x", 
 		    cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(0)),
