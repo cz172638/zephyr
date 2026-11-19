@@ -24,6 +24,11 @@
 #define CDNS_EP_FUNC_BASE(fn)		(((uint32_t)(fn) << 12) & GENMASK(19, 12))
 #define CDNS_EP_FUNC_MSI_CAP		0x90U
 #define CDNS_EP_FUNC_MSIX_CAP		0xb0U
+#define  CDNS_MSIX_CTRL_TSIZE		GENMASK(26, 16)
+#define  CDNS_MSIX_CTRL_FMASK		BIT(30)
+#define  CDNS_MSIX_CTRL_EN		BIT(31)
+#define CDNS_MSIX_TABLE			(CDNS_EP_FUNC_MSIX_CAP + 4U)
+#define CDNS_MSIX_PBA			(CDNS_EP_FUNC_MSIX_CAP + 8U)
 #define CDNS_EP_FUNC_PCIE_CAP		0xc0U
 #define CDNS_EP_FUNC_SRIOV_CAP		0x200U
 #define  CDNS_SRIOV_TOTAL_VFS		0x0cU /* [15:0] initial, [31:16] total */
@@ -174,6 +179,12 @@ void cdns_ep_ob_clear(const struct cdns_ep_core *core, uint32_t region);
 int cdns_ep_msi_target(const struct cdns_ep_core *core, uint8_t fn, uint32_t irq_num,
 		       uint64_t *pci_addr, uint16_t *data);
 void cdns_ep_hide_msix_cap(const struct cdns_ep_core *core);
+/**
+ * @brief MSI-X capability of function fn: table of nr vectors at offset of
+ * BAR bir, PBA right after it.
+ */
+int cdns_ep_set_msix(const struct cdns_ep_core *core, uint8_t fn, uint16_t nr, uint8_t bir,
+		     uint32_t offset);
 /**
  * @brief Stop advertising Function Level Reset for function fn.
  *

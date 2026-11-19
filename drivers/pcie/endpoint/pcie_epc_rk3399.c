@@ -10,7 +10,10 @@
  *
  * Outbound: the 32 MiB "mem" window is 32 Cadence regions of 1 MiB;
  * region 0 is kept for MSI writes, the rest is the EPC core's window.
- * MSI-X is advertised by the hardware but does not work (hidden).
+ * MSI-X: the core only holds the capability; the table is in BAR memory
+ * and the message goes out through the outbound window like MSI. Linux
+ * hides it on RK3399 (the TRM lists only MSI and INTx for endpoints);
+ * PCIE_EPC_RK3399_MSIX offers it.
  */
 
 #define DT_DRV_COMPAT rockchip_rk3399_pcie_ep
@@ -231,7 +234,14 @@ struct epc_rk3399_data {
 		uint8_t seen[6];    /* last size of a resizable BAR, as n (1 MiB << n) */
 		uint8_t n;          /* entries programmed, 0 = capability off */
 		uint8_t listed;     /* BARs in the programmed capability */
+		void *virt[6];      /* CPU view of the BAR memory, for the MSI-X table */
 	} rebar[REBAR_FUNCS];
+	/* MSI-X per physical function: table in BAR memory, written by the host */
+	struct {
+		volatile uint32_t *tbl;
+		uint16_t nr;
+		uint32_t sent, masked;
+	} msix[REBAR_FUNCS];
 	int64_t last_up_log; /* uptime of the last "link up" INF line */
 };
 
@@ -697,6 +707,7 @@ static int epc_set_bar(const struct device *dev, uint8_t func, const struct pcie
 		d->rebar[func].listed &= ~BIT(bar->barno); /* new layout: initial size again */
 	}
 	d->rebar[func].size[bar->barno] = (bar->flags & PCIE_EPC_BAR_IO) != 0U ? 0U : bar->size;
+	d->rebar[func].virt[bar->barno] = bar->virt;
 	d->rebar[func].max_size[bar->barno] =
 		(bar->flags & PCIE_EPC_BAR_RESIZABLE) != 0U ? bar->max_size : 0U;
 	if ((bar->flags & PCIE_EPC_BAR_RESIZABLE) == 0U && d->rebar[func].n == 0U) {
@@ -951,20 +962,14 @@ static int raise_intx(const struct device *dev, uint8_t func)
 	return 0;
 }
 
-static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
+/* one interrupt message: a DWORD write through outbound region 0 */
+static int irq_send(const struct device *dev, uint8_t func, uint16_t irq_num, uint64_t pci_addr,
+		    uint32_t data)
 {
 	const struct epc_rk3399_config *cfg = dev->config;
 	struct epc_rk3399_data *d = dev->data;
 	k_spinlock_key_t key;
-	uint64_t pci_addr, base;
-	uint16_t data;
-	int ret;
-
-	ret = cdns_ep_msi_target(&d->core, func, irq_num, &pci_addr, &data);
-	if (ret != 0) {
-		return ret;
-	}
-	base = pci_addr & ~(uint64_t)0xffU;
+	uint64_t base = pci_addr & ~(uint64_t)0xffU;
 
 	barrier_dsync_fence_full(); /* data written through the window goes first */
 	ob_unblock(d);
@@ -1000,6 +1005,108 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 	return 0;
 }
 
+static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
+{
+	struct epc_rk3399_data *d = dev->data;
+	uint64_t pci_addr;
+	uint16_t data;
+	int ret;
+
+	ret = cdns_ep_msi_target(&d->core, func, irq_num, &pci_addr, &data);
+	if (ret != 0) {
+		return ret;
+	}
+	return irq_send(dev, func, irq_num, pci_addr, data);
+}
+
+/*
+ * MSI-X vector irq_num (from 1): address and data from the table the host
+ * wrote into BAR memory. A masked vector (function mask, or bit 0 of the
+ * vector control) only sets its pending bit; nothing resends it on unmask.
+ */
+static int raise_msix(const struct device *dev, uint8_t func, uint16_t irq_num)
+{
+	struct epc_rk3399_data *d = dev->data;
+	volatile uint32_t *e;
+	uint32_t ctrl;
+	uint64_t addr;
+	uint16_t v = irq_num - 1U;
+
+	if (func >= REBAR_FUNCS || d->msix[func].tbl == NULL || irq_num == 0U ||
+	    irq_num > d->msix[func].nr) {
+		return -EINVAL;
+	}
+	ctrl = cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + CDNS_EP_FUNC_MSIX_CAP);
+	if ((ctrl & CDNS_MSIX_CTRL_EN) == 0U) {
+		return -EINVAL;
+	}
+	e = &d->msix[func].tbl[v * 4U];
+	if ((ctrl & CDNS_MSIX_CTRL_FMASK) != 0U || (e[3] & BIT(0)) != 0U) {
+		d->msix[func].tbl[d->msix[func].nr * 4U + v / 32U] |= BIT(v % 32U);
+		d->msix[func].masked++;
+		return 0;
+	}
+	addr = ((uint64_t)e[1] << 32) | e[0];
+	if (addr == 0U || (addr & 3U) != 0U) {
+		return -EINVAL;
+	}
+	if (d->msix[func].sent++ == 0U) {
+		LOG_INF("fn%u MSI-X %u: 0x%08x -> 0x%llx (first one)", func, irq_num, e[2],
+			(unsigned long long)addr);
+	}
+	return irq_send(dev, func, irq_num, addr, e[2]);
+}
+
+static int epc_set_msix(const struct device *dev, uint8_t func, uint16_t nr_irqs, uint8_t bir,
+			uint32_t offset)
+{
+	struct epc_rk3399_data *d = dev->data;
+	size_t len = nr_irqs * 16U + DIV_ROUND_UP(nr_irqs, 64U) * 8U; /* table, QWORD PBA */
+	volatile uint32_t *tbl;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSIX) || is_vf(dev, func)) {
+		return -ENOTSUP;
+	}
+	if (func >= REBAR_FUNCS || bir >= 6U || d->rebar[func].virt[bir] == NULL ||
+	    offset + len > d->rebar[func].size[bir]) {
+		return -EINVAL;
+	}
+	ret = cdns_ep_set_msix(&d->core, func, nr_irqs, bir, offset);
+	if (ret != 0) {
+		return ret;
+	}
+	/* reset state: every vector masked, nothing pending */
+	tbl = (volatile uint32_t *)((uint8_t *)d->rebar[func].virt[bir] + offset);
+	for (uint16_t v = 0; v < nr_irqs; v++) {
+		tbl[v * 4U + 0U] = 0U;
+		tbl[v * 4U + 1U] = 0U;
+		tbl[v * 4U + 2U] = 0U;
+		tbl[v * 4U + 3U] = 1U;
+	}
+	for (uint16_t w = 0; w < DIV_ROUND_UP(nr_irqs, 64U) * 2U; w++) {
+		tbl[nr_irqs * 4U + w] = 0U;
+	}
+	d->msix[func].tbl = tbl;
+	d->msix[func].nr = nr_irqs;
+	return 0;
+}
+
+static int epc_get_msix(const struct device *dev, uint8_t func)
+{
+	struct epc_rk3399_data *d = dev->data;
+	uint32_t ctrl;
+
+	if (func >= REBAR_FUNCS || d->msix[func].tbl == NULL) {
+		return -EINVAL;
+	}
+	ctrl = cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + CDNS_EP_FUNC_MSIX_CAP);
+	if ((ctrl & CDNS_MSIX_CTRL_EN) == 0U) {
+		return -EINVAL;
+	}
+	return (int)FIELD_GET(CDNS_MSIX_CTRL_TSIZE, ctrl) + 1;
+}
+
 static int epc_raise_irq(const struct device *dev, uint8_t func, enum pcie_epc_irq_type type,
 			 uint16_t irq_num)
 {
@@ -1023,6 +1130,8 @@ static int epc_raise_irq(const struct device *dev, uint8_t func, enum pcie_epc_i
 		return raise_intx(dev, func);
 	case PCIE_EPC_IRQ_MSI:
 		return raise_msi(dev, func, irq_num);
+	case PCIE_EPC_IRQ_MSIX:
+		return raise_msix(dev, func, irq_num);
 	default:
 		return -ENOTSUP;
 	}
@@ -1393,6 +1502,8 @@ static DEVICE_API(pcie_epc, epc_rk3399_api) = {
 	.get_msi = epc_get_msi,
 	.raise_irq = epc_raise_irq,
 	.xfer_dma = epc_xfer_dma,
+	.set_msix = epc_set_msix,
+	.get_msix = epc_get_msix,
 	.get_bar_size = epc_get_bar_size,
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
 	.alloc_doorbell = epc_alloc_doorbell,
@@ -1738,8 +1849,9 @@ static int epc_rk3399_init(const struct device *dev)
 		cdns_ep_sriov_setup(&d->core, 0, cfg->max_vfs);
 	}
 
-	/* MSI-X is advertised but not functional on this revision. */
-	cdns_ep_hide_msix_cap(&d->core);
+	if (!IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSIX)) {
+		cdns_ep_hide_msix_cap(&d->core);
+	}
 	for (uint8_t fn = 0; fn <= cfg->max_vfs; fn++) {
 		if (!cdns_ep_hide_flr(&d->core, fn)) {
 			LOG_WRN("%s: fn%u still advertises FLR, a host reset will hang it",
@@ -1779,7 +1891,7 @@ static int epc_rk3399_init(const struct device *dev)
 	d->features = (struct pcie_epc_features){
 		.linkup_notifier = true,
 		.msi_capable = true,
-		.msix_capable = false,
+		.msix_capable = IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSIX),
 		.intx_capable = true,
 		.align = 256,
 		.max_functions = cfg->max_functions,
@@ -1789,6 +1901,7 @@ static int epc_rk3399_init(const struct device *dev)
 	};
 	d->vf_features = d->features;
 	d->vf_features.intx_capable = false;
+	d->vf_features.msix_capable = false; /* the VF MSI-X capability is not driven */
 	d->vf_features.rebar_min_size = 0; /* VF Resizable BAR: not in this core */
 
 	ret = pcie_epc_init_common(dev, &ob, cfg->autostart);
