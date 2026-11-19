@@ -6,6 +6,10 @@
  * core clock / memory bandwidth estimate, to tell a slow clock from
  * memory that is not cached. With the PMU each benchmark also shows
  * core cycles, instructions, cache refills and exceptions taken.
+ *
+ * The PMU, the cache and the GIC CPU interface are per CPU: with SMP every
+ * measurement runs in a thread pinned to one CPU, so the shell thread
+ * moving between CPUs does not mix two of them.
  */
 
 #include <stdlib.h>
@@ -159,7 +163,7 @@ static uint64_t bench_mem(bool write, unsigned int loops)
 	return k_cyc_to_ns_floor64(t1 - t0);
 }
 
-static int cmd_cpu(const struct shell *sh, size_t argc, char **argv)
+static int cpu_info(const struct shell *sh, uint32_t arg)
 {
 	const uint64_t iters = 10000000ULL;
 	uint64_t mair = SYSREG(mair_el1);
@@ -167,8 +171,7 @@ static int cmd_cpu(const struct shell *sh, size_t argc, char **argv)
 	uint64_t ns, ns_locked;
 	unsigned int key;
 
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
+	ARG_UNUSED(arg);
 
 	shell_print(sh, "MIDR %08llx MPIDR %08llx CurrentEL %llu CNTFRQ %llu", SYSREG(midr_el1),
 		    SYSREG(mpidr_el1), (SYSREG(CurrentEL) >> 2) & 3U, SYSREG(cntfrq_el0));
@@ -176,7 +179,7 @@ static int cmd_cpu(const struct shell *sh, size_t argc, char **argv)
 		    (sctlr >> 2) & 1U, (sctlr >> 12) & 1U);
 	shell_print(sh, "MAIR_EL1 %016llx TCR_EL1 %016llx", mair, SYSREG(tcr_el1));
 	shell_print(sh, "CTR_EL0 %08llx CLIDR_EL1 %08llx", SYSREG(ctr_el0), SYSREG(clidr_el1));
-	show_at(sh, "text", (const void *)cmd_cpu, mair);
+	show_at(sh, "text", (const void *)cpu_info, mair);
 	show_at(sh, "bss", bench_buf, mair);
 	show_at(sh, "stack", &mair, mair);
 
@@ -219,10 +222,9 @@ static int cmd_cpu(const struct shell *sh, size_t argc, char **argv)
 #define HPPIR_SAMPLES 64U
 #define INTID_SPURIOUS 1023U
 
-static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
+static int cpu_irq(const struct shell *sh, uint32_t ms)
 {
 	uint32_t ids[HPPIR_SAMPLES], cnt[HPPIR_SAMPLES] = {0}, nids = 0;
-	uint32_t ms = argc > 1 ? strtoul(argv[1], NULL, 0) : 100U;
 
 	for (uint32_t i = 0; i < HPPIR_SAMPLES; i++) {
 		unsigned int key = irq_lock();
@@ -262,14 +264,110 @@ static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
 		shell_print(sh, "exceptions taken in %u ms: %llu (%llu/s)", ms, exc,
 			    exc * 1000U / MAX(ms, 1U));
 	}
+	return 0;
+}
+
+typedef int (*cpu_fn_t)(const struct shell *sh, uint32_t arg);
+
+#if defined(CONFIG_SCHED_CPU_MASK) && (CONFIG_MP_MAX_NUM_CPUS > 1)
+static K_THREAD_STACK_DEFINE(cpu_stack, 4096);
+static struct k_thread cpu_thread;
+
+struct cpu_job {
+	cpu_fn_t fn;
+	const struct shell *sh;
+	uint32_t arg;
+	int ret;
+};
+
+static void cpu_job_run(void *p1, void *p2, void *p3)
+{
+	struct cpu_job *job = p1;
+
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	job->ret = job->fn(job->sh, job->arg);
+}
+
+/* the shell thread is not pinned: run fn in a thread that stays on cpu */
+static int run_on_cpu(int cpu, cpu_fn_t fn, const struct shell *sh, uint32_t arg)
+{
+	struct cpu_job job = {.fn = fn, .sh = sh, .arg = arg, .ret = -EIO};
+
+	k_thread_create(&cpu_thread, cpu_stack, K_THREAD_STACK_SIZEOF(cpu_stack), cpu_job_run,
+			&job, NULL, NULL, k_thread_priority_get(k_current_get()), 0, K_FOREVER);
+	if (k_thread_cpu_pin(&cpu_thread, cpu) != 0) {
+		k_thread_abort(&cpu_thread);
+		return -EINVAL;
+	}
+	k_thread_start(&cpu_thread);
+	(void)k_thread_join(&cpu_thread, K_FOREVER);
+	return job.ret;
+}
+#else
+static int run_on_cpu(int cpu, cpu_fn_t fn, const struct shell *sh, uint32_t arg)
+{
+	ARG_UNUSED(cpu);
+	return fn(sh, arg);
+}
+#endif
+
+static int parse_cpu(const struct shell *sh, const char *s, int *cpu)
+{
+	char *end;
+	unsigned long v = strtoul(s, &end, 0);
+
+	if (*end != '\0' || v >= arch_num_cpus()) {
+		shell_error(sh, "CPU %s: 0..%u", s, arch_num_cpus() - 1U);
+		return -EINVAL;
+	}
+	*cpu = (int)v;
+	return 0;
+}
+
+static int cmd_cpu(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned int key = irq_lock();
+	int cpu = (int)arch_curr_cpu()->id;
+
+	irq_unlock(key);
+	if (argc > 1 && parse_cpu(sh, argv[1], &cpu) != 0) {
+		return -EINVAL;
+	}
+	if (arch_num_cpus() > 1U) {
+		shell_print(sh, "CPU%d:", cpu);
+	}
+	return run_on_cpu(cpu, cpu_info, sh, 0U);
+}
+
+static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t ms = argc > 1 ? strtoul(argv[1], NULL, 0) : 100U;
+	int first = 0, last = (int)arch_num_cpus() - 1;
+
+	if (argc > 2) {
+		if (parse_cpu(sh, argv[2], &first) != 0) {
+			return -EINVAL;
+		}
+		last = first;
+	}
+	for (int cpu = first; cpu <= last; cpu++) {
+		if (arch_num_cpus() > 1U) {
+			shell_print(sh, "CPU%d:", cpu);
+		}
+		(void)run_on_cpu(cpu, cpu_irq, sh, ms);
+	}
 	shell_print(sh, "SPI n = INTID - 32 (devicetree GIC_SPI n)");
 	return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_cpu,
-	SHELL_CMD_ARG(irq, NULL, "[ms]: pending interrupt with IRQs masked, exception rate",
-		      cmd_cpu_irq, 1, 1),
+	SHELL_CMD_ARG(irq, NULL,
+		      "[ms] [cpu]: pending interrupt with IRQs masked, exception rate (all CPUs)",
+		      cmd_cpu_irq, 1, 2),
 	SHELL_SUBCMD_SET_END);
 
-SHELL_CMD_REGISTER(cpu, &sub_cpu, "CPU registers, memory attributes, clock and memory speed",
-		   cmd_cpu);
+SHELL_CMD_ARG_REGISTER(cpu, &sub_cpu,
+		       "[cpu]: CPU registers, memory attributes, clock and memory speed", cmd_cpu,
+		       1, 1);
