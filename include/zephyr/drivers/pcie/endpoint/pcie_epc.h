@@ -154,6 +154,29 @@ enum pcie_epc_irq_type {
 	PCIE_EPC_IRQ_MSIX,
 };
 
+/**
+ * @brief Doorbell target: a host write of @c data to @c phys interrupts the
+ * endpoint.
+ *
+ * @c phys is the controller's inbound (AXI) address of the target, for
+ * pcie_epc_bar::phys of a BAR covering it.
+ */
+struct pcie_epc_doorbell {
+	/** Inbound address the write must reach */
+	uint64_t phys;
+	/** Value to write */
+	uint32_t data;
+};
+
+/**
+ * @brief Doorbell callback, called in interrupt context.
+ *
+ * @param dev Controller.
+ * @param func Function the doorbell was allocated for.
+ * @param user_data As given to pcie_epc_alloc_doorbell().
+ */
+typedef void (*pcie_epc_doorbell_cb_t)(const struct device *dev, uint8_t func, void *user_data);
+
 /** @brief Asynchronous controller events delivered to listeners. */
 enum pcie_epc_event {
 	/** Data link layer is up. */
@@ -260,6 +283,10 @@ __subsystem struct pcie_epc_driver_api {
 	/** Optional: copy between local memory and host memory with a DMA engine. */
 	int (*xfer_dma)(const struct device *dev, uint8_t func, uint64_t pci_addr, void *local,
 			size_t size, bool to_host);
+	/** Optional: doorbell, an interrupt on the endpoint raised by a host write. */
+	int (*alloc_doorbell)(const struct device *dev, uint8_t func, pcie_epc_doorbell_cb_t cb,
+			      void *user_data, struct pcie_epc_doorbell *db);
+	int (*free_doorbell)(const struct device *dev, uint8_t func);
 };
 
 /** @endcond */
@@ -520,6 +547,49 @@ static inline int pcie_epc_xfer_dma(const struct device *dev, uint8_t func, uint
 
 	return api->xfer_dma ? api->xfer_dma(dev, func, pci_addr, local, size, to_host)
 			     : -ENOTSUP;
+}
+
+/**
+ * @brief Allocate a doorbell for a function.
+ *
+ * The caller exposes @a db through a BAR (pcie_epc_set_bar() with the BAR
+ * aligned around db->phys) and tells the host the BAR, offset and value.
+ * A host write of db->data there calls @a cb.
+ *
+ * @param dev Controller.
+ * @param func Function.
+ * @param cb Callback, called in interrupt context.
+ * @param user_data Passed to @a cb.
+ * @param db Filled with the target address and value.
+ * @retval 0 Doorbell allocated.
+ * @retval -ENOTSUP The controller has no doorbell.
+ * @retval -EBUSY The function already has a doorbell.
+ * @retval -ENOMEM No interrupt or table memory left.
+ */
+static inline int pcie_epc_alloc_doorbell(const struct device *dev, uint8_t func,
+					  pcie_epc_doorbell_cb_t cb, void *user_data,
+					  struct pcie_epc_doorbell *db)
+{
+	const struct pcie_epc_driver_api *api = DEVICE_API_GET(pcie_epc, dev);
+
+	return api->alloc_doorbell ? api->alloc_doorbell(dev, func, cb, user_data, db)
+				   : -ENOTSUP;
+}
+
+/**
+ * @brief Release the doorbell of a function; @a cb is not called afterwards.
+ *
+ * @param dev Controller.
+ * @param func Function.
+ * @retval 0 Doorbell released.
+ * @retval -ENOTSUP The controller has no doorbell.
+ * @retval -EINVAL The function has no doorbell.
+ */
+static inline int pcie_epc_free_doorbell(const struct device *dev, uint8_t func)
+{
+	const struct pcie_epc_driver_api *api = DEVICE_API_GET(pcie_epc, dev);
+
+	return api->free_doorbell ? api->free_doorbell(dev, func) : -ENOTSUP;
 }
 
 /** @cond INTERNAL_HIDDEN */

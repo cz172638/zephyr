@@ -72,6 +72,8 @@ LOG_MODULE_REGISTER(pcie_epf_test, CONFIG_PCIE_EP_LOG_LEVEL);
 #define CMD_READ       BIT(3)
 #define CMD_WRITE      BIT(4)
 #define CMD_COPY       BIT(5)
+#define CMD_ENABLE_DOORBELL  BIT(6)
+#define CMD_DISABLE_DOORBELL BIT(7)
 
 #define STS_READ_SUCCESS     BIT(0)
 #define STS_READ_FAIL        BIT(1)
@@ -82,6 +84,11 @@ LOG_MODULE_REGISTER(pcie_epf_test, CONFIG_PCIE_EP_LOG_LEVEL);
 #define STS_IRQ_RAISED       BIT(6)
 #define STS_SRC_ADDR_INVALID BIT(7)
 #define STS_DST_ADDR_INVALID BIT(8)
+#define STS_DOORBELL_SUCCESS         BIT(9)
+#define STS_DOORBELL_ENABLE_SUCCESS  BIT(10)
+#define STS_DOORBELL_ENABLE_FAIL     BIT(11)
+#define STS_DOORBELL_DISABLE_SUCCESS BIT(12)
+#define STS_DOORBELL_DISABLE_FAIL    BIT(13)
 #define STS_NO_RESOURCE      BIT(18)
 
 #define FLAG_USE_DMA BIT(0)
@@ -90,6 +97,9 @@ LOG_MODULE_REGISTER(pcie_epf_test, CONFIG_PCIE_EP_LOG_LEVEL);
 #define CAP_MSI              BIT(1)
 #define CAP_MSIX             BIT(2)
 #define CAP_INTX             BIT(3)
+#define CAP_DYNAMIC_INBOUND_MAPPING BIT(5)
+
+#define NO_BAR UINT32_MAX
 #define CAP_BAR_RESERVED(n)  BIT(6 + (n))
 
 #define IRQ_TYPE_INTX 0
@@ -121,6 +131,10 @@ struct epf_test_data {
 	bool bme;
 	bool bme_wait;
 	bool link;
+	/* doorbell: BAR remapped onto the controller's doorbell target */
+	bool db_on;
+	uint8_t db_bar;
+	atomic_t db_rang;
 	/* per command, in cycles: transfers, CRC, pattern fill */
 	uint64_t t_xfer;
 	uint64_t t_crc;
@@ -221,6 +235,80 @@ static inline void t_add(uint64_t *acc, uint64_t t0)
 static inline uint32_t crc_linux(uint32_t zephyr_crc)
 {
 	return ~zephyr_crc;
+}
+
+static void raise_irq(const struct device *dev, struct epf_test_data *d);
+
+/* interrupt context: run the command work now instead of at the next poll */
+static void doorbell_cb(const struct device *epc, uint8_t func, void *user_data)
+{
+	struct epf_test_data *d = user_data;
+
+	ARG_UNUSED(epc);
+	ARG_UNUSED(func);
+
+	(void)atomic_set(&d->db_rang, 1);
+	(void)k_work_reschedule(&d->cmd_work, K_NO_WAIT);
+}
+
+/*
+ * Linux pci-epf-test ABI: the doorbell goes on the first BAR after the
+ * register BAR, retargeted (same size, so the host's assignment stays)
+ * at the aligned block around the doorbell address.
+ */
+static int doorbell_enable(const struct device *dev, struct epf_test_data *d)
+{
+	const struct epf_test_config *cfg = dev->config;
+	struct pcie_epc_doorbell db;
+	struct pcie_epc_bar bar;
+	uint8_t b;
+	int ret;
+
+	if (d->db_on) {
+		return -EALREADY;
+	}
+	for (b = cfg->reg_bar + 1U; b < PCIE_EPC_NUM_BARS; b++) {
+		if (d->bar[b].size != 0U) {
+			break;
+		}
+	}
+	if (b == PCIE_EPC_NUM_BARS) {
+		return -ENOSPC;
+	}
+	ret = pcie_epc_alloc_doorbell(cfg->epc, cfg->func, doorbell_cb, d, &db);
+	if (ret != 0) {
+		return ret;
+	}
+	bar = d->bar[b];
+	bar.phys = db.phys & ~((uint64_t)bar.size - 1U);
+	ret = pcie_epc_set_bar(cfg->epc, cfg->func, &bar);
+	if (ret != 0) {
+		(void)pcie_epc_free_doorbell(cfg->epc, cfg->func);
+		return ret;
+	}
+	d->db_bar = b;
+	d->db_on = true;
+	reg_wr(d, REG_DB_BAR, b);
+	reg_wr(d, REG_DB_OFFSET, (uint32_t)(db.phys - bar.phys));
+	reg_wr(d, REG_DB_DATA, db.data);
+	LOG_INF("doorbell on BAR%u+0x%x (0x%llx), data 0x%x", b,
+		(uint32_t)(db.phys - bar.phys), (unsigned long long)db.phys, db.data);
+	return 0;
+}
+
+static int doorbell_disable(const struct device *dev, struct epf_test_data *d)
+{
+	const struct epf_test_config *cfg = dev->config;
+	int ret;
+
+	if (!d->db_on) {
+		return -EINVAL;
+	}
+	(void)pcie_epc_free_doorbell(cfg->epc, cfg->func);
+	ret = pcie_epc_set_bar(cfg->epc, cfg->func, &d->bar[d->db_bar]);
+	d->db_on = false;
+	reg_wr(d, REG_DB_BAR, NO_BAR);
+	return ret;
 }
 
 static void raise_irq(const struct device *dev, struct epf_test_data *d)
@@ -369,6 +457,19 @@ static void cmd_work_handler(struct k_work *work)
 		reg_wr(d, REG_DSN_CTRL, (uint32_t)ret);
 	}
 
+	if (atomic_cas(&d->db_rang, 1, 0) && cmd == 0) {
+		/*
+		 * A doorbell with a command only made the work run now. Without
+		 * one it is the doorbell test, which clears STATUS first; a
+		 * non-zero STATUS means the poll ran the command before the
+		 * doorbell came, and that command already raised its IRQ.
+		 */
+		if (reg_rd(d, REG_STATUS) == 0U) {
+			sts_set(d, STS_DOORBELL_SUCCESS);
+			raise_irq(dev, d);
+		}
+		goto resched;
+	}
 	if (cmd == 0) {
 		goto resched;
 	}
@@ -436,6 +537,17 @@ static void cmd_work_handler(struct k_work *work)
 	} else if (cmd & CMD_RAISE_INTX) {
 		reg_wr(d, REG_IRQ_TYPE, IRQ_TYPE_INTX);
 		raise_irq(dev, d);
+	} else if (cmd & CMD_ENABLE_DOORBELL) {
+		ret = doorbell_enable(dev, d);
+		if (ret != 0) {
+			LOG_WRN("doorbell: %d", ret);
+		}
+		sts_set(d, ret == 0 ? STS_DOORBELL_ENABLE_SUCCESS : STS_DOORBELL_ENABLE_FAIL);
+		raise_irq(dev, d);
+	} else if (cmd & CMD_DISABLE_DOORBELL) {
+		ret = doorbell_disable(dev, d);
+		sts_set(d, ret == 0 ? STS_DOORBELL_DISABLE_SUCCESS : STS_DOORBELL_DISABLE_FAIL);
+		raise_irq(dev, d);
 	} else if (cmd & (CMD_RAISE_MSI | CMD_RAISE_MSIX)) {
 		bool msix = cmd & CMD_RAISE_MSIX;
 		int count = msix ? pcie_epc_get_msix(cfg->epc, cfg->func)
@@ -471,6 +583,10 @@ static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l
 		d->link = true;
 		break;
 	case PCIE_EPC_EVT_LINK_DOWN:
+		/* the host forgets it: give the BAR back to the BAR test */
+		if (d->db_on) {
+			(void)doorbell_disable(d->dev, d);
+		}
 		LOG_DBG("%s: link down", d->dev->name);
 		d->link = false;
 		d->bme = false;
@@ -568,6 +684,16 @@ static int epf_test_setup_bars(const struct device *dev)
 				     REG_BLOCK_SIZE) == 0) {
 		caps |= CAP_MSIX;
 	}
+	{
+		struct pcie_epc_doorbell db;
+
+		/* probe: allocate and release */
+		if (pcie_epc_alloc_doorbell(cfg->epc, cfg->func, doorbell_cb, d, &db) == 0) {
+			(void)pcie_epc_free_doorbell(cfg->epc, cfg->func);
+			caps |= CAP_DYNAMIC_INBOUND_MAPPING;
+		}
+	}
+	reg_wr(d, REG_DB_BAR, NO_BAR);
 	reg_wr(d, REG_CAPS, caps);
 
 	return 0;

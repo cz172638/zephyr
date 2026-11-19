@@ -7,7 +7,18 @@ if SOC_SERIES_RK3399
 if ARM64
 
 config NUM_IRQS
+	# LPIs start at 8192
+	default 16384 if GIC_V3_ITS
 	default 288
+
+# The GIC-500 tables and the ITS command queue are accessed without
+# coherency with the CPU caches (non-shareable): flush around updates.
+# Harmless where the interconnect would snoop.
+config GIC_V3_ITS_DMA_NONCOHERENT
+	default y if GIC_V3_ITS
+
+config GIC_V3_RDIST_DMA_NONCOHERENT
+	default y if GIC_V3_ITS
 
 config SYS_CLOCK_HW_CYCLES_PER_SEC
 	default $(dt_node_int_prop_int,/cpus,timebase-frequency)
