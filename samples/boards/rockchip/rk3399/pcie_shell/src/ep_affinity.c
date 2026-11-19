@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * With SMP the endpoint gets a CPU of its own: its interrupts are routed
- * to the CPU the test function's command work queue is pinned to.
- * APPLICATION level: the secondary CPUs run by then.
+ * to the CPU the test function's command work queue is pinned to, and the
+ * threads that exist at boot (shell, network, logging, main) may no longer
+ * run there. Threads created later are not restricted.
  */
 
 #include <zephyr/devicetree.h>
@@ -21,7 +22,31 @@
 static K_THREAD_STACK_DEFINE(mpidr_stack, 1024);
 static struct k_thread mpidr_thread;
 static volatile uint64_t ep_mpidr;
+static unsigned int ep_moved, ep_busy;
 
+/* everything but the idle threads and the threads pinned to the EP CPU */
+static void ep_cpu_release(const struct k_thread *t, void *user_data)
+{
+	struct k_thread *th = (struct k_thread *)t;
+	uint32_t cpu = BIT(CONFIG_PCIE_EPF_TEST_CPU);
+	bool *retry = user_data;
+
+	if (th == k_current_get() || th->base.prio == K_IDLE_PRIO ||
+	    (th->base.cpu_mask & cpu) == 0U || th->base.cpu_mask == cpu) {
+		return;
+	}
+	/* only a thread that cannot run right now may change its mask */
+	if (k_thread_cpu_mask_disable(th, CONFIG_PCIE_EPF_TEST_CPU) == 0) {
+		ep_moved++;
+	} else {
+		*retry = true;
+	}
+}
+
+/*
+ * Runs on the EP CPU while the init thread (later main) waits for it in
+ * k_thread_join(), so that one cannot run either and gets restricted too.
+ */
 static void mpidr_read(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -29,6 +54,18 @@ static void mpidr_read(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	ep_mpidr = MPIDR_TO_CORE(GET_MPIDR());
+
+	for (int pass = 0; pass < 10; pass++) {
+		bool retry = false;
+
+		k_thread_foreach_unlocked(ep_cpu_release, &retry);
+		if (!retry) {
+			ep_busy = 0U;
+			return;
+		}
+		ep_busy = 1U;
+		k_msleep(1);
+	}
 }
 
 /*
@@ -53,8 +90,9 @@ static int ep_irq_affinity(void)
 	arm_gic_irq_set_affinity(DT_IRQ_BY_NAME(EP_NODE, sys, irq), ep_mpidr);
 	arm_gic_irq_set_affinity(DT_IRQ_BY_NAME(EP_NODE, legacy, irq), ep_mpidr);
 	arm_gic_irq_set_affinity(DT_IRQ_BY_NAME(EP_NODE, client, irq), ep_mpidr);
-	printk("PCIe endpoint interrupts on CPU%d (MPIDR 0x%llx)\n", CONFIG_PCIE_EPF_TEST_CPU,
-	       (unsigned long long)ep_mpidr);
+	printk("PCIe endpoint interrupts on CPU%d (MPIDR 0x%llx), %u threads moved off it%s\n",
+	       CONFIG_PCIE_EPF_TEST_CPU, (unsigned long long)ep_mpidr, ep_moved,
+	       ep_busy != 0U ? ", some still allowed (they kept running)" : "");
 	return 0;
 }
 
