@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Rockchip RK3399 CRU/PMUCRU clock gate controller, plus rates of the few
- * composite clocks drivers need (SPI, SDMMC). PLLs are left as the boot
- * loader set them (U-Boot SPL: GPLL 594 MHz, CPLL 384 MHz).
+ * composite clocks drivers need (SPI, SDMMC, the PMU I2Cs). PLLs are left as
+ * the boot loader set them (U-Boot SPL: GPLL 594 MHz, CPLL 384 MHz; TF-A:
+ * PPLL 676 MHz).
  */
 
 #define DT_DRV_COMPAT rockchip_rk3399_cru_clk
@@ -183,17 +184,52 @@ static uint32_t rk_src_rate(const struct device *dev, uint32_t s)
 	}
 }
 
+/* PMUCRU: the I2Cs in the PMU domain, PPLL divided by CLKSEL_CON[sel][shift+6:shift] + 1 */
+#define PMUCRU_PPLL      0x00U
+#define PMUCRU_CLKSEL(n) (0x80U + (n) * 4U)
+
+static const struct {
+	uint16_t id;
+	uint8_t sel;
+	uint8_t shift;
+} pmu_i2c[] = {
+	{SCLK_I2C0_PMU, 2, 0},
+	{SCLK_I2C8_PMU, 2, 8},
+	{SCLK_I2C4_PMU, 3, 0},
+};
+
+static int pmu_i2c_find(const struct device *dev, uint32_t id)
+{
+	const struct clock_control_rk3399_config *cfg = dev->config;
+
+	if (cfg->gate_offset != 0x100U) {
+		return -1;
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(pmu_i2c); i++) {
+		if (pmu_i2c[i].id == id) {
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
 static int clock_control_rk3399_get_rate(const struct device *dev, clock_control_subsys_t sys,
 					 uint32_t *rate)
 {
 	const struct clock_control_rk3399_config *cfg = dev->config;
 	const struct rk_comp *c = rk_comp_find(dev, (uint32_t)(uintptr_t)sys);
+	int p = pmu_i2c_find(dev, (uint32_t)(uintptr_t)sys);
 	uint32_t v;
 
 	if ((uint32_t)(uintptr_t)sys == PCLK_WDT && cfg->gate_offset == 0x300U) {
 		/* pclk_alive: GPLL / (CLKSEL_CON57[4:0] + 1) */
 		v = sys_read32(DEVICE_MMIO_GET(dev) + CRU_CLKSEL(57));
 		*rate = rk_src_rate(dev, SRC_GPLL) / ((v & 0x1fU) + 1U);
+		return 0;
+	}
+	if (p >= 0) {
+		v = sys_read32(DEVICE_MMIO_GET(dev) + PMUCRU_CLKSEL(pmu_i2c[p].sel));
+		*rate = rk_pll_rate(dev, PMUCRU_PPLL) / (((v >> pmu_i2c[p].shift) & 0x7fU) + 1U);
 		return 0;
 	}
 	if (c == NULL) {
@@ -213,12 +249,23 @@ static int clock_control_rk3399_set_rate(const struct device *dev, clock_control
 	const struct rk_comp *c = rk_comp_find(dev, (uint32_t)(uintptr_t)sys);
 	uint32_t want = (uint32_t)(uintptr_t)rate;
 	uint32_t src, div, mask, max, mux;
+	int p = pmu_i2c_find(dev, (uint32_t)(uintptr_t)sys);
 
-	if (c == NULL) {
-		return -ENOTSUP;
-	}
 	if (want == 0U) {
 		return -EINVAL;
+	}
+	if (p >= 0) {
+		src = rk_pll_rate(dev, PMUCRU_PPLL);
+		div = DIV_ROUND_UP(src, want);
+		if (src == 0U || div > 128U) {
+			return -ERANGE;
+		}
+		sys_write32((0x7fU << (16U + pmu_i2c[p].shift)) | ((div - 1U) << pmu_i2c[p].shift),
+			    DEVICE_MMIO_GET(dev) + PMUCRU_CLKSEL(pmu_i2c[p].sel));
+		return 0;
+	}
+	if (c == NULL) {
+		return -ENOTSUP;
 	}
 	max = BIT(c->div_width);
 	mux = c->gpll_idx;
