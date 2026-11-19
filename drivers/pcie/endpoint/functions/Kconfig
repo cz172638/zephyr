@@ -22,6 +22,17 @@ config PCIE_EPF_TEST_POLL_US
 	default 1000
 	depends on PCIE_EPF_TEST
 
+config PCIE_EPF_TEST_DOORBELL_POLL_MS
+	int "Command register poll period with the doorbell on [ms]"
+	default 100
+	depends on PCIE_EPF_TEST
+	help
+	  While the host has the doorbell enabled, a doorbell runs the command
+	  handling at once, so the register is polled only this often, for a
+	  host that writes a command without ringing (the Linux
+	  pci_endpoint_test driver rings only for the doorbell test). 0 stops
+	  the poll until the doorbell is disabled or the link goes down.
+
 config PCIE_EPF_TEST_WORKQ
 	bool "Commands on a work queue of their own"
 	default y

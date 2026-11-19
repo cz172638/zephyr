@@ -612,7 +612,14 @@ static void cmd_work_handler(struct k_work *work)
 	}
 
 resched:
-	k_work_reschedule_for_queue(EPF_TEST_Q, dwork, K_USEC(CONFIG_PCIE_EPF_TEST_POLL_US));
+	if (!d->db_on) {
+		k_work_reschedule_for_queue(EPF_TEST_Q, dwork,
+					    K_USEC(CONFIG_PCIE_EPF_TEST_POLL_US));
+	} else if (CONFIG_PCIE_EPF_TEST_DOORBELL_POLL_MS > 0) {
+		/* a doorbell or a link down reschedules the work right away */
+		k_work_reschedule_for_queue(EPF_TEST_Q, dwork,
+					    K_MSEC(CONFIG_PCIE_EPF_TEST_DOORBELL_POLL_MS));
+	}
 }
 
 static void epf_test_event(const struct device *epc, struct pcie_epc_listener *l,
