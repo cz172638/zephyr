@@ -103,7 +103,8 @@ static void __attribute__((noreturn)) usage(void)
 	      "            bars|bar<n>|msi[<n>]|msix[<n>]|doorbell|\n"
 	      "            read:<size>[u]|write:<size>[u]|copy:<size>[u]|all |\n"
 	      "       buf [-l limit] [ms] | remove <bdf> | rescan | reset <bdf> |\n"
-	      "       unbind <bdf> | bind <bdf> <driver> | resize <bdf> [<bar> <size>]\n",
+	      "       unbind <bdf> | bind <bdf> <driver> | resize <bdf> [<bar> <size>] |\n"
+	      "       sriov <pf> [<numvfs>]\n",
 	      stderr);
 	exit(2);
 }
@@ -230,6 +231,112 @@ static uint64_t num_size(const char *s)
  * kernel grows prefetchable windows at run time, non-prefetchable ones
  * rarely.
  */
+/* bind bdf to drv through driver_override, whatever it was bound to */
+static void bind_override(const char *bdf, const char *drv)
+{
+	char path[PATH_MAX], link[PATH_MAX];
+
+	snprintf(path, sizeof(path), "%s/%s/driver_override", SYSFS, bdf);
+	sysfs_write(path, drv);
+	snprintf(path, sizeof(path), "%s/%s/driver", SYSFS, bdf);
+	if (readlink(path, link, sizeof(link) - 1) > 0) {
+		snprintf(path, sizeof(path), "%s/%s/driver/unbind", SYSFS, bdf);
+		sysfs_write(path, bdf);
+	}
+	sysfs_write("/sys/bus/pci/drivers_probe", bdf);
+}
+
+/*
+ * sriov <pf>: TotalVFs, NumVFs and the VFs with their drivers.
+ * sriov <pf> <n>: n VFs ready for pcictl test. A PF without a driver, or
+ * with vfio-pci, goes to pci-pf-stub (it enables SR-IOV without touching
+ * the function); the PF gets Memory Space (the VF BARs decode only with
+ * it) and Bus Master (an endpoint DMA engine shared by the functions may
+ * need it, RK3399's does), and the VFs go to vfio-pci.
+ */
+static void cmd_sriov(struct pci_dev *d, int n, char **a)
+{
+	char bdf[16], path[PATH_MAX], link[128], drv[PATH_MAX], val[16];
+	unsigned int total = 0, cur = 0;
+	FILE *f;
+
+	snprintf(bdf, sizeof(bdf), "%04x:%02x:%02x.%u", d->domain, d->bus, d->dev, d->func);
+	dev_path(d, "sriov_totalvfs", path, sizeof(path));
+	f = fopen(path, "r");
+	if (f == NULL || fscanf(f, "%u", &total) != 1) {
+		die("%s: no SR-IOV (%s)", bdf, path);
+	}
+	fclose(f);
+	dev_path(d, "sriov_numvfs", path, sizeof(path));
+	f = fopen(path, "r");
+	if (f != NULL) {
+		if (fscanf(f, "%u", &cur) != 1) {
+			cur = 0;
+		}
+		fclose(f);
+	}
+
+	if (n >= 1) {
+		unsigned int want = (unsigned int)num(a[0]);
+		const char *pfdrv = driver(d, drv, sizeof(drv));
+
+		if (want > total) {
+			die("%s: %u VFs at most", bdf, total);
+		}
+		if (cur != 0U) {
+			sysfs_write(path, "0"); /* the kernel takes a new count only from 0 */
+		}
+		if (want != 0U) {
+			if (strcmp(pfdrv, "-") == 0 || strcmp(pfdrv, "vfio-pci") == 0) {
+				if (access("/sys/bus/pci/drivers/pci-pf-stub", F_OK) != 0) {
+					die("pci-pf-stub not loaded: modprobe pci-pf-stub");
+				}
+				bind_override(bdf, "pci-pf-stub");
+			}
+			pci_write_word(d, PCI_COMMAND,
+				       pci_read_word(d, PCI_COMMAND) | PCI_COMMAND_MEMORY |
+					       PCI_COMMAND_MASTER);
+			snprintf(val, sizeof(val), "%u", want);
+			sysfs_write(path, val);
+			for (unsigned int i = 0; i < want; i++) {
+				ssize_t k;
+				const char *b;
+
+				snprintf(path, sizeof(path), "%s/%s/virtfn%u", SYSFS, bdf, i);
+				k = readlink(path, link, sizeof(link) - 1);
+				if (k <= 0) {
+					continue;
+				}
+				link[k] = '\0';
+				b = strrchr(link, '/');
+				bind_override(b != NULL ? b + 1 : link, "vfio-pci");
+			}
+		}
+		cur = want;
+	}
+
+	printf("%s: %u of %u VFs, PF driver %s, command %04x\n", bdf, cur, total,
+	       driver(d, drv, sizeof(drv)), pci_read_word(d, PCI_COMMAND));
+	for (unsigned int i = 0; i < cur; i++) {
+		char vfdrv[PATH_MAX];
+		ssize_t k;
+		const char *b;
+
+		snprintf(path, sizeof(path), "%s/%s/virtfn%u", SYSFS, bdf, i);
+		k = readlink(path, link, sizeof(link) - 1);
+		if (k <= 0) {
+			continue;
+		}
+		link[k] = '\0';
+		b = strrchr(link, '/');
+		snprintf(path, sizeof(path), "%s/%s/driver", SYSFS, b != NULL ? b + 1 : link);
+		k = readlink(path, vfdrv, sizeof(vfdrv) - 1);
+		vfdrv[k > 0 ? k : 0] = '\0';
+		printf("  VF%u %s %s\n", i + 1, b != NULL ? b + 1 : link,
+		       k > 0 ? strrchr(vfdrv, '/') + 1 : "-");
+	}
+}
+
 static void cmd_resize(struct pci_dev *d, int n, char **a)
 {
 	char path[PATH_MAX], drv[256], bdf[16], val[16];
@@ -1343,17 +1450,70 @@ static void reg_wr(struct vt *t, unsigned int off, uint32_t v)
 }
 
 /*
+ * A VF reads Vendor and Device ID 0xffff, Memory Space 0 and zero BARs in
+ * its own config space (SR-IOV): those live in the PF, VF Memory Space in
+ * its SR-IOV Control. Look there instead.
+ */
+static int vf_alive(struct vt *t, const char *pf)
+{
+	char path[PATH_MAX];
+	uint8_t c[8];
+	int fd, n;
+
+	if (snprintf(path, sizeof(path), "%s/%s/config", SYSFS, pf) >= (int)sizeof(path)) {
+		return 0;
+	}
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		return 0; /* nothing to compare with: let the test find out */
+	}
+	n = (int)pread(fd, c, sizeof(c), 0);
+	close(fd);
+	if (n != (int)sizeof(c)) {
+		return 0;
+	}
+	if ((c[0] | c[1] << 8) != t->d->vendor_id) {
+		fprintf(stderr, "PF %s does not answer config requests (vendor %04x)\n", pf,
+			c[0] | c[1] << 8);
+		return -1;
+	}
+	if (!(c[4] & PCI_COMMAND_MEMORY)) {
+		fprintf(stderr, "PF %s has Memory Space off: pcictl cmd %s +mem +bme\n", pf, pf);
+		return -1;
+	}
+	if (t->dma && !(c[4] & PCI_COMMAND_MASTER)) {
+		fprintf(stderr, "note: PF %s without Bus Master: an endpoint DMA engine shared "
+			"by the functions may stay idle (pcictl cmd %s +bme)\n", pf, pf);
+	}
+	return 0;
+}
+
+/*
  * The real config space (sysfs, not vfio's virtualized copy): an endpoint
  * that rebooted shows Memory Space off and BARs zero; a BAR access would
  * then fault. Checked before every test.
  */
 static int vt_alive(struct vt *t)
 {
-	uint16_t vendor = pci_read_word(t->d, PCI_VENDOR_ID);
-	uint16_t cmd = pci_read_word(t->d, PCI_COMMAND);
-	uint32_t bar = pci_read_long(t->d, PCI_BASE_ADDRESS_0 + 4 * t->reg_bar);
-	uint32_t want = (uint32_t)(t->d->base_addr[t->reg_bar] & PCI_ADDR_MEM_MASK);
+	char path[PATH_MAX], pf[PATH_MAX];
+	uint16_t vendor, cmd;
+	uint32_t bar, want;
+	ssize_t n;
 
+	snprintf(path, sizeof(path), "%s/%s/physfn", SYSFS, t->bdf);
+	n = readlink(path, pf, sizeof(pf) - 1);
+	if (n > 0) {
+		const char *b;
+
+		pf[n] = '\0';
+		b = strrchr(pf, '/');
+		return vf_alive(t, b != NULL ? b + 1 : pf);
+	}
+
+	vendor = pci_read_word(t->d, PCI_VENDOR_ID);
+	cmd = pci_read_word(t->d, PCI_COMMAND);
+	bar = pci_read_long(t->d, PCI_BASE_ADDRESS_0 + 4 * t->reg_bar);
+	want = (uint32_t)(t->d->base_addr[t->reg_bar] & PCI_ADDR_MEM_MASK);
 	if (vendor != t->d->vendor_id) {
 		fprintf(stderr, "endpoint does not answer config requests (vendor %04x)\n",
 			vendor);
@@ -1387,6 +1547,20 @@ static void vt_irq_off(struct vt *t)
 	}
 	t->nirq = 0;
 	t->irq_type = 0;
+}
+
+/* vectors the function offers (the capability's size), at most 16 */
+static int vt_irq_max(struct vt *t, int type)
+{
+	struct vfio_irq_info ii = {
+		.argsz = sizeof(ii),
+		.index = type == EPT_IRQ_MSIX ? VFIO_PCI_MSIX_IRQ_INDEX : VFIO_PCI_MSI_IRQ_INDEX,
+	};
+
+	if (ioctl(t->dev, VFIO_DEVICE_GET_IRQ_INFO, &ii) != 0) {
+		return 0;
+	}
+	return ii.count < 16U ? (int)ii.count : 16;
 }
 
 /* MSI or MSI-X with n vectors on eventfds; the kernel programs the capability */
@@ -1896,7 +2070,7 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 			for (unsigned int b = 0; b < 6U; b++) {
 				fails += vt_test_bar(&t, b);
 			}
-			for (int v = 1; v <= 16 && fails == 0; v++) {
+			for (int v = 1; v <= vt_irq_max(&t, EPT_IRQ_MSI) && fails == 0; v++) {
 				fails += vt_test_irq(&t, EPT_IRQ_MSI, v);
 			}
 			vt_irq_on(&t, EPT_IRQ_MSI, 1);
@@ -1914,13 +2088,13 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 		} else if (strncmp(a, "bar", 3) == 0) {
 			fails += vt_test_bar(&t, (unsigned int)num(a + 3));
 		} else if (strcmp(a, "msix") == 0) {
-			for (int v = 1; v <= 16; v++) {
+			for (int v = 1; v <= vt_irq_max(&t, EPT_IRQ_MSIX); v++) {
 				fails += vt_test_irq(&t, EPT_IRQ_MSIX, v);
 			}
 		} else if (strncmp(a, "msix", 4) == 0) {
 			fails += vt_test_irq(&t, EPT_IRQ_MSIX, (int)num(a + 4));
 		} else if (strcmp(a, "msi") == 0) {
-			for (int v = 1; v <= 16; v++) {
+			for (int v = 1; v <= vt_irq_max(&t, EPT_IRQ_MSI); v++) {
 				fails += vt_test_irq(&t, EPT_IRQ_MSI, v);
 			}
 		} else if (strncmp(a, "msi", 3) == 0) {
@@ -2080,6 +2254,8 @@ int main(int argc, char **argv)
 			ret = cmd_test(d, n, a);
 		} else if (strcmp(c, "resize") == 0) {
 			cmd_resize(d, n, a);
+		} else if (strcmp(c, "sriov") == 0) {
+			cmd_sriov(d, n, a);
 		} else if (strcmp(c, "remove") == 0) {
 			dev_path(d, "remove", path, sizeof(path));
 			sysfs_write(path, "1");
