@@ -138,6 +138,7 @@ static const char *const lm_int_name[20] = {
 	[18] = "unmapped-tc", [19] = "msi-mask-change",
 };
 
+#define REBAR_FUNCS   8U /* physical functions tracked for the Resizable BAR capability */
 #define OB_REGIONS    32U
 #define OB_REGION     MB(1)
 #define OB_IRQ_REGION 0U
@@ -218,6 +219,19 @@ struct epc_rk3399_data {
 	void *db_user;
 	uint8_t db_func;
 #endif
+	/*
+	 * Resizable BAR, per physical function: the memory BARs as set (all
+	 * are listed in the capability once one is resizable) and the sizes
+	 * last seen, to report a change by the host.
+	 */
+	struct {
+		size_t size[6];     /* 0: not set or I/O */
+		size_t max_size[6]; /* non-zero: resizable */
+		uint8_t idx[6];     /* entry in the capability */
+		uint8_t seen[6];    /* last size of a resizable BAR, as n (1 MiB << n) */
+		uint8_t n;          /* entries programmed, 0 = capability off */
+		uint8_t listed;     /* BARs in the programmed capability */
+	} rebar[REBAR_FUNCS];
 	int64_t last_up_log; /* uptime of the last "link up" INF line */
 };
 
@@ -403,6 +417,9 @@ static void int_log(struct epc_rk3399_data *d)
 	}
 }
 
+static int rebar_update(const struct device *dev, uint8_t func);
+static void rebar_poll(const struct device *dev);
+
 static void link_work(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -417,6 +434,7 @@ static void link_work(struct k_work *work)
 	ist = (uint32_t)atomic_clear(&d->int_pending) |
 	      rk_client_read(apb(dev), RK_CLIENT_INT_STATUS);
 	int_log(d);
+	rebar_poll(dev);
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
@@ -643,6 +661,7 @@ static int epc_set_bar(const struct device *dev, uint8_t func, const struct pcie
 {
 	struct epc_rk3399_data *d = dev->data;
 	uint32_t flags = 0;
+	int ret;
 
 	if (func >= nfuncs(dev)) {
 		return -EINVAL;
@@ -657,7 +676,7 @@ static int epc_set_bar(const struct device *dev, uint8_t func, const struct pcie
 		flags |= PCIE_EP_CDNS_BAR_PREFETCH;
 	}
 	if (is_vf(dev, func)) {
-		int ret = cdns_ep_set_vf_bar(&d->core, 0, func, bar->barno, (uintptr_t)bar->phys,
+		ret = cdns_ep_set_vf_bar(&d->core, 0, func, bar->barno, (uintptr_t)bar->phys,
 					     bar->size, flags);
 
 		if (ret == 0) {
@@ -665,8 +684,133 @@ static int epc_set_bar(const struct device *dev, uint8_t func, const struct pcie
 		}
 		return ret;
 	}
-	return cdns_ep_set_bar(&d->core, func, bar->barno, (uintptr_t)bar->phys, bar->size,
-			       flags);
+	if ((bar->flags & PCIE_EPC_BAR_RESIZABLE) != 0U &&
+	    (func >= REBAR_FUNCS || (bar->flags & PCIE_EPC_BAR_IO) != 0U ||
+	     (bar->phys & (MAX(bar->max_size, bar->size) - 1U)) != 0U)) {
+		return -EINVAL;
+	}
+	ret = cdns_ep_set_bar(&d->core, func, bar->barno, (uintptr_t)bar->phys, bar->size, flags);
+	if (ret != 0 || func >= REBAR_FUNCS || bar->barno >= 6U) {
+		return ret;
+	}
+	if (d->rebar[func].size[bar->barno] != bar->size) {
+		d->rebar[func].listed &= ~BIT(bar->barno); /* new layout: initial size again */
+	}
+	d->rebar[func].size[bar->barno] = (bar->flags & PCIE_EPC_BAR_IO) != 0U ? 0U : bar->size;
+	d->rebar[func].max_size[bar->barno] =
+		(bar->flags & PCIE_EPC_BAR_RESIZABLE) != 0U ? bar->max_size : 0U;
+	if ((bar->flags & PCIE_EPC_BAR_RESIZABLE) == 0U && d->rebar[func].n == 0U) {
+		return 0; /* no Resizable BAR capability involved */
+	}
+	ret = rebar_update(dev, func);
+	if (ret != 0) {
+		d->rebar[func].size[bar->barno] = 0U;
+		d->rebar[func].max_size[bar->barno] = 0U;
+		(void)rebar_update(dev, func);
+	}
+	return ret;
+}
+
+static uint8_t log2_mib(size_t size)
+{
+	return (uint8_t)(LOG2(size) - 20U);
+}
+
+/*
+ * (Re)write the Resizable BAR capability of a physical function: off
+ * without a resizable BAR, else every memory BAR of the function listed,
+ * a fixed one with its own size as the only choice.
+ */
+static int rebar_update(const struct device *dev, uint8_t func)
+{
+	struct epc_rk3399_data *d = dev->data;
+	struct cdns_ep_rebar ent[CDNS_EP_REBAR_MAX];
+	bool any = false;
+	uint8_t n = 0;
+
+	/* keep what the host chose: rewriting the capability must not undo a resize */
+	for (uint8_t b = 0; b < 6U && d->rebar[func].n != 0U; b++) {
+		if (d->rebar[func].max_size[b] != 0U && (d->rebar[func].listed & BIT(b)) != 0U) {
+			d->rebar[func].seen[b] =
+				cdns_ep_rebar_size(&d->core, func, d->rebar[func].idx[b]);
+		}
+	}
+	for (uint8_t b = 0; b < 6U; b++) {
+		any = any || d->rebar[func].max_size[b] != 0U;
+	}
+	if (any) {
+		for (uint8_t b = 0; b < 6U; b++) {
+			size_t sz = d->rebar[func].size[b];
+			size_t max = MAX(d->rebar[func].max_size[b], sz);
+
+			if (sz == 0U) {
+				continue;
+			}
+			if (sz < d->features.rebar_min_size || !IS_POWER_OF_TWO(sz) ||
+			    !IS_POWER_OF_TWO(max)) {
+				LOG_ERR("fn%u BAR%u: 0x%zx, a function with a resizable BAR needs "
+					"powers of two from 1 MiB", func, b, sz);
+				return -EINVAL;
+			}
+			if (d->rebar[func].max_size[b] == 0U ||
+			    (d->rebar[func].listed & BIT(b)) == 0U) {
+				d->rebar[func].seen[b] = log2_mib(sz);
+			}
+			ent[n] = (struct cdns_ep_rebar){
+				.bar = b,
+				.sizes = (uint32_t)GENMASK(log2_mib(max), log2_mib(sz)),
+				.size = d->rebar[func].seen[b],
+			};
+			d->rebar[func].idx[b] = n;
+			n++;
+		}
+	}
+	d->rebar[func].listed = 0U;
+	for (uint8_t i = 0; i < n; i++) {
+		d->rebar[func].listed |= BIT(ent[i].bar);
+	}
+	d->rebar[func].n = n;
+	return cdns_ep_rebar_program(&d->core, func, ent, n);
+}
+
+/* link work: report a resizable BAR the host gave another size */
+static void rebar_poll(const struct device *dev)
+{
+	struct epc_rk3399_data *d = dev->data;
+
+	for (uint8_t fn = 0; fn < MIN(DEV_CFG(dev)->max_functions, REBAR_FUNCS); fn++) {
+		if (d->rebar[fn].n == 0U) {
+			continue;
+		}
+		for (uint8_t b = 0; b < 6U; b++) {
+			uint8_t now;
+
+			if (d->rebar[fn].max_size[b] == 0U) {
+				continue;
+			}
+			now = cdns_ep_rebar_size(&d->core, fn, d->rebar[fn].idx[b]);
+			if (now != d->rebar[fn].seen[b]) {
+				LOG_INF("fn%u BAR%u resized by the host: %u -> %u MiB", fn, b,
+					1U << d->rebar[fn].seen[b], 1U << now);
+				d->rebar[fn].seen[b] = now;
+				pcie_epc_notify(dev, PCIE_EPC_EVT_BAR_RESIZED, fn);
+			}
+		}
+	}
+}
+
+static int epc_get_bar_size(const struct device *dev, uint8_t func, uint8_t barno, size_t *size)
+{
+	struct epc_rk3399_data *d = dev->data;
+
+	if (is_vf(dev, func) || func >= REBAR_FUNCS || barno >= 6U ||
+	    d->rebar[func].size[barno] == 0U) {
+		return -EINVAL;
+	}
+	*size = d->rebar[func].max_size[barno] != 0U
+			? MB(1) << cdns_ep_rebar_size(&d->core, func, d->rebar[func].idx[barno])
+			: d->rebar[func].size[barno];
+	return 0;
 }
 
 static void epc_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
@@ -680,6 +824,11 @@ static void epc_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
 	}
 	if (func < nfuncs(dev)) {
 		(void)cdns_ep_clear_bar(&d->core, func, barno);
+	}
+	if (func < REBAR_FUNCS && barno < 6U && d->rebar[func].size[barno] != 0U) {
+		d->rebar[func].size[barno] = 0U;
+		d->rebar[func].max_size[barno] = 0U;
+		(void)rebar_update(dev, func);
 	}
 }
 
@@ -1244,6 +1393,7 @@ static DEVICE_API(pcie_epc, epc_rk3399_api) = {
 	.get_msi = epc_get_msi,
 	.raise_irq = epc_raise_irq,
 	.xfer_dma = epc_xfer_dma,
+	.get_bar_size = epc_get_bar_size,
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
 	.alloc_doorbell = epc_alloc_doorbell,
 	.free_doorbell = epc_free_doorbell,
@@ -1313,6 +1463,19 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 	shell_print(sh, "udma       errors %u (last status %08x), timeouts %u, irq lost %u",
 		    d->udma_stat.n_err, d->udma_stat.last_err, d->udma_stat.n_timeout,
 		    d->udma_stat.n_polled);
+	for (uint8_t fn = 0; fn < MIN(DEV_CFG(dev)->max_functions, REBAR_FUNCS); fn++) {
+		for (uint8_t b = 0; b < 6U && d->rebar[fn].n != 0U; b++) {
+			size_t now;
+
+			if ((d->rebar[fn].listed & BIT(b)) == 0U ||
+			    epc_get_bar_size(dev, fn, b, &now) != 0) {
+				continue;
+			}
+			shell_print(sh, "rebar      fn%u BAR%u %zu MiB%s (max %zu MiB)", fn, b,
+				    now >> 20, d->rebar[fn].max_size[b] != 0U ? "" : ", fixed",
+				    MAX(d->rebar[fn].max_size[b], d->rebar[fn].size[b]) >> 20);
+		}
+	}
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
 	shell_fprintf(sh, SHELL_NORMAL, "doorbell   %s, fn %u, %u DeviceIDs mapped, seen ",
 		      d->db_cb != NULL ? "on" : "off", d->db_func, d->db_nslots);
@@ -1622,9 +1785,11 @@ static int epc_rk3399_init(const struct device *dev)
 		.max_functions = cfg->max_functions,
 		.max_vfs = cfg->max_vfs,
 		.ob_mmio_only = true, /* Normal-NC bursts into the window raise an SError */
+		.rebar_min_size = MB(1),
 	};
 	d->vf_features = d->features;
 	d->vf_features.intx_capable = false;
+	d->vf_features.rebar_min_size = 0; /* VF Resizable BAR: not in this core */
 
 	ret = pcie_epc_init_common(dev, &ob, cfg->autostart);
 	if (ret != 0) {

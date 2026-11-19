@@ -88,6 +88,12 @@ struct pcie_epc_header {
 #define PCIE_EPC_BAR_IO       BIT(0)
 #define PCIE_EPC_BAR_MEM64    BIT(2)
 #define PCIE_EPC_BAR_PREFETCH BIT(3)
+/**
+ * Resizable BAR: @p size is the size at enumeration, the host may change it
+ * to any power of two up to pcie_epc_bar::max_size (Resizable BAR
+ * capability). @p phys must be aligned to @p max_size.
+ */
+#define PCIE_EPC_BAR_RESIZABLE BIT(4)
 /** @} */
 
 /**
@@ -103,6 +109,8 @@ struct pcie_epc_bar {
 	uint32_t flags;
 	uint64_t phys;
 	size_t size;
+	/** With PCIE_EPC_BAR_RESIZABLE: the largest size the host may choose. */
+	size_t max_size;
 	/** CPU view of the backing memory, for the EPF's own use. */
 	void *virt;
 };
@@ -138,6 +146,13 @@ struct pcie_epc_features {
 	 * with 64/32/8-bit loads and stores.
 	 */
 	bool ob_mmio_only;
+	/**
+	 * Non-zero: physical functions take PCIE_EPC_BAR_RESIZABLE. Once a
+	 * function has a resizable BAR, all its memory BARs are listed in the
+	 * Resizable BAR capability, so each must be a power of two of at
+	 * least this size, aligned to it.
+	 */
+	size_t rebar_min_size;
 };
 
 /** @brief Whether routing function  func is an SR-IOV virtual function. */
@@ -195,6 +210,8 @@ enum pcie_epc_event {
 	PCIE_EPC_EVT_PERST_ASSERT,
 	/** PERST# deasserted. */
 	PCIE_EPC_EVT_PERST_DEASSERT,
+	/** The host changed the size of a resizable BAR of @p func. */
+	PCIE_EPC_EVT_BAR_RESIZED,
 };
 
 /**
@@ -287,6 +304,8 @@ __subsystem struct pcie_epc_driver_api {
 	int (*alloc_doorbell)(const struct device *dev, uint8_t func, pcie_epc_doorbell_cb_t cb,
 			      void *user_data, struct pcie_epc_doorbell *db);
 	int (*free_doorbell)(const struct device *dev, uint8_t func);
+	/** Optional: current size of a BAR, as the host set it for a resizable BAR. */
+	int (*get_bar_size)(const struct device *dev, uint8_t func, uint8_t barno, size_t *size);
 };
 
 /** @endcond */
@@ -590,6 +609,28 @@ static inline int pcie_epc_free_doorbell(const struct device *dev, uint8_t func)
 	const struct pcie_epc_driver_api *api = DEVICE_API_GET(pcie_epc, dev);
 
 	return api->free_doorbell ? api->free_doorbell(dev, func) : -ENOTSUP;
+}
+
+/**
+ * @brief Current size of a BAR.
+ *
+ * For a resizable BAR the size the host chose, for others the size it was
+ * set with. PCIE_EPC_EVT_BAR_RESIZED tells that a resizable BAR changed.
+ *
+ * @param dev Controller.
+ * @param func Function.
+ * @param barno BAR.
+ * @param size Filled with the size in bytes.
+ * @retval 0 Size returned.
+ * @retval -ENOTSUP The controller does not track BAR sizes.
+ * @retval -EINVAL The BAR is not set.
+ */
+static inline int pcie_epc_get_bar_size(const struct device *dev, uint8_t func, uint8_t barno,
+					size_t *size)
+{
+	const struct pcie_epc_driver_api *api = DEVICE_API_GET(pcie_epc, dev);
+
+	return api->get_bar_size ? api->get_bar_size(dev, func, barno, size) : -ENOTSUP;
 }
 
 /** @cond INTERNAL_HIDDEN */

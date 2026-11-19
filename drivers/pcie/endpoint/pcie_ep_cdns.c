@@ -258,6 +258,34 @@ bool cdns_ep_hide_flr(const struct cdns_ep_core *core, uint8_t fn)
 	return (cdns_ep_read(core, reg) & CDNS_EXP_DEVCAP_FLR) == 0U;
 }
 
+int cdns_ep_rebar_program(const struct cdns_ep_core *core, uint8_t fn,
+			  const struct cdns_ep_rebar *ent, uint8_t n)
+{
+	uint32_t reg = CDNS_LM_EP_FUNC_BAR_CFG(fn, 4U);
+	uint32_t cfg = cdns_ep_read(core, reg);
+
+	if (n > CDNS_EP_REBAR_MAX) {
+		return -EINVAL;
+	}
+	if (n == 0U) {
+		cdns_ep_write(core, reg, cfg & ~CDNS_LM_BAR_CFG1_ERBC);
+		return 0;
+	}
+	for (uint8_t i = 0; i < n; i++) {
+		uint32_t ctrl = FIELD_PREP(CDNS_EP_REBAR_CTRL_BAR, ent[i].bar) |
+				FIELD_PREP(CDNS_EP_REBAR_CTRL_SIZE, ent[i].size);
+
+		if (i == 0U) {
+			ctrl |= FIELD_PREP(CDNS_EP_REBAR_CTRL_NBAR, n); /* first entry only */
+		}
+		cdns_ep_write(core, CDNS_EP_FUNC_BASE(fn) + CDNS_EP_REBAR_CAP(i),
+			      (ent[i].sizes << 4) & GENMASK(23, 4));
+		cdns_ep_write(core, CDNS_EP_FUNC_BASE(fn) + CDNS_EP_REBAR_CTRL(i), ctrl);
+	}
+	cdns_ep_write(core, reg, cfg | CDNS_LM_BAR_CFG1_ERBC);
+	return 0;
+}
+
 /*
  * SR-IOV: the BAR layout (aperture, type) is one setting per physical
  * function for all its VFs, in the VF BAR configuration registers; the
