@@ -76,6 +76,7 @@
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
+		msix-interrupts = <4>;
 	};
 
 	epf_test_vf2: function@2 {
@@ -89,6 +90,7 @@
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
+		msix-interrupts = <4>;
 	};
 
 	epf_test_vf3: function@3 {
@@ -102,6 +104,7 @@
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
+		msix-interrupts = <4>;
 	};
 
 	epf_test_vf4: function@4 {
@@ -115,5 +118,6 @@
 		memory-size = <0x400000>;
 		bar-sizes = <8192 65536 0 0 0 0>;
 		msi-interrupts = <4>;
+		msix-interrupts = <4>;
 	};
 };
