@@ -125,7 +125,8 @@ struct epf_test_data {
 	uint64_t t_xfer;
 	uint64_t t_crc;
 	uint64_t t_fill;
-	uint8_t chunk[CONFIG_PCIE_EPF_TEST_CHUNK] __aligned(8);
+	/* own cache lines: a DMA engine writes it while the CPU uses the rest */
+	uint8_t chunk[CONFIG_PCIE_EPF_TEST_CHUNK] __aligned(64);
 };
 
 static inline uint32_t reg_rd(struct epf_test_data *d, uint32_t off)

@@ -15,6 +15,8 @@
 #include <zephyr/lab/mod.h>
 #endif
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/barrier.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
 #define MAX_CTRL 4
@@ -636,6 +638,14 @@ static int cmd_ctrl_link(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct pcie_shell_ctrl *c = active_ctrl(sh);
 
+	if (argc > 1 && strcmp(argv[1], "trace") == 0) {
+		if (c == NULL || c->link_trace == NULL) {
+			return -ENOTSUP;
+		}
+		uint32_t ms = argc > 2 ? (uint32_t)strtoul(argv[2], NULL, 0) : 1000U;
+
+		return c->link_trace(c->dev, sh, ms);
+	}
 	if (c == NULL || c->link == NULL) {
 		return -ENOTSUP;
 	}
@@ -1108,9 +1118,54 @@ static int cmd_ep_irq(const struct shell *sh, size_t argc, char **argv)
 	return ret;
 }
 
+/*
+ * Host memory through the outbound window, 32-bit words: read count words,
+ * or write one. Shows whether the OB path works at all, without a host
+ * driver or an interrupt (a rejected access ends in a bus error here).
+ */
+static int cmd_ep_host(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *epc = ep_active();
+	uint8_t fn = (uint8_t)strtoul(argv[1], NULL, 0);
+	uint64_t addr = strtoull(argv[2], NULL, 0);
+	bool wr = argc > 3 && argv[3][0] == '=';
+	size_t count = (argc > 3 && !wr) ? strtoul(argv[3], NULL, 0) : 1U;
+	struct pcie_epc_host_map map;
+	int ret;
+
+	if (epc == NULL) {
+		shell_error(sh, "no endpoint controller");
+		return -ENODEV;
+	}
+	if ((addr & 3U) != 0U || count == 0U || count > 64U) {
+		shell_error(sh, "address 4-byte aligned, 1..64 words");
+		return -EINVAL;
+	}
+	ret = pcie_epc_map_host(epc, fn, addr, count * 4U, &map);
+	if (ret != 0) {
+		shell_error(sh, "map 0x%llx: %d", (unsigned long long)addr, ret);
+		return ret;
+	}
+	if (wr) {
+		sys_write32((uint32_t)strtoul(argv[3] + 1, NULL, 0), (mem_addr_t)map.ptr);
+		barrier_dsync_fence_full();
+		shell_print(sh, "0x%llx <- %s", (unsigned long long)addr, argv[3] + 1);
+	} else {
+		for (size_t i = 0; i < count; i++) {
+			shell_print(sh, "0x%llx: %08x", (unsigned long long)(addr + i * 4U),
+				    sys_read32((mem_addr_t)map.ptr + i * 4U));
+		}
+	}
+	pcie_epc_unmap_host(epc, &map);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ep_cmds,
 	SHELL_CMD_ARG(irq, NULL, "<fn> intx | msi <n> | msix <n>  Raise an interrupt to the host",
 		      cmd_ep_irq, 3, 1),
+	SHELL_CMD_ARG(host, NULL,
+		      "<fn> <pci addr> [<words> | =<val>]  Host memory through the outbound window",
+		      cmd_ep_host, 3, 1),
 	SHELL_CMD_ARG(function, NULL,
 		      "[<name>|reset] Endpoint function: list, or save the one for the next boot",
 		      cmd_ep_function, 1, 1),
@@ -1121,8 +1176,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ctrl_cmds,
 	SHELL_CMD_ARG(info, NULL, "Controllers, role, link and state of the active one",
 		      cmd_ctrl_info, 1, 0),
 	SHELL_CMD_ARG(mode, NULL, "[rc|ep] Role, saved for the next boot", cmd_ctrl_mode, 1, 1),
-	SHELL_CMD_ARG(link, NULL, "[retrain] Link state; retrain it (RC: PERST#, rescan)",
-		      cmd_ctrl_link, 1, 1),
+	SHELL_CMD_ARG(link, NULL,
+		      "[retrain | trace [ms]] Link state; retrain it (RC: PERST#, rescan); "
+		      "sample LTSSM and link status, print the changes",
+		      cmd_ctrl_link, 1, 2),
 	SHELL_CMD_ARG(scan, NULL, "Enumerate again (root complex)", cmd_ctrl_scan, 1, 0),
 	SHELL_CMD_ARG(irq, NULL, "Interrupt counters", cmd_ctrl_irq, 1, 0),
 	SHELL_CMD_ARG(id, NULL,
@@ -1130,7 +1187,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_ctrl_cmds,
 		      "Identity (RC: root port, EP: function), saved",
 		      cmd_ctrl_id, 1, 4),
 #if defined(CONFIG_PCIE_EPC)
-	SHELL_CMD(ep, &pcie_ep_cmds, "Endpoint: function, irq", NULL),
+	SHELL_CMD(ep, &pcie_ep_cmds, "Endpoint: function, irq, host memory", NULL),
 #endif
 	SHELL_CMD_ARG(dsn, NULL, "[<b:d.f>] [<hex> | uid | new | reset]  Device Serial Number, saved",
 		      cmd_ctrl_dsn, 1, 2),

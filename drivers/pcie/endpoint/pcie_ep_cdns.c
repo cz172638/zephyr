@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <zephyr/sys/barrier.h>
 #include <zephyr/sys/math_extras.h>
 #include <zephyr/sys/util.h>
 
@@ -177,6 +178,15 @@ void cdns_ep_ob_program(const struct cdns_ep_core *core, uint8_t fn, uint32_t re
 		cdns_ep_write(core, CDNS_AT_OB_CPU_ADDR1(off, region),
 			      (uint32_t)(cpu_addr >> 32));
 	}
+
+	/*
+	 * The window is a different slave than the AT registers: with both
+	 * mapped Device, a write through the window right after this can get
+	 * to the controller before the region does (SLVERR). Read back, then
+	 * wait for completion.
+	 */
+	(void)cdns_ep_read(core, CDNS_AT_OB_DESC0(off, region));
+	barrier_dsync_fence_full();
 }
 
 void cdns_ep_ob_clear(const struct cdns_ep_core *core, uint32_t region)
@@ -231,6 +241,21 @@ void cdns_ep_hide_msix_cap(const struct cdns_ep_core *core)
 	/* Link the MSI capability straight to whatever follows MSI-X. */
 	msi = (msi & ~CDNS_MSI_CTRL_NEXT_MASK) | (msix & CDNS_MSI_CTRL_NEXT_MASK);
 	cdns_ep_write(core, CDNS_RP_BASE + CDNS_EP_FUNC_MSI_CAP, msi);
+}
+
+/*
+ * The core advertises Function Level Reset, but nothing on the endpoint side
+ * completes one: a host that resets the function (vfio-pci does when it
+ * opens the device) waits for a function that never becomes ready again.
+ * Cleared through the privileged view, like the MSI-X link.
+ */
+bool cdns_ep_hide_flr(const struct cdns_ep_core *core, uint8_t fn)
+{
+	uint32_t reg = CDNS_EP_FUNC_BASE(fn) + CDNS_EP_FUNC_PCIE_CAP + CDNS_EXP_DEVCAP;
+	uint32_t cap = cdns_ep_read(core, CDNS_RP_BASE + reg);
+
+	cdns_ep_write(core, CDNS_RP_BASE + reg, cap & ~CDNS_EXP_DEVCAP_FLR);
+	return (cdns_ep_read(core, reg) & CDNS_EXP_DEVCAP_FLR) == 0U;
 }
 
 /*

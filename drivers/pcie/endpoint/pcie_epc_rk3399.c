@@ -18,6 +18,8 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <string.h>
+
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pcie/endpoint/pcie_epc.h>
@@ -30,6 +32,8 @@
 #endif
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>
+#include <zephyr/cache.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
@@ -46,6 +50,85 @@ LOG_MODULE_REGISTER(pcie_epc_rk3399, CONFIG_PCIE_EP_LOG_LEVEL);
 #define PCI_EXP_LNKCTL           0x10U
 #define  PCI_EXP_LNKCTL_RL       BIT(5)
 #define CLIENT_INT_HOT_RST       BIT(13)
+/*
+ * Client interrupts (status RK_CLIENT_INT_STATUS, write 1 to clear; mask
+ * RK_CLIENT_INT_MASK, 1 = masked, high half write enable), on the "sys"
+ * and "client" lines. INTA..D (8:5) are root complex only.
+ */
+#define CLIENT_INT_PHY           BIT(2)  /* link state change */
+#define CLIENT_INT_UDMA          BIT(3)  /* uDMA done or error, detail in UDMA_INT */
+#define CLIENT_INT_LOCAL         BIT(4)  /* core error, detail in LM_INT_STATUS */
+#define CLIENT_INT_EVENTS        (BIT(0) | BIT(1) | CLIENT_INT_PHY | CLIENT_INT_LOCAL | BIT(9) | \
+				  BIT(10) | BIT(11) | BIT(12) | CLIENT_INT_HOT_RST)
+/* core error interrupts (LM): status write 1 to clear, mask 1 = masked */
+#define LM_INT_STATUS            (CDNS_LM_BASE + 0x20cU)
+#define LM_INT_MASK              (CDNS_LM_BASE + 0x210U)
+#define LM_INT_ALL               (GENMASK(11, 0) | BIT(18) | BIT(19))
+
+/*
+ * uDMA (TRM part 2, 17.5.6 and 17.6.9): at apb + 0xe00000, channels 0x14
+ * apart. A channel walks a linked list of descriptors in local memory;
+ * each one moves up to 16 MiB between a local (AXI) and a PCIe address
+ * in one direction, set per channel by CTRL ob_not_ib. The PCIe side
+ * goes to the controller directly, not through an outbound region.
+ */
+#define UDMA_BASE                0xe00000U
+#define UDMA_CH(c)               (UDMA_BASE + 0x14U * (c))
+#define UDMA_CTRL(c)             (UDMA_CH(c) + 0x00U)
+#define  UDMA_CTRL_GO            BIT(0)
+#define  UDMA_CTRL_OB            BIT(1)  /* outbound: local -> PCIe */
+#define UDMA_SP_L(c)             (UDMA_CH(c) + 0x04U)
+#define UDMA_SP_U(c)             (UDMA_CH(c) + 0x08U)
+#define UDMA_ATTR_L(c)           (UDMA_CH(c) + 0x0cU)
+#define UDMA_ATTR_U(c)           (UDMA_CH(c) + 0x10U)
+#define UDMA_INT                 (UDMA_BASE + 0xa0U) /* write the value back to clear */
+#define UDMA_INT_ENA             (UDMA_BASE + 0xa4U)
+#define UDMA_INT_DIS             (UDMA_BASE + 0xa8U)
+#define  UDMA_INT_DONE(c)        BIT(c)
+#define  UDMA_INT_ERR(c)         BIT(8 + (c))
+#define UDMA_CAP                 (UDMA_BASE + 0xf8U)
+#define UDMA_CONF                (UDMA_BASE + 0xfcU)
+#define UDMA_CHAN                0U
+#define UDMA_MAX_LEN             MB(8) /* per descriptor; the field holds up to 16 MiB - 1 */
+#define UDMA_TIMEOUT_MS          1000
+#define UDMA_ALIGN               8U /* PCIe address and length; local address */
+
+/* descriptor control byte */
+#define UDMA_DC_IRQ              BIT(0)
+#define UDMA_DC_CONTINUE         BIT(5)
+/* channel status byte */
+#define UDMA_DS_DONE             BIT(0)
+#define UDMA_DS_ERRORS           GENMASK(7, 1)
+
+/* 32-bit AXI address and attributes, 64-bit PCIe address and attributes (CONF) */
+struct udma_desc {
+	uint32_t axi_addr;
+	uint32_t axi_attr;
+	uint32_t pci_addr_lo;
+	uint32_t pci_addr_hi;
+	uint32_t tlp_attr_lo;
+	uint32_t tlp_attr_hi;
+	uint32_t len_ctrl;  /* 23:0 length, 31:24 control */
+	uint32_t status;    /* 7:0 AXI, 15:8 PCIe, 23:16 channel */
+	uint32_t next;
+} __packed;
+
+#define UDMA_DESCS               2U
+#define UDMA_DESC_ALIGN          64U
+
+static const char *const client_int_name[16] = {
+	[0] = "power-state", [1] = "hot-plug", [2] = "phy/link", [3] = "udma", [4] = "local",
+	[9] = "correctable", [10] = "nonfatal", [11] = "fatal", [12] = "dpa",
+	[13] = "hot-reset",
+};
+
+static const char *const lm_int_name[20] = {
+	[0] = "pnp-fifo-parity", [1] = "cpl-fifo-parity", [2] = "replay-ram-parity",
+	[3] = "pnp-fifo-overflow", [4] = "cpl-fifo-overflow", [5] = "replay-timeout",
+	[6] = "replay-rollover", [7] = "phy-rx-error", [8] = "malformed-tlp",
+	[9] = "unexpected-cpl", [10] = "fc-error", [11] = "cpl-timeout",
+	[18] = "unmapped-tc", [19] = "msi-mask-change",
+};
 
 #define OB_REGIONS    32U
 #define OB_REGION     MB(1)
@@ -66,6 +149,7 @@ struct epc_rk3399_config {
 	uint8_t max_vfs; /* SR-IOV VFs of function 0, routing functions 1..max_vfs */
 	uint8_t msi_vectors;
 	bool autostart;
+	void (*irq_config)(void);
 };
 
 struct epc_rk3399_data {
@@ -84,6 +168,8 @@ struct epc_rk3399_data {
 	struct pcie_epc_features features;
 	struct pcie_epc_features vf_features; /* no INTx */
 	bool active;
+	/* between start and stop; set before the link work is first queued */
+	bool running;
 	bool perst_asserted;
 	bool link_up;
 	uint16_t bme; /* per routing function, PF and VFs */
@@ -91,6 +177,21 @@ struct epc_rk3399_data {
 	struct k_timer sriov_timer; /* ARI Capable Hierarchy for the VFs, see link_work */
 	atomic_t arie_set;
 	uint32_t ups, downs, hot_resets;
+	/* interrupt events: counted in the ISR, logged and acted on in the link work */
+	atomic_t int_pending; /* client status bits not yet seen by the link work */
+	uint32_t client_cnt[16];
+	uint32_t lm_cnt[20];
+	uint32_t client_logged[16];
+	uint32_t lm_logged[20];
+	/* uDMA channel UDMA_CHAN, one transfer at a time */
+	struct k_mutex udma_lock;
+	struct k_sem udma_done;
+	atomic_t udma_int; /* UDMA_INT bits seen by the ISR */
+	struct {
+		uint32_t n_to, n_from, n_err, n_timeout, n_polled;
+		uint64_t bytes_to, bytes_from, cyc_to, cyc_from;
+		uint32_t last_err; /* descriptor status word */
+	} udma_stat;
 	int64_t last_up_log; /* uptime of the last "link up" INF line */
 };
 
@@ -121,6 +222,17 @@ static inline mm_reg_t apb(const struct device *dev)
 	return DEVICE_MMIO_NAMED_GET(dev, apb);
 }
 
+/* uDMA registers, at UDMA_BASE in the apb window (outside the core) */
+static inline uint32_t udma_rd(const struct device *dev, uint32_t reg)
+{
+	return sys_read32(apb(dev) + reg);
+}
+
+static inline void udma_wr(const struct device *dev, uint32_t reg, uint32_t val)
+{
+	sys_write32(val, apb(dev) + reg);
+}
+
 static bool active_role(void)
 {
 #if defined(CONFIG_PCIE_ROLE)
@@ -130,12 +242,50 @@ static bool active_role(void)
 #endif
 }
 
+/*
+ * Rockchip tuning of the Cadence core that Linux applies on the RK3399 (as
+ * root complex): the FTS count to leave L0s at its maximum (no common
+ * reference clock on a crossover link), and the Tx credit maximum update
+ * interval (Linux also rewrites it on every PHY link interrupt, "need this
+ * to enter L1 again"). Both once, before the link trains: rewriting them
+ * with the link up left the endpoint without memory read completions.
+ */
+#define LM_PLC1                 (CDNS_LM_BASE + 0x004U)
+#define  LM_PLC1_FTS            GENMASK(23, 8)
+#define LM_TXCREDIT_CFG1        (CDNS_LM_BASE + 0x020U)
+#define  LM_TXCREDIT_CFG1_MUI   GENMASK(31, 16)
+#define TXCREDIT_MUI_NS         24000U
+
+static void core_tune(struct epc_rk3399_data *d)
+{
+	uint32_t v = cdns_ep_read(&d->core, LM_PLC1);
+
+	cdns_ep_write(&d->core, LM_PLC1, (v & ~LM_PLC1_FTS) | FIELD_PREP(LM_PLC1_FTS, 0xffffU));
+	v = cdns_ep_read(&d->core, LM_TXCREDIT_CFG1);
+	cdns_ep_write(&d->core, LM_TXCREDIT_CFG1, (v & ~LM_TXCREDIT_CFG1_MUI) |
+		      FIELD_PREP(LM_TXCREDIT_CFG1_MUI, TXCREDIT_MUI_NS >> 3));
+}
+
 /* --- link supervision ------------------------------------------------------ */
+
+/*
+ * The configuration a hot reset or link down clears may include the
+ * outbound translation (the TRM does not say): program the MSI region
+ * again on the next interrupt instead of trusting the cached address.
+ */
+static void irq_region_forget(struct epc_rk3399_data *d)
+{
+	k_spinlock_key_t key = k_spin_lock(&d->lock);
+
+	d->irq_pci_addr = UINT64_MAX;
+	k_spin_unlock(&d->lock, key);
+}
 
 static void link_down(const struct device *dev)
 {
 	struct epc_rk3399_data *d = dev->data;
 
+	irq_region_forget(d);
 	if (d->link_up) {
 		d->link_up = false;
 		d->bme = 0;
@@ -157,6 +307,76 @@ static void sriov_timer_fn(struct k_timer *t)
 	}
 }
 
+static void epc_rk3399_isr(const struct device *dev)
+{
+	struct epc_rk3399_data *d = dev->data;
+	uint32_t ist = rk_client_read(apb(dev), RK_CLIENT_INT_STATUS) &
+		       (CLIENT_INT_EVENTS | CLIENT_INT_UDMA);
+
+	if ((ist & CLIENT_INT_UDMA) != 0U) {
+		uint32_t ust = udma_rd(dev, UDMA_INT);
+
+		udma_wr(dev, UDMA_INT, ust);
+		if (ust != 0U) {
+			(void)atomic_or(&d->udma_int, (atomic_val_t)ust);
+			k_sem_give(&d->udma_done);
+		}
+	}
+
+	if ((ist & CLIENT_INT_LOCAL) != 0U) {
+		uint32_t lst = cdns_ep_read(&d->core, LM_INT_STATUS) & LM_INT_ALL;
+
+		cdns_ep_write(&d->core, LM_INT_STATUS, lst);
+		for (unsigned int i = 0; i < ARRAY_SIZE(d->lm_cnt); i++) {
+			if ((lst & BIT(i)) != 0U) {
+				d->lm_cnt[i]++;
+			}
+		}
+	}
+	rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, ist);
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->client_cnt); i++) {
+		if ((ist & BIT(i)) != 0U) {
+			d->client_cnt[i]++;
+		}
+	}
+	ist &= CLIENT_INT_EVENTS;
+	if (ist == 0U) {
+		return;
+	}
+	(void)atomic_or(&d->int_pending, (atomic_val_t)ist);
+	/* link change, hot reset or error: let the link work look now, not in 20 ms */
+	if (d->running) {
+		(void)k_work_reschedule(&d->link_work, K_NO_WAIT);
+	}
+}
+
+/* one line for the interrupt events since the last one */
+static void int_log(struct epc_rk3399_data *d)
+{
+	char buf[160];
+	size_t o = 0;
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->client_cnt); i++) {
+		uint32_t n = d->client_cnt[i] - d->client_logged[i];
+
+		if (n != 0U && i != 4U && client_int_name[i] != NULL && o < sizeof(buf)) {
+			o += snprintf(buf + o, sizeof(buf) - o, " %s %u", client_int_name[i], n);
+		}
+		d->client_logged[i] += n;
+	}
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->lm_cnt); i++) {
+		uint32_t n = d->lm_cnt[i] - d->lm_logged[i];
+
+		if (n != 0U && lm_int_name[i] != NULL && o < sizeof(buf)) {
+			o += snprintf(buf + o, sizeof(buf) - o, " %s %u", lm_int_name[i], n);
+		}
+		d->lm_logged[i] += n;
+	}
+	if (o != 0U) {
+		LOG_WRN("%s: irq:%s", d->dev->name, buf);
+	}
+}
+
 static void link_work(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -164,14 +384,18 @@ static void link_work(struct k_work *work)
 	const struct device *dev = d->dev;
 	uint32_t ist;
 
-	if (d->perst_asserted || !d->epc.started) {
+	if (d->perst_asserted || !d->running) {
 		return;
 	}
 
-	ist = rk_client_read(apb(dev), RK_CLIENT_INT_STATUS);
+	ist = (uint32_t)atomic_clear(&d->int_pending) |
+	      rk_client_read(apb(dev), RK_CLIENT_INT_STATUS);
+	int_log(d);
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
+		cdns_ep_write(&d->core, CDNS_AT_LINKDOWN, 0U);
+		irq_region_forget(d);
 		pcie_epc_notify(dev, PCIE_EPC_EVT_HOT_RESET, 0);
 	}
 
@@ -198,6 +422,8 @@ static void link_work(struct k_work *work)
 		} else {
 			LOG_DBG("%s: link up, Gen%u x%u", dev->name, gen, width);
 		}
+		/* the outbound window answers SLVERR until this is cleared */
+		cdns_ep_write(&d->core, CDNS_AT_LINKDOWN, 0U);
 		d->link_up = true;
 		d->ups++;
 		pcie_epc_notify(dev, PCIE_EPC_EVT_LINK_UP, 0);
@@ -275,7 +501,7 @@ static void perst_handler(const struct device *port, struct gpio_callback *cb,
 	if (d->perst_asserted) {
 		d->perst_asserted = false;
 		pcie_epc_notify(dev, PCIE_EPC_EVT_PERST_DEASSERT, 0);
-		if (d->epc.started) {
+		if (d->running) {
 			retrain(d);
 			(void)k_work_reschedule(&d->link_work, K_NO_WAIT);
 		}
@@ -297,10 +523,22 @@ static int epc_start(const struct device *dev)
 		      (d->epc.func_map | BIT(0)) & BIT_MASK(cfg->max_functions));
 	rk_client_write(apb(dev), RK_CLIENT_CONFIG,
 			RK_WM16(RK_CLIENT_LINK_TRAIN, 1U) | RK_WM16(RK_CLIENT_CONF_ENABLE, 1U));
+	/*
+	 * Not epc.started: the core sets that after start() returns, and the
+	 * link work queued below can run first (system work queue preempts the
+	 * caller), return on it and never be queued again.
+	 */
+	d->running = true;
 
 	if (cfg->max_vfs != 0U) {
 		k_timer_start(&d->sriov_timer, K_MSEC(1), K_MSEC(1));
 	}
+	/* events as interrupts; the link work's polling stays as the fallback */
+	cdns_ep_write(&d->core, LM_INT_STATUS, LM_INT_ALL);
+	cdns_ep_write(&d->core, LM_INT_MASK, (uint32_t)~LM_INT_ALL);
+	rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_EVENTS);
+	udma_wr(dev, UDMA_INT_ENA, UDMA_INT_DONE(UDMA_CHAN) | UDMA_INT_ERR(UDMA_CHAN));
+	rk_client_write(apb(dev), RK_CLIENT_INT_MASK, (CLIENT_INT_EVENTS | CLIENT_INT_UDMA) << 16);
 	if (cfg->perst.port != NULL) {
 		ret = gpio_pin_get_dt(&cfg->perst);
 		if (ret < 0) {
@@ -328,6 +566,11 @@ static void epc_stop(const struct device *dev)
 	if (cfg->perst.port != NULL) {
 		(void)gpio_pin_interrupt_configure_dt(&cfg->perst, GPIO_INT_DISABLE);
 	}
+	d->running = false;
+	rk_client_write(apb(dev), RK_CLIENT_INT_MASK,
+			((CLIENT_INT_EVENTS | CLIENT_INT_UDMA) << 16) | CLIENT_INT_EVENTS |
+			CLIENT_INT_UDMA);
+	cdns_ep_write(&d->core, LM_INT_MASK, LM_INT_ALL);
 	k_timer_stop(&d->sriov_timer);
 	(void)k_work_cancel_delayable(&d->link_work);
 	link_down(dev);
@@ -415,6 +658,18 @@ static void epc_clear_bar(const struct device *dev, uint8_t func, uint8_t barno)
 }
 
 /* cpu_addr: physical address in the window; up to 1 MiB per region */
+/*
+ * The link work clears the AXI link-down status within a poll period of
+ * the link coming back; an access that comes sooner (host restores the
+ * config and sends a command right after a hot reset) clears it here.
+ */
+static void ob_unblock(struct epc_rk3399_data *d)
+{
+	if (cdns_ep_read(&d->core, CDNS_AT_LINKDOWN) != 0U) {
+		cdns_ep_write(&d->core, CDNS_AT_LINKDOWN, 0U);
+	}
+}
+
 static int epc_map_addr(const struct device *dev, uint8_t func, uintptr_t cpu_addr,
 			uint64_t pci_addr, size_t size)
 {
@@ -433,6 +688,7 @@ static int epc_map_addr(const struct device *dev, uint8_t func, uintptr_t cpu_ad
 		return -EINVAL; /* translation replaces the low bits */
 	}
 
+	ob_unblock(d);
 	key = k_spin_lock(&d->lock);
 	for (uint32_t i = 0; i < n; i++) {
 		uint64_t chunk = MIN((uint64_t)size, (uint64_t)OB_REGION);
@@ -536,14 +792,35 @@ static int raise_msi(const struct device *dev, uint8_t func, uint16_t irq_num)
 	base = pci_addr & ~(uint64_t)0xffU;
 
 	barrier_dsync_fence_full(); /* data written through the window goes first */
+	ob_unblock(d);
 	key = k_spin_lock(&d->lock);
 	if (d->irq_pci_addr != base || d->irq_pci_fn != func) {
 		cdns_ep_ob_program(&d->core, func, OB_IRQ_REGION, cfg->mem_base, base, 8U);
 		d->irq_pci_addr = base;
 		d->irq_pci_fn = func;
 	}
-	sys_write16(data, d->irq_va + (mm_reg_t)(pci_addr & 0xffU));
-	barrier_dsync_fence_full(); /* normal NC mapping: push the MSI write out */
+	if (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_MSI_TRACE)) {
+		/* the state an MSI write meets, to compare one that faults with one that works */
+		LOG_INF("msi fn%u #%u -> 0x%llx/0x%04x: ltssm 0x%02x st0 %08x st1 %08x pl0 %08x "
+			"cmd %08x ob %08x/%08x int %08x linkdown %u", func, irq_num,
+			(unsigned long long)pci_addr, data, rk3399_pcie_ltssm(apb(dev)),
+			rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS0),
+			rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS1),
+			cdns_ep_read(&d->core, CDNS_LM_PL_CONFIG0),
+			cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG),
+			cdns_ep_read(&d->core, CDNS_AT_OB_PCI_ADDR0(0x20U, OB_IRQ_REGION)),
+			cdns_ep_read(&d->core, CDNS_AT_OB_DESC0(0x20U, OB_IRQ_REGION)),
+			rk_client_read(apb(dev), RK_CLIENT_INT_STATUS),
+			cdns_ep_read(&d->core, CDNS_AT_LINKDOWN));
+		LOG_PANIC();
+	}
+	/*
+	 * One DWORD with the message data in the low half, as an MSI write is
+	 * on the link: the outbound AXI slave answers a 16-bit write to the
+	 * Device mapped window with SLVERR (SError).
+	 */
+	sys_write32(data, d->irq_va + (mm_reg_t)(pci_addr & 0xfcU));
+	barrier_dsync_fence_full(); /* push the MSI write out */
 	k_spin_unlock(&d->lock, key);
 	return 0;
 }
@@ -556,7 +833,14 @@ static int epc_raise_irq(const struct device *dev, uint8_t func, enum pcie_epc_i
 	if (!d->link_up) {
 		return -ENOTCONN;
 	}
-	if ((type == PCIE_EPC_IRQ_MSI || type == PCIE_EPC_IRQ_MSIX) && !(d->bme & BIT(func))) {
+	if ((type == PCIE_EPC_IRQ_MSI || type == PCIE_EPC_IRQ_MSIX) && !(d->bme & BIT(func)) &&
+	    (cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG) &
+	     PCI_COMMAND_MASTER) == 0U) {
+		/*
+		 * The cached bit lags the link work by up to a poll period; a
+		 * function that saw BME in its own Command register raises
+		 * right away. Only a clear register refuses.
+		 */
 		return -EACCES; /* no Bus Master Enable: the write would be dropped */
 	}
 	switch (type) {
@@ -606,6 +890,225 @@ static bool epc_link_up(const struct device *dev)
 	return DEV_DATA(dev)->link_up;
 }
 
+static struct udma_desc udma_desc[UDMA_DESCS] __aligned(UDMA_DESC_ALIGN);
+static uint8_t udma_flush_buf[UDMA_DESC_ALIGN] __aligned(UDMA_DESC_ALIGN);
+static uint8_t udma_bounce[KB(16)] __aligned(CONFIG_DCACHE_LINE_SIZE);
+
+static void udma_desc_fill(struct udma_desc *dsc, uint32_t axi, uint64_t pci, uint32_t len,
+			   uint8_t ctrl, uint32_t next)
+{
+	dsc->axi_addr = axi;
+	dsc->axi_attr = 0U;
+	dsc->pci_addr_lo = (uint32_t)pci;
+	dsc->pci_addr_hi = (uint32_t)(pci >> 32);
+	dsc->tlp_attr_lo = 0U; /* requester ID of function 0, TC0, strict ordering */
+	dsc->tlp_attr_hi = 0U;
+	dsc->len_ctrl = (len & GENMASK(23, 0)) | ((uint32_t)ctrl << 24);
+	dsc->status = 0U;
+	dsc->next = next;
+}
+
+/*
+ * Run the list at udma_desc[0..n-1] on the channel and wait for it. The
+ * done interrupt comes from the last descriptor; with the interrupt lost
+ * the status register is read after the timeout. Each descriptor's
+ * channel status byte then says how far the list got.
+ */
+static int udma_run(const struct device *dev, unsigned int n, bool outbound)
+{
+	struct epc_rk3399_data *d = dev->data;
+	uint32_t ust;
+	int ret = 0;
+
+	sys_cache_data_flush_range(udma_desc, sizeof(udma_desc));
+	(void)atomic_clear(&d->udma_int);
+	k_sem_reset(&d->udma_done);
+	udma_wr(dev, UDMA_ATTR_L(UDMA_CHAN), 0U);
+	udma_wr(dev, UDMA_SP_L(UDMA_CHAN), (uint32_t)k_mem_phys_addr(&udma_desc[0]));
+	udma_wr(dev, UDMA_SP_U(UDMA_CHAN), 0U);
+	udma_wr(dev, UDMA_CTRL(UDMA_CHAN),
+		      UDMA_CTRL_GO | (outbound ? UDMA_CTRL_OB : 0U));
+
+	if (k_sem_take(&d->udma_done, K_MSEC(UDMA_TIMEOUT_MS)) != 0) {
+		ust = udma_rd(dev, UDMA_INT) &
+		      (UDMA_INT_DONE(UDMA_CHAN) | UDMA_INT_ERR(UDMA_CHAN));
+		if (ust != 0U) {
+			udma_wr(dev, UDMA_INT, ust);
+			d->udma_stat.n_polled++;
+		} else {
+			d->udma_stat.n_timeout++;
+			ret = -ETIMEDOUT;
+		}
+	} else {
+		ust = (uint32_t)atomic_get(&d->udma_int);
+	}
+
+	sys_cache_data_invd_range(udma_desc, sizeof(udma_desc));
+	for (unsigned int i = 0; i < n && ret == 0; i++) {
+		uint8_t cs = (uint8_t)(udma_desc[i].status >> 16);
+
+		if ((cs & UDMA_DS_ERRORS) != 0U || (cs & UDMA_DS_DONE) == 0U) {
+			ret = -EIO;
+		}
+	}
+	if (ret == 0 && (ust & UDMA_INT_ERR(UDMA_CHAN)) != 0U) {
+		ret = -EIO;
+	}
+	if (ret != 0) {
+		d->udma_stat.n_err++;
+		for (unsigned int i = 0; i < n; i++) {
+			if (udma_desc[i].status != 0U || i == n - 1U) {
+				d->udma_stat.last_err = udma_desc[i].status;
+			}
+		}
+		if (d->udma_stat.n_err <= 5U) {
+			LOG_WRN("udma %s: %d, int %08x, status %08x/%08x", outbound ? "out" : "in",
+				ret, ust, udma_desc[0].status, udma_desc[n - 1U].status);
+		}
+	}
+	return ret;
+}
+
+/* aligned run: phys and size multiples of UDMA_ALIGN, mutex held */
+static int udma_xfer(const struct device *dev, uint64_t pci_addr, uintptr_t phys, size_t size,
+		     bool to_host)
+{
+	int ret = 0;
+
+	for (size_t off = 0; off < size && ret == 0; off += UDMA_MAX_LEN) {
+		uint32_t len = (uint32_t)MIN(size - off, (size_t)UDMA_MAX_LEN);
+
+		udma_desc_fill(&udma_desc[0], (uint32_t)(phys + off), pci_addr + off, len,
+			       UDMA_DC_IRQ, 0U);
+		ret = udma_run(dev, 1U, to_host);
+		if (ret == 0 && to_host) {
+			/*
+			 * The done interrupt says the writes left the channel,
+			 * not that they reached the host. A read of the last
+			 * bytes on the same path is ordered behind them (reads
+			 * do not pass posted writes), so the data is visible
+			 * before the caller's MSI.
+			 */
+			udma_desc_fill(&udma_desc[0], (uint32_t)k_mem_phys_addr(udma_flush_buf),
+				       pci_addr + off + len - 4U, 4U, UDMA_DC_IRQ, 0U);
+			sys_cache_data_flush_and_invd_range(udma_flush_buf,
+							    sizeof(udma_flush_buf));
+			ret = udma_run(dev, 1U, false);
+		}
+	}
+	return ret;
+}
+
+/*
+ * The middle part, PCIe address aligned. Local memory goes through the
+ * bounce buffer when it is not aligned for the channel or, toward local
+ * memory, when its ends share cache lines with other data: invalidating
+ * such a line drops the neighbour's writes, cleaning it overwrites DMA
+ * data.
+ */
+static int udma_mid(const struct device *dev, uint64_t pci_addr, uint8_t *local, size_t size,
+		    bool to_host)
+{
+	uintptr_t phys = k_mem_phys_addr(local);
+	bool bounce = to_host ? (phys & (UDMA_ALIGN - 1U)) != 0U
+			      : ((phys | size) & (CONFIG_DCACHE_LINE_SIZE - 1U)) != 0U;
+	int ret = 0;
+
+	if (!bounce) {
+		if (to_host) {
+			sys_cache_data_flush_range(local, size);
+		} else {
+			sys_cache_data_flush_and_invd_range(local, size);
+		}
+		ret = udma_xfer(dev, pci_addr, phys, size, to_host);
+		if (!to_host) {
+			sys_cache_data_invd_range(local, size);
+		}
+		return ret;
+	}
+	for (size_t off = 0; off < size && ret == 0; off += sizeof(udma_bounce)) {
+		size_t n = MIN(size - off, sizeof(udma_bounce));
+
+		if (to_host) {
+			memcpy(udma_bounce, local + off, n);
+			sys_cache_data_flush_range(udma_bounce, n);
+		} else {
+			sys_cache_data_flush_and_invd_range(udma_bounce, sizeof(udma_bounce));
+		}
+		ret = udma_xfer(dev, pci_addr + off, k_mem_phys_addr(udma_bounce), n, to_host);
+		if (ret == 0 && !to_host) {
+			sys_cache_data_invd_range(udma_bounce, sizeof(udma_bounce));
+			memcpy(local + off, udma_bounce, n);
+		}
+	}
+	return ret;
+}
+
+/*
+ * A transfer to a PCIe address 3 bytes off alignment ends early (channel
+ * status 0x02, PCIe transfer incomplete); the TRM names no alignment
+ * rule. The unaligned head and tail (up to 7 bytes each) go through the
+ * outbound window instead.
+ */
+static int epc_xfer_dma(const struct device *dev, uint8_t func, uint64_t pci_addr, void *local,
+			size_t size, bool to_host)
+{
+	struct epc_rk3399_data *d = dev->data;
+	uint8_t *buf = local;
+	size_t head, tail, mid;
+	uint64_t t0;
+	int ret = 0;
+
+	if (!d->link_up) {
+		return -ENOTCONN;
+	}
+	if (func != 0U) {
+		return -ENOTSUP; /* descriptors carry function 0's requester ID */
+	}
+	if (!(d->bme & BIT(func)) &&
+	    (cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(func) + PCI_COMMAND_REG) &
+	     PCI_COMMAND_MASTER) == 0U) {
+		return -EACCES;
+	}
+	if (size == 0U) {
+		return 0;
+	}
+	if ((uint64_t)k_mem_phys_addr(local) + size > BIT64(32)) {
+		return -EINVAL; /* 32-bit AXI addresses */
+	}
+	head = MIN(size, (size_t)((UDMA_ALIGN - (pci_addr & (UDMA_ALIGN - 1U))) &
+				  (UDMA_ALIGN - 1U)));
+	tail = (size - head) & (UDMA_ALIGN - 1U);
+	mid = size - head - tail;
+
+	k_mutex_lock(&d->udma_lock, K_FOREVER);
+	ob_unblock(d);
+	t0 = k_cycle_get_64();
+	if (head != 0U) {
+		ret = pcie_epc_xfer_memcpy(dev, func, pci_addr, buf, head, to_host);
+	}
+	if (ret == 0 && mid != 0U) {
+		ret = udma_mid(dev, pci_addr + head, buf + head, mid, to_host);
+	}
+	if (ret == 0 && tail != 0U) {
+		ret = pcie_epc_xfer_memcpy(dev, func, pci_addr + head + mid, buf + head + mid,
+					   tail, to_host);
+	}
+	if (ret == 0) {
+		if (to_host) {
+			d->udma_stat.n_to++;
+			d->udma_stat.bytes_to += size;
+			d->udma_stat.cyc_to += k_cycle_get_64() - t0;
+		} else {
+			d->udma_stat.n_from++;
+			d->udma_stat.bytes_from += size;
+			d->udma_stat.cyc_from += k_cycle_get_64() - t0;
+		}
+	}
+	k_mutex_unlock(&d->udma_lock);
+	return ret;
+}
+
 static DEVICE_API(pcie_epc, epc_rk3399_api) = {
 	.start = epc_start,
 	.stop = epc_stop,
@@ -617,6 +1120,7 @@ static DEVICE_API(pcie_epc, epc_rk3399_api) = {
 	.set_msi = epc_set_msi,
 	.get_msi = epc_get_msi,
 	.raise_irq = epc_raise_irq,
+	.xfer_dma = epc_xfer_dma,
 	.cfg_read = epc_cfg_read,
 	.cfg_write = epc_cfg_write,
 	.get_features = epc_get_features,
@@ -664,6 +1168,30 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 			    cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(0) + 0x10 + 4 * b));
 	}
 	shell_print(sh, "events     up %u down %u hot-reset %u", d->ups, d->downs, d->hot_resets);
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->client_cnt); i++) {
+		if (d->client_cnt[i] != 0U) {
+			shell_print(sh, "irq        %-18s %u",
+				    client_int_name[i] != NULL ? client_int_name[i] : "?",
+				    d->client_cnt[i]);
+		}
+	}
+	shell_print(sh, "udma       cap %08x conf %08x int %08x, client int %08x mask %08x",
+		    udma_rd(dev, UDMA_CAP), udma_rd(dev, UDMA_CONF),
+		    udma_rd(dev, UDMA_INT), rk_client_read(apb(dev), RK_CLIENT_INT_STATUS),
+		    rk_client_read(apb(dev), RK_CLIENT_INT_MASK));
+	shell_print(sh, "udma       to host %u (%llu B, %llu us), from host %u (%llu B, %llu us)",
+		    d->udma_stat.n_to, d->udma_stat.bytes_to,
+		    k_cyc_to_us_floor64(d->udma_stat.cyc_to), d->udma_stat.n_from,
+		    d->udma_stat.bytes_from, k_cyc_to_us_floor64(d->udma_stat.cyc_from));
+	shell_print(sh, "udma       errors %u (last status %08x), timeouts %u, irq lost %u",
+		    d->udma_stat.n_err, d->udma_stat.last_err, d->udma_stat.n_timeout,
+		    d->udma_stat.n_polled);
+	for (unsigned int i = 0; i < ARRAY_SIZE(d->lm_cnt); i++) {
+		if (d->lm_cnt[i] != 0U) {
+			shell_print(sh, "core error %-18s %u",
+				    lm_int_name[i] != NULL ? lm_int_name[i] : "?", d->lm_cnt[i]);
+		}
+	}
 }
 
 #if defined(CONFIG_PCIE_ROLE)
@@ -698,6 +1226,56 @@ static int sh_link(const struct device *dev, const struct shell *sh, bool do_ret
 	}
 	shell_print(sh, "link %s, ltssm %s", d->link_up ? "up" : "down",
 		    rk3399_pcie_ltssm_name(rk3399_pcie_ltssm(apb(dev))));
+	return 0;
+}
+
+/*
+ * Busy-poll LTSSM, the client's data link status and LM link ready for ms
+ * milliseconds and print every change with its time: recovery passes and
+ * short drops the link work's polling never sees. Interrupts stay on.
+ */
+static int sh_link_trace(const struct device *dev, const struct shell *sh, uint32_t ms)
+{
+	struct epc_rk3399_data *d = dev->data;
+	static struct {
+		uint32_t t_us;
+		uint8_t ltssm;
+		uint8_t dl;
+		uint8_t ls;
+	} ev[256];
+	unsigned int n = 0, lost = 0;
+	uint64_t t0 = k_cycle_get_64(), end = t0 + k_us_to_cyc_ceil64((uint64_t)ms * 1000U);
+	uint32_t prev = UINT32_MAX;
+
+	if (!d->active) {
+		return -EBUSY;
+	}
+	for (uint64_t now = t0; now < end; now = k_cycle_get_64()) {
+		uint8_t s = rk3399_pcie_ltssm(apb(dev));
+		uint8_t dl = (rk_client_read(apb(dev), RK_CLIENT_BASIC_STATUS1) >> 20) & 3U;
+		uint8_t ls = cdns_ep_read(&d->core, CDNS_LM_PL_CONFIG0) & 1U;
+		uint32_t cur = ((uint32_t)s << 16) | ((uint32_t)dl << 8) | ls;
+
+		if (cur == prev) {
+			continue;
+		}
+		prev = cur;
+		if (n < ARRAY_SIZE(ev)) {
+			ev[n].t_us = (uint32_t)k_cyc_to_us_floor64(now - t0);
+			ev[n].ltssm = s;
+			ev[n].dl = dl;
+			ev[n].ls = ls;
+			n++;
+		} else {
+			lost++;
+		}
+	}
+	for (unsigned int i = 0; i < n; i++) {
+		shell_print(sh, "%10u us  ltssm 0x%02x %-24s dl %u ls %u", ev[i].t_us, ev[i].ltssm,
+			    rk3399_pcie_ltssm_name(ev[i].ltssm), ev[i].dl, ev[i].ls);
+	}
+	shell_print(sh, "%u changes in %u ms%s", n + lost, ms,
+		    lost ? " (later ones not kept)" : "");
 	return 0;
 }
 
@@ -789,6 +1367,7 @@ static int epc_rk3399_init(const struct device *dev)
 		.mode_saved = sh_mode_saved,
 #endif
 		.link = sh_link,
+		.link_trace = sh_link_trace,
 		.id_get = sh_id_get,
 		.id_set = sh_id_set,
 		.cfg_read = sh_cfg_read,
@@ -809,6 +1388,8 @@ static int epc_rk3399_init(const struct device *dev)
 	d->irq_pci_addr = UINT64_MAX;
 	d->ob_map = BIT(OB_IRQ_REGION);
 	k_work_init_delayable(&d->link_work, link_work);
+	k_mutex_init(&d->udma_lock);
+	k_sem_init(&d->udma_done, 0, 1);
 	k_timer_init(&d->sriov_timer, sriov_timer_fn, NULL);
 
 	/* the slot's 3.3 V belongs to the host now */
@@ -824,6 +1405,8 @@ static int epc_rk3399_init(const struct device *dev)
 		LOG_ERR("%s: port init failed: %d", dev->name, ret);
 		return ret;
 	}
+	core_tune(d);
+	cfg->irq_config();
 	LOG_INF("%s: core up, reset VID/SSVID 0x%08x", dev->name,
 		cdns_ep_read(&d->core, CDNS_LM_ID));
 
@@ -849,6 +1432,12 @@ static int epc_rk3399_init(const struct device *dev)
 
 	/* MSI-X is advertised but not functional on this revision. */
 	cdns_ep_hide_msix_cap(&d->core);
+	for (uint8_t fn = 0; fn <= cfg->max_vfs; fn++) {
+		if (!cdns_ep_hide_flr(&d->core, fn)) {
+			LOG_WRN("%s: fn%u still advertises FLR, a host reset will hang it",
+				dev->name, fn);
+		}
+	}
 	cdns_ep_write(&d->core, CDNS_LM_EP_FUNC_CFG, BIT(0));
 	if (cfg->has_ids) {
 		(void)epc_write_header(dev, 0, &cfg->hdr);
@@ -920,6 +1509,7 @@ static int epc_rk3399_init(const struct device *dev)
 		      DT_INST_PROP(n, max_functions) == 1 &&                                         \
 		      DT_INST_PROP(n, max_virtual_functions) <= 8),                                \
 		     "max-virtual-functions: 1..8 VFs of the one PF, needs PCIE_EPC_RK3399_SRIOV"); \
+	static void epc_rk3399_irq_config_##n(void);                                               \
 	static const struct epc_rk3399_config epc_rk3399_config_##n = {                            \
 		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(apb, DT_DRV_INST(n)),                           \
 		.mem_base = DT_INST_REG_ADDR_BY_NAME(n, mem),                                      \
@@ -963,8 +1553,20 @@ static int epc_rk3399_init(const struct device *dev)
 		.max_vfs = DT_INST_PROP(n, max_virtual_functions),                                 \
 		.msi_vectors = DT_INST_PROP(n, msi_vectors),                                       \
 		.autostart = !DT_INST_PROP(n, zephyr_no_autostart),                                \
+		.irq_config = epc_rk3399_irq_config_##n,                                           \
 	};                                                                                         \
 	static struct epc_rk3399_data epc_rk3399_data_##n;                                         \
+	static void epc_rk3399_irq_config_##n(void)                                                \
+	{                                                                                          \
+		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, sys, irq),                                      \
+			    DT_INST_IRQ_BY_NAME(n, sys, priority), epc_rk3399_isr,                 \
+			    DEVICE_DT_INST_GET(n), DT_INST_IRQ_BY_NAME(n, sys, flags));            \
+		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, client, irq),                                   \
+			    DT_INST_IRQ_BY_NAME(n, client, priority), epc_rk3399_isr,              \
+			    DEVICE_DT_INST_GET(n), DT_INST_IRQ_BY_NAME(n, client, flags));         \
+		irq_enable(DT_INST_IRQ_BY_NAME(n, sys, irq));                                      \
+		irq_enable(DT_INST_IRQ_BY_NAME(n, client, irq));                                   \
+	}                                                                                          \
 	DEVICE_DT_INST_DEFINE(n, epc_rk3399_init, NULL, &epc_rk3399_data_##n,                      \
 			      &epc_rk3399_config_##n, POST_KERNEL, CONFIG_PCIE_EPC_INIT_PRIORITY,  \
 			      &epc_rk3399_api);

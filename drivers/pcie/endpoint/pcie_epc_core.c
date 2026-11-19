@@ -307,12 +307,13 @@ void pcie_epc_unmap_host(const struct device *dev, struct pcie_epc_host_map *map
 /* single aligned accesses on the window side; the local buffer may be unaligned */
 static void copy_toio(mem_addr_t io, const uint8_t *src, size_t n)
 {
-	while (n > 0 && (io & 7U) != 0U) {
+	while (n > 0 && (io & 3U) != 0U) {
 		sys_write8(*src++, io++);
 		n--;
 	}
-	for (; n >= 8U; n -= 8U, io += 8U, src += 8U) {
-		sys_write64(UNALIGNED_GET((const uint64_t *)src), io);
+	/* 32-bit stores, the access size the window takes (see the MSI write) */
+	for (; n >= 4U; n -= 4U, io += 4U, src += 4U) {
+		sys_write32(UNALIGNED_GET((const uint32_t *)src), io);
 	}
 	for (; n > 0; n--) {
 		sys_write8(*src++, io++);

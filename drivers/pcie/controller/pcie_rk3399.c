@@ -79,6 +79,8 @@ LOG_MODULE_REGISTER(pcie_rk3399_rc, LOG_LEVEL_INF);
 #define  OB_TYPE_CFG1        0xbU
 #define AT_IB_RP_ADDR0(r)    (AT_BASE + 0x800U + (r) * 8U)
 #define AT_IB_RP_ADDR1(r)    (AT_BASE + 0x804U + (r) * 8U)
+/* AXI link-down status: while set, the AXI slave (config and memory windows) errors */
+#define AT_LINKDOWN          (AT_BASE + 0x824U)
 
 #define CFG_REGION_BITS      25U         /* 32 MiB: buses 0..31 */
 #define OB_REGION            MB(1)
@@ -220,6 +222,8 @@ static uint32_t rk_rc_conf_read(const struct device *dev, pcie_bdf_t bdf, unsign
 		return 0xffffffffU;
 	}
 	key = k_spin_lock(&data->lock);
+	/* set by every link down: clear it before the access, as Linux does */
+	cwr(dev, AT_LINKDOWN, 0U);
 	cfg_region_type(dev, type1 ? OB_TYPE_CFG1 : OB_TYPE_CFG0);
 	v = sys_read32(data->cfg + ecam_off(bdf, reg));
 	k_spin_unlock(&data->lock, key);
@@ -246,6 +250,8 @@ static void rk_rc_conf_write(const struct device *dev, pcie_bdf_t bdf, unsigned 
 		return;
 	}
 	key = k_spin_lock(&data->lock);
+	/* set by every link down: clear it before the access, as Linux does */
+	cwr(dev, AT_LINKDOWN, 0U);
 	cfg_region_type(dev, type1 ? OB_TYPE_CFG1 : OB_TYPE_CFG0);
 	sys_write32(v, data->cfg + ecam_off(bdf, reg));
 	k_spin_unlock(&data->lock, key);
