@@ -1343,17 +1343,67 @@ static void reg_wr(struct vt *t, unsigned int off, uint32_t v)
 }
 
 /*
+ * A VF reads Vendor and Device ID 0xffff, Memory Space 0 and zero BARs in
+ * its own config space (SR-IOV): those live in the PF, VF Memory Space in
+ * its SR-IOV Control. Look there instead.
+ */
+static int vf_alive(struct vt *t, const char *pf)
+{
+	char path[PATH_MAX];
+	uint8_t c[8];
+	int fd, n;
+
+	if (snprintf(path, sizeof(path), "%s/%s/config", SYSFS, pf) >= (int)sizeof(path)) {
+		return 0;
+	}
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		return 0; /* nothing to compare with: let the test find out */
+	}
+	n = (int)pread(fd, c, sizeof(c), 0);
+	close(fd);
+	if (n != (int)sizeof(c)) {
+		return 0;
+	}
+	if ((c[0] | c[1] << 8) != t->d->vendor_id) {
+		fprintf(stderr, "PF %s does not answer config requests (vendor %04x)\n", pf,
+			c[0] | c[1] << 8);
+		return -1;
+	}
+	if (!(c[4] & PCI_COMMAND_MEMORY)) {
+		fprintf(stderr, "PF %s has Memory Space off: setpci -s %s COMMAND=0x02\n", pf,
+			pf);
+		return -1;
+	}
+	return 0;
+}
+
+/*
  * The real config space (sysfs, not vfio's virtualized copy): an endpoint
  * that rebooted shows Memory Space off and BARs zero; a BAR access would
  * then fault. Checked before every test.
  */
 static int vt_alive(struct vt *t)
 {
-	uint16_t vendor = pci_read_word(t->d, PCI_VENDOR_ID);
-	uint16_t cmd = pci_read_word(t->d, PCI_COMMAND);
-	uint32_t bar = pci_read_long(t->d, PCI_BASE_ADDRESS_0 + 4 * t->reg_bar);
-	uint32_t want = (uint32_t)(t->d->base_addr[t->reg_bar] & PCI_ADDR_MEM_MASK);
+	char path[PATH_MAX], pf[PATH_MAX];
+	uint16_t vendor, cmd;
+	uint32_t bar, want;
+	ssize_t n;
 
+	snprintf(path, sizeof(path), "%s/%s/physfn", SYSFS, t->bdf);
+	n = readlink(path, pf, sizeof(pf) - 1);
+	if (n > 0) {
+		const char *b;
+
+		pf[n] = '\0';
+		b = strrchr(pf, '/');
+		return vf_alive(t, b != NULL ? b + 1 : pf);
+	}
+
+	vendor = pci_read_word(t->d, PCI_VENDOR_ID);
+	cmd = pci_read_word(t->d, PCI_COMMAND);
+	bar = pci_read_long(t->d, PCI_BASE_ADDRESS_0 + 4 * t->reg_bar);
+	want = (uint32_t)(t->d->base_addr[t->reg_bar] & PCI_ADDR_MEM_MASK);
 	if (vendor != t->d->vendor_id) {
 		fprintf(stderr, "endpoint does not answer config requests (vendor %04x)\n",
 			vendor);
