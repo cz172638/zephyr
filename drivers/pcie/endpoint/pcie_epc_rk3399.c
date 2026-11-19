@@ -123,8 +123,15 @@ struct udma_desc {
 #define UDMA_DESCS               2U
 
 /* doorbell DeviceID candidates: 0-7 and bus 1-15 (device 0, function 0) */
-#define DB_SLOTS (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_DOORBELL) &&                                  \
-		  CONFIG_PCIE_EPC_RK3399_DOORBELL_DEVID < 0 ? 23 : 1)
+#define DB_DEVIDS (IS_ENABLED(CONFIG_PCIE_EPC_RK3399_DOORBELL) &&                                 \
+		   CONFIG_PCIE_EPC_RK3399_DOORBELL_DEVID < 0 ? 23 : 1)
+/*
+ * Every host write carries the host's requester ID, so the DeviceID cannot
+ * tell the functions apart: the EventID (the value written) does, one per
+ * routing function (1 PF + up to 8 VFs).
+ */
+#define DB_FUNCS  9U
+#define DB_SLOTS  (DB_DEVIDS * DB_FUNCS)
 #define UDMA_DESC_ALIGN          64U
 
 static const char *const client_int_name[16] = {
@@ -210,19 +217,23 @@ struct epc_rk3399_data {
 		uint32_t last_err; /* descriptor status word */
 	} udma_stat;
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
-	/* doorbell: one LPI per candidate ITS DeviceID, mapped at the first allocation */
+	/*
+	 * doorbell: one LPI per candidate ITS DeviceID and EventID (= function),
+	 * mapped at the function's first allocation; slot devid * DB_FUNCS + func
+	 */
 	struct db_slot {
 		const struct device *dev;
 		uint32_t devid;
 		uint32_t intid;
 		uint32_t hits;
+		uint8_t func;
 	} db_slot[DB_SLOTS];
-	uint8_t db_nslots;
+	uint32_t db_devid_ready; /* DeviceIDs with an ITT, by candidate index */
+	uint16_t db_mapped;      /* functions whose EventID is mapped on every candidate */
 	int32_t db_seen; /* DeviceID of the first doorbell, -1 none yet */
-	pcie_epc_doorbell_cb_t db_cb;
-	void *db_user;
-	uint8_t db_func;
-	int8_t db_cpu; /* CPU the LPIs are delivered to, -1 where mapped */
+	pcie_epc_doorbell_cb_t db_cb[DB_FUNCS];
+	void *db_user[DB_FUNCS];
+	int8_t db_cpu[DB_FUNCS]; /* CPU the function's LPIs go to, -1 where mapped */
 #endif
 	/*
 	 * Resizable BAR, per physical function: the memory BARs as set (all
@@ -1454,14 +1465,14 @@ static void db_isr(const void *arg)
 	struct db_slot *slot = (struct db_slot *)arg;
 	const struct device *dev = slot->dev;
 	struct epc_rk3399_data *d = dev->data;
-	pcie_epc_doorbell_cb_t cb = d->db_cb;
+	pcie_epc_doorbell_cb_t cb = d->db_cb[slot->func];
 
 	slot->hits++;
 	if (d->db_seen < 0) {
 		d->db_seen = (int32_t)slot->devid;
 	}
 	if (cb != NULL) {
-		cb(dev, d->db_func, d->db_user);
+		cb(dev, slot->func, d->db_user[slot->func]);
 	}
 }
 
@@ -1473,36 +1484,50 @@ static uint32_t db_candidate(unsigned int i)
 	return i < 8U ? i : (i - 7U) << 8;
 }
 
-/* EventID 0 of each candidate DeviceID to its own LPI */
-static int db_map(const struct device *dev)
+/* EventID func of each candidate DeviceID to its own LPI */
+static int db_map(const struct device *dev, uint8_t func)
 {
 	const struct epc_rk3399_config *cfg = dev->config;
 	struct epc_rk3399_data *d = dev->data;
 
-	for (unsigned int i = d->db_nslots; i < DB_SLOTS; i++) {
-		struct db_slot *slot = &d->db_slot[i];
+	if ((d->db_mapped & BIT(func)) != 0U) {
+		return 0;
+	}
+	for (unsigned int i = 0; i < DB_DEVIDS; i++) {
+		struct db_slot *slot = &d->db_slot[i * DB_FUNCS + func];
+		uint32_t devid = db_candidate(i);
 		int ret;
 
-		slot->dev = dev;
-		slot->devid = db_candidate(i);
-		ret = its_setup_deviceid(cfg->its, slot->devid, 1);
-		if (ret != 0) {
-			LOG_ERR("doorbell: DeviceID 0x%x: %d", slot->devid, ret);
-			return ret;
+		if ((d->db_devid_ready & BIT(i)) == 0U) {
+			/* an ITT for all functions' EventIDs at once */
+			ret = its_setup_deviceid(cfg->its, devid, DB_FUNCS);
+			if (ret != 0) {
+				LOG_ERR("doorbell: DeviceID 0x%x: %d", devid, ret);
+				return ret;
+			}
+			d->db_devid_ready |= BIT(i);
 		}
-		slot->intid = its_alloc_intid(cfg->its);
-		ret = its_map_intid(cfg->its, slot->devid, 0, slot->intid);
+		slot->dev = dev;
+		slot->devid = devid;
+		slot->func = func;
+		ret = its_alloc_intid(cfg->its);
+		if (ret < 0) {
+			return -ENOMEM;
+		}
+		slot->intid = (uint32_t)ret;
+		ret = its_map_intid(cfg->its, devid, func, slot->intid);
 		if (ret != 0) {
-			LOG_ERR("doorbell: map DeviceID 0x%x to %u: %d", slot->devid, slot->intid,
-				ret);
+			LOG_ERR("doorbell: map DeviceID 0x%x event %u to %u: %d", devid, func,
+				slot->intid, ret);
 			return ret;
 		}
 		if (irq_connect_dynamic(slot->intid, cfg->db_prio, db_isr, slot, 0) < 0) {
 			return -ENOMEM;
 		}
 		irq_enable(slot->intid);
-		d->db_nslots = (uint8_t)(i + 1U);
 	}
+	d->db_mapped |= BIT(func);
+	d->db_cpu[func] = -1;
 	return 0;
 }
 
@@ -1513,36 +1538,35 @@ static int epc_alloc_doorbell(const struct device *dev, uint8_t func, pcie_epc_d
 	struct epc_rk3399_data *d = dev->data;
 	int ret;
 
-	if (func >= nfuncs(dev) || cb == NULL || db == NULL) {
+	if (func >= nfuncs(dev) || func >= DB_FUNCS || cb == NULL || db == NULL) {
 		return -EINVAL;
 	}
-	if (d->db_cb != NULL) {
+	if (d->db_cb[func] != NULL) {
 		return -EBUSY;
 	}
-	ret = db_map(dev);
+	ret = db_map(dev, func);
 	if (ret != 0) {
 		return ret;
 	}
 	/* deliver the doorbell to the CPU of its user (the thread allocating it) */
-	if (arch_num_cpus() > 1 && d->db_cpu != (int8_t)arch_curr_cpu()->id) {
+	if (arch_num_cpus() > 1 && d->db_cpu[func] != (int8_t)arch_curr_cpu()->id) {
 		unsigned int cpu = arch_curr_cpu()->id;
 
-		for (unsigned int i = 0; i < d->db_nslots; i++) {
-			ret = its_move_intid(cfg->its, d->db_slot[i].devid, 0, cpu);
+		for (unsigned int i = 0; i < DB_DEVIDS; i++) {
+			ret = its_move_intid(cfg->its, db_candidate(i), func, cpu);
 			if (ret != 0) {
-				LOG_WRN("doorbell: LPI %u to CPU%u: %d", d->db_slot[i].intid, cpu,
-					ret);
+				LOG_WRN("doorbell: fn%u LPI %u to CPU%u: %d", func,
+					d->db_slot[i * DB_FUNCS + func].intid, cpu, ret);
 				break;
 			}
 		}
-		d->db_cpu = ret == 0 ? (int8_t)cpu : -1;
+		d->db_cpu[func] = ret == 0 ? (int8_t)cpu : -1;
 	}
-	d->db_func = func;
-	d->db_user = user_data;
-	d->db_cb = cb;
+	d->db_user[func] = user_data;
+	d->db_cb[func] = cb;
 	/* the ITS sits on the same AXI interconnect: CPU and inbound addresses agree */
 	db->phys = its_get_msi_addr(cfg->its);
-	db->data = 0U;
+	db->data = func; /* the EventID */
 	return 0;
 }
 
@@ -1550,11 +1574,11 @@ static int epc_free_doorbell(const struct device *dev, uint8_t func)
 {
 	struct epc_rk3399_data *d = dev->data;
 
-	if (d->db_cb == NULL || d->db_func != func) {
+	if (func >= DB_FUNCS || d->db_cb[func] == NULL) {
 		return -EINVAL;
 	}
 	/* the LPIs stay mapped and enabled for the next allocation; db_isr ignores them */
-	d->db_cb = NULL;
+	d->db_cb[func] = NULL;
 	return 0;
 }
 #endif /* CONFIG_PCIE_EPC_RK3399_DOORBELL */
@@ -1660,17 +1684,27 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 		}
 	}
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
-	shell_fprintf(sh, SHELL_NORMAL, "doorbell   %s, fn %u, CPU %d, %u DeviceIDs mapped, seen ",
-		      d->db_cb != NULL ? "on" : "off", d->db_func, d->db_cpu, d->db_nslots);
+	shell_fprintf(sh, SHELL_NORMAL, "doorbell  ");
+	for (unsigned int fn = 0, on = 0; fn < DB_FUNCS; fn++) {
+		if (d->db_cb[fn] != NULL) {
+			shell_fprintf(sh, SHELL_NORMAL, "%s fn %u (CPU %d)", on++ == 0U ? " on:" : "",
+				      fn, d->db_cpu[fn]);
+		} else if (fn == DB_FUNCS - 1U && on == 0U) {
+			shell_fprintf(sh, SHELL_NORMAL, " off");
+		}
+	}
+	shell_fprintf(sh, SHELL_NORMAL, ", events mapped %03x on %u DeviceIDs, seen ",
+		      d->db_mapped, DB_DEVIDS);
 	if (d->db_seen < 0) {
 		shell_fprintf(sh, SHELL_NORMAL, "none\n");
 	} else {
 		shell_fprintf(sh, SHELL_NORMAL, "0x%x\n", (unsigned int)d->db_seen);
 	}
-	for (unsigned int i = 0; i < d->db_nslots; i++) {
+	for (unsigned int i = 0; i < DB_SLOTS; i++) {
 		if (d->db_slot[i].hits != 0U) {
-			shell_print(sh, "doorbell   DeviceID 0x%04x LPI %u: %u",
-				    d->db_slot[i].devid, d->db_slot[i].intid, d->db_slot[i].hits);
+			shell_print(sh, "doorbell   DeviceID 0x%04x fn %u LPI %u: %u",
+				    d->db_slot[i].devid, d->db_slot[i].func, d->db_slot[i].intid,
+				    d->db_slot[i].hits);
 		}
 	}
 #endif
@@ -1880,7 +1914,9 @@ static int epc_rk3399_init(const struct device *dev)
 	k_sem_init(&d->udma_done, 0, 1);
 #if defined(CONFIG_PCIE_EPC_RK3399_DOORBELL)
 	d->db_seen = -1;
-	d->db_cpu = -1;
+	for (unsigned int fn = 0; fn < DB_FUNCS; fn++) {
+		d->db_cpu[fn] = -1;
+	}
 #endif
 	k_timer_init(&d->sriov_timer, sriov_timer_fn, NULL);
 
