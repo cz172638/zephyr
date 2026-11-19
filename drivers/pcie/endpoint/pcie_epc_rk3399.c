@@ -193,6 +193,7 @@ struct epc_rk3399_data {
 	struct k_timer sriov_timer; /* ARI Capable Hierarchy for the VFs, see link_work */
 	atomic_t arie_set;
 	uint32_t ups, downs, hot_resets;
+	uint32_t bus_dev; /* last bus and device number captured by function 0, LM layout */
 	/* interrupt events: counted in the ISR, logged and acted on in the link work */
 	atomic_t int_pending; /* client status bits not yet seen by the link work */
 	uint32_t client_cnt[16];
@@ -453,6 +454,19 @@ static void link_work(struct k_work *work)
 	      rk_client_read(apb(dev), RK_CLIENT_INT_STATUS);
 	int_log(d);
 	rebar_poll(dev);
+	{
+		/* captured from the host's first config write, after the link came up */
+		uint32_t bd = cdns_ep_read(&d->core, CDNS_LM_EP_BUS_DEV) &
+			      (GENMASK(15, 8) | GENMASK(4, 0));
+
+		if (bd != d->bus_dev) {
+			d->bus_dev = bd;
+			if (bd != 0U) {
+				LOG_INF("%s: bus %02x, device %02x (%02x:%02x.0)", dev->name,
+					bd >> 8, bd & 0x1fU, bd >> 8, bd & 0x1fU);
+			}
+		}
+	}
 	if (ist & CLIENT_INT_HOT_RST) {
 		rk_client_write(apb(dev), RK_CLIENT_INT_STATUS, CLIENT_INT_HOT_RST);
 		d->hot_resets++;
@@ -1595,10 +1609,13 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 		    cfg->perst.port == NULL ? "-" : (d->perst_asserted ? "asserted" : "released"));
 	if (d->link_up) {
 		unsigned int gen, width;
+		uint32_t bd;
 
 		rk3399_pcie_link_info(apb(dev), &gen, &width);
-		shell_print(sh, "link       Gen%u x%u (of x%u, max Gen%u)", gen, width,
-			    cfg->port.lanes, cfg->port.link_gen);
+		bd = cdns_ep_read(&d->core, CDNS_LM_EP_BUS_DEV);
+		shell_print(sh, "link       Gen%u x%u (of x%u, max Gen%u), bus %02x device %02x", gen,
+			    width, cfg->port.lanes, cfg->port.link_gen, (bd >> 8) & 0xffU,
+			    bd & 0x1fU);
 	}
 	shell_print(sh, "id         %08x  cmd/sts %08x  class %08x", 
 		    cdns_ep_read(&d->core, CDNS_EP_FUNC_BASE(0)),
