@@ -4,6 +4,7 @@
  */
 
 #include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
 #include <zephyr/dt-bindings/memory-attr/memory-attr-arm64.h>
 #include "rock_pi_4_memory.dtsi"
 
@@ -68,6 +69,14 @@
 	slot-power-gpios = <&gpio2 26 GPIO_ACTIVE_HIGH>;
 	num-lanes = <4>;
 	max-link-speed = <2>;
+};
+
+/* PMIC RK808 (0x1b), vdd_cpu_b SYR837 (0x40), vdd_gpu SYR838 (0x41) */
+&i2c0 {
+	pinctrl-0 = <&i2c0_pins>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	status = "okay";
 };
 
 /*
