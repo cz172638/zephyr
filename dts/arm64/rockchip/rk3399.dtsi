@@ -204,6 +204,13 @@
 		};
 	};
 
+	wdt0: watchdog@ff848000 {
+		compatible = "snps,designware-watchdog";
+		reg = <0xff848000 0x100>;
+		clocks = <&cru_clk PCLK_WDT>;
+		status = "disabled";
+	};
+
 	gmac: ethernet@fe300000 {
 		compatible = "rockchip,rk3399-gmac", "snps,dwmac";
 		reg = <0xfe300000 0x10000>;

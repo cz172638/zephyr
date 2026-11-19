@@ -6,9 +6,18 @@
  */
 
 / {
+	aliases {
+		watchdog0 = &wdt0;
+	};
+
 	chosen {
 		zephyr,pcie-controller = &pcie0;
 	};
+};
+
+/* resets the board when the image hangs (task watchdog in main.c) */
+&wdt0 {
+	status = "okay";
 };
 
 &pcie0 {

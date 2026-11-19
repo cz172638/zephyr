@@ -57,6 +57,11 @@
 #define HCLK_SDMMC		RK3399_CLK_GATE(33, 8)
 #define PCLK_SPI5		RK3399_CLK_GATE(34, 5)
 
+/* clocks without a CRU gate: get_rate only, on/off do nothing */
+#define RK3399_CLK_NOGATE(n)	(0x1000 + (n))
+/* watchdog: pclk_alive, gated in the secure GRF (SGRF_SOC_CON3[8]) */
+#define PCLK_WDT		RK3399_CLK_NOGATE(0)
+
 /* PMUCRU */
 #define PCLK_WDT_M0_PMU		RK3399_CLK_GATE(1, 15)
 #define FCLK_CM0S_PMU		RK3399_CLK_GATE(2, 0)

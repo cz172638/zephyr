@@ -38,6 +38,9 @@ static int rk3399_cru_gate(const struct device *dev, clock_control_subsys_t sys,
 	uint32_t con = id / 16U;
 	uint32_t bit = id % 16U;
 
+	if (id >= RK3399_CLK_NOGATE(0)) {
+		return 0;
+	}
 	if (con >= RK3399_CRU_CLKGATE_NUM) {
 		return -EINVAL;
 	}
@@ -183,9 +186,16 @@ static uint32_t rk_src_rate(const struct device *dev, uint32_t s)
 static int clock_control_rk3399_get_rate(const struct device *dev, clock_control_subsys_t sys,
 					 uint32_t *rate)
 {
+	const struct clock_control_rk3399_config *cfg = dev->config;
 	const struct rk_comp *c = rk_comp_find(dev, (uint32_t)(uintptr_t)sys);
 	uint32_t v;
 
+	if ((uint32_t)(uintptr_t)sys == PCLK_WDT && cfg->gate_offset == 0x300U) {
+		/* pclk_alive: GPLL / (CLKSEL_CON57[4:0] + 1) */
+		v = sys_read32(DEVICE_MMIO_GET(dev) + CRU_CLKSEL(57));
+		*rate = rk_src_rate(dev, SRC_GPLL) / ((v & 0x1fU) + 1U);
+		return 0;
+	}
 	if (c == NULL) {
 		return -ENOTSUP;
 	}
