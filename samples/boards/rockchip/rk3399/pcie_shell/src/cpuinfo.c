@@ -341,6 +341,11 @@ static int cmd_cpu(const struct shell *sh, size_t argc, char **argv)
 	return run_on_cpu(cpu, cpu_info, sh, 0U);
 }
 
+static int cmd_cpu_info(const struct shell *sh, size_t argc, char **argv)
+{
+	return cmd_cpu(sh, argc, argv);
+}
+
 static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
 {
 	uint32_t ms = argc > 1 ? strtoul(argv[1], NULL, 0) : 100U;
@@ -363,6 +368,7 @@ static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_cpu,
+	SHELL_CMD_ARG(info, NULL, "[cpu]: the same as cpu [cpu]", cmd_cpu_info, 1, 1),
 	SHELL_CMD_ARG(irq, NULL,
 		      "[ms] [cpu]: pending interrupt with IRQs masked, exception rate (all CPUs)",
 		      cmd_cpu_irq, 1, 2),
