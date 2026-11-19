@@ -401,7 +401,13 @@ static void epc_rk3399_isr(const struct device *dev)
 	}
 }
 
-/* one line for the interrupt events since the last one */
+/*
+ * One line for the interrupt events since the last one. uDMA completion is
+ * the normal end of a transfer and the local interrupt is itemized in the
+ * LM sources below, so neither is listed; both stay counted in the info.
+ */
+#define INT_LOG_SKIP (CLIENT_INT_UDMA | CLIENT_INT_LOCAL)
+
 static void int_log(struct epc_rk3399_data *d)
 {
 	char buf[160];
@@ -410,7 +416,8 @@ static void int_log(struct epc_rk3399_data *d)
 	for (unsigned int i = 0; i < ARRAY_SIZE(d->client_cnt); i++) {
 		uint32_t n = d->client_cnt[i] - d->client_logged[i];
 
-		if (n != 0U && i != 4U && client_int_name[i] != NULL && o < sizeof(buf)) {
+		if (n != 0U && (INT_LOG_SKIP & BIT(i)) == 0U && client_int_name[i] != NULL &&
+		    o < sizeof(buf)) {
 			o += snprintf(buf + o, sizeof(buf) - o, " %s %u", client_int_name[i], n);
 		}
 		d->client_logged[i] += n;
