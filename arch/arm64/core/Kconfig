@@ -192,6 +192,33 @@ config WAIT_AT_RESET_VECTOR
 	  Spin at reset vector waiting for debugger to attach and resume
 	  execution
 
+config ARM64_IRQ_STORM_GUARD
+	bool "Disable interrupt lines that fire without pause"
+	depends on GEN_SW_ISR_TABLE && !ARM_CUSTOM_INTERRUPT_CONTROLLER
+	help
+	  Count the interrupts of every PPI and SPI. A line raising more than
+	  ARM64_IRQ_STORM_GUARD_COUNT interrupts within
+	  ARM64_IRQ_STORM_GUARD_MS is disabled and logged, as a driver that
+	  never clears its source would otherwise keep the CPU in interrupt
+	  handling and starve every thread. The device on that line stops
+	  working; the system keeps running and says which line it was.
+	  The "irq storm" shell command lists such lines and enables them
+	  again. Costs one increment and compare per interrupt.
+
+if ARM64_IRQ_STORM_GUARD
+
+config ARM64_IRQ_STORM_GUARD_COUNT
+	int "Interrupts per window that count as a storm"
+	default 20000
+	range 100 1000000
+
+config ARM64_IRQ_STORM_GUARD_MS
+	int "Window in milliseconds"
+	default 100
+	range 1 10000
+
+endif # ARM64_IRQ_STORM_GUARD
+
 config ARM64_SAFE_EXCEPTION_STACK
 	bool
 	help
