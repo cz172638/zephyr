@@ -1454,10 +1454,58 @@ static void reg_wr(struct vt *t, unsigned int off, uint32_t v)
  * its own config space (SR-IOV): those live in the PF, VF Memory Space in
  * its SR-IOV Control. Look there instead.
  */
+/*
+ * An endpoint that rebooted under the host lost the BAR addresses the
+ * host assigned: the PF's, and the VF BARs in its SR-IOV capability, which
+ * the kernel writes only at enumeration. True when the kernel has a BAR of
+ * the PF assigned that reads back zero.
+ */
+static bool pf_bars_lost(const char *pf, const uint8_t *c)
+{
+	char path[PATH_MAX];
+	bool assigned = false, lost = false;
+	FILE *f;
+
+	if (snprintf(path, sizeof(path), "%s/%s/resource", SYSFS, pf) >= (int)sizeof(path)) {
+		return false;
+	}
+	f = fopen(path, "r");
+	if (f == NULL) {
+		return false;
+	}
+	for (unsigned int i = 0; i < 6U; i++) {
+		unsigned long long start, end, flags;
+		uint32_t raw = c[0x10 + 4 * i] | c[0x11 + 4 * i] << 8 | c[0x12 + 4 * i] << 16 |
+			       (uint32_t)c[0x13 + 4 * i] << 24;
+
+		if (fscanf(f, "%llx %llx %llx", &start, &end, &flags) != 3) {
+			break;
+		}
+		if (start == 0U || (raw & PCI_BASE_ADDRESS_SPACE_IO) != 0U) {
+			continue;
+		}
+		assigned = true;
+		/* a 64-bit BAR may sit above 4 GiB on the bus: check the upper half too */
+		if ((raw & PCI_BASE_ADDRESS_MEM_MASK) != 0U) {
+			fclose(f);
+			return false;
+		}
+		if ((raw & PCI_BASE_ADDRESS_MEM_TYPE_MASK) == PCI_BASE_ADDRESS_MEM_TYPE_64 &&
+		    i < 5U && (c[0x14 + 4 * i] | c[0x15 + 4 * i] | c[0x16 + 4 * i] |
+			       c[0x17 + 4 * i]) != 0U) {
+			fclose(f);
+			return false;
+		}
+		lost = true;
+	}
+	fclose(f);
+	return assigned && lost;
+}
+
 static int vf_alive(struct vt *t, const char *pf)
 {
 	char path[PATH_MAX];
-	uint8_t c[8];
+	uint8_t c[0x28];
 	int fd, n;
 
 	if (snprintf(path, sizeof(path), "%s/%s/config", SYSFS, pf) >= (int)sizeof(path)) {
@@ -1479,6 +1527,13 @@ static int vf_alive(struct vt *t, const char *pf)
 	}
 	if (!(c[4] & PCI_COMMAND_MEMORY)) {
 		fprintf(stderr, "PF %s has Memory Space off: pcictl cmd %s +mem +bme\n", pf, pf);
+		return -1;
+	}
+	if (pf_bars_lost(pf, c)) {
+		fprintf(stderr,
+			"PF %s lost its BARs (endpoint rebooted?): pcictl sriov %s 0; "
+			"pcictl remove %s; pcictl rescan; pcictl sriov %s <n>\n",
+			pf, pf, pf, pf);
 		return -1;
 	}
 	if (t->dma && !(c[4] & PCI_COMMAND_MASTER)) {
