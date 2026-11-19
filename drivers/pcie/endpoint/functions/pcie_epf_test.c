@@ -573,7 +573,7 @@ static void cmd_work_handler(struct k_work *work)
 			/* bytes per us = MB/s; copy moves the data twice */
 			uint64_t moved = (cmd & CMD_COPY) ? 2ULL * size : size;
 
-			LOG_INF("cmd 0x%x %u B %s: %d, %llu us: xfer %llu us (%llu MB/s), crc %llu us, "
+			LOG_DBG("cmd 0x%x %u B %s: %d, %llu us: xfer %llu us (%llu MB/s), crc %llu us, "
 				"fill %llu us", cmd, size,
 				(reg_rd(d, REG_FLAGS) & FLAG_USE_DMA) ? "dma" : "memcpy", ret, total,
 				xfer_us, xfer_us ? moved / xfer_us : 0,
