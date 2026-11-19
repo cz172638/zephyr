@@ -1439,6 +1439,20 @@ static void vt_irq_off(struct vt *t)
 	t->irq_type = 0;
 }
 
+/* vectors the function offers (the capability's size), at most 16 */
+static int vt_irq_max(struct vt *t, int type)
+{
+	struct vfio_irq_info ii = {
+		.argsz = sizeof(ii),
+		.index = type == EPT_IRQ_MSIX ? VFIO_PCI_MSIX_IRQ_INDEX : VFIO_PCI_MSI_IRQ_INDEX,
+	};
+
+	if (ioctl(t->dev, VFIO_DEVICE_GET_IRQ_INFO, &ii) != 0) {
+		return 0;
+	}
+	return ii.count < 16U ? (int)ii.count : 16;
+}
+
 /* MSI or MSI-X with n vectors on eventfds; the kernel programs the capability */
 static void vt_irq_on(struct vt *t, int type, int n)
 {
@@ -1946,7 +1960,7 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 			for (unsigned int b = 0; b < 6U; b++) {
 				fails += vt_test_bar(&t, b);
 			}
-			for (int v = 1; v <= 16 && fails == 0; v++) {
+			for (int v = 1; v <= vt_irq_max(&t, EPT_IRQ_MSI) && fails == 0; v++) {
 				fails += vt_test_irq(&t, EPT_IRQ_MSI, v);
 			}
 			vt_irq_on(&t, EPT_IRQ_MSI, 1);
@@ -1964,13 +1978,13 @@ static int cmd_test(struct pci_dev *d, int argc, char **argv)
 		} else if (strncmp(a, "bar", 3) == 0) {
 			fails += vt_test_bar(&t, (unsigned int)num(a + 3));
 		} else if (strcmp(a, "msix") == 0) {
-			for (int v = 1; v <= 16; v++) {
+			for (int v = 1; v <= vt_irq_max(&t, EPT_IRQ_MSIX); v++) {
 				fails += vt_test_irq(&t, EPT_IRQ_MSIX, v);
 			}
 		} else if (strncmp(a, "msix", 4) == 0) {
 			fails += vt_test_irq(&t, EPT_IRQ_MSIX, (int)num(a + 4));
 		} else if (strcmp(a, "msi") == 0) {
-			for (int v = 1; v <= 16; v++) {
+			for (int v = 1; v <= vt_irq_max(&t, EPT_IRQ_MSI); v++) {
 				fails += vt_test_irq(&t, EPT_IRQ_MSI, v);
 			}
 		} else if (strncmp(a, "msi", 3) == 0) {
