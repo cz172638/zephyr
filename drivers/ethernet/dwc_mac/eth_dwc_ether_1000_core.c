@@ -733,6 +733,15 @@ int dwmac_probe(const struct device *dev)
 	DWMAC_REG_WRITE(DWMAC_MMC_TX_INTERRUPT_MASK, UINT32_MAX);
 	DWMAC_REG_WRITE(DWMAC_MMC_IPC_RX_INTERRUPT_MASK, UINT32_MAX);
 
+	/*
+	 * The MAC's own interrupts (RGMII link status, PCS, PMT, LPI) reach
+	 * the line as DMASR.GMI/GLI/GPI, which writing DMASR does not clear:
+	 * each source clears only when its status register is read. With
+	 * none of them handled, a link change on an RGMII PHY would hold
+	 * the line asserted. The link state comes from the PHY driver.
+	 */
+	DWMAC_REG_WRITE(DWMAC_MACIMR, DWMAC_MACIMR_ALL);
+
 	DWMAC_REG_WRITE(DWMAC_DMAOMR, DWMAC_DMAOMR_TSF | DWMAC_DMAOMR_RSF);
 
 	ret = dwmac_platform_init(dev);
