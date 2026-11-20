@@ -1,0 +1,28 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Silergy SYR827 step-down regulator (FAN53555 register layout): 712.5-1500 mV
+  in 12.5 mV steps. Two voltage registers, VSEL0 and VSEL1; the VSEL pin
+  picks the one in use, the other one usually holds the sleep voltage.
+
+compatible: "silergy,syr827"
+
+include:
+  - name: i2c-device.yaml
+  - name: regulator.yaml
+    property-allowlist:
+      - regulator-always-on
+      - regulator-boot-on
+      - regulator-min-microvolt
+      - regulator-max-microvolt
+      - regulator-init-microvolt
+
+properties:
+  silergy,vsel:
+    type: int
+    default: 0
+    enum: [0, 1]
+    description: |
+      Voltage register in use while the SoC runs, the one the VSEL pin level
+      selects: 0 for VSEL0, 1 for VSEL1.

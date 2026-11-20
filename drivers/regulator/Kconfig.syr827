@@ -1,0 +1,17 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config REGULATOR_SYR827
+	bool "Silergy SYR827 regulator driver"
+	default y
+	depends on DT_HAS_SILERGY_SYR827_ENABLED
+	select I2C
+	help
+	  Driver for the Silergy SYR827 step-down regulator.
+
+config REGULATOR_SYR827_INIT_PRIORITY
+	int "Silergy SYR827 regulator driver init priority"
+	default 75
+	depends on REGULATOR_SYR827
+	help
+	  Init priority of the SYR827 regulator; above the I2C bus driver.
