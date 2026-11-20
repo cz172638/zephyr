@@ -1,0 +1,11 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK808 PMIC: four buck converters, eight LDOs, two switches, an
+  RTC and a 32 kHz clock output, on I2C. The functions are child nodes; the
+  PMIC node itself has no driver.
+
+compatible: "rockchip,rk808"
+
+include: i2c-device.yaml

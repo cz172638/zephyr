@@ -1,0 +1,36 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK808 PMIC regulators, a child node of the "rockchip,rk808" PMIC
+  node. Regulators are child nodes named as in the Linux binding; DCDC_REG1
+  and DCDC_REG2 (712.5-1500 mV in 12.5 mV steps) are supported.
+
+  pmic@1b {
+    compatible = "rockchip,rk808";
+    reg = <0x1b>;
+
+    regulators {
+      compatible = "rockchip,rk808-regulator";
+
+      DCDC_REG2 {
+        regulator-always-on;
+        regulator-min-microvolt = <750000>;
+        regulator-max-microvolt = <1350000>;
+      };
+    };
+  };
+
+compatible: "rockchip,rk808-regulator"
+
+include: base.yaml
+
+child-binding:
+  include:
+    - name: regulator.yaml
+      property-allowlist:
+        - regulator-always-on
+        - regulator-boot-on
+        - regulator-min-microvolt
+        - regulator-max-microvolt
+        - regulator-init-microvolt
