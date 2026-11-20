@@ -16,6 +16,15 @@
  *   pcictl rd     <bdf> <bar> <off> [count]    BAR read
  *   pcictl wr     <bdf> <bar> <off> <val>...   BAR write
  *   pcictl dump   <bdf> <bar> [off [len]]      BAR hex dump
+ *   pcictl snap   <bdf> cfg|<bar> [file]       raw snapshot: 4 KiB config space or a
+ *                                              whole BAR (32-bit reads), to file or stdout
+ *   pcictl diff   [-p page] <a> <b>            dwords that differ between two snapshots;
+ *                                              -p 4096: also page and offset in it (e.g.
+ *                                              a PLX switch BAR0, port N at N * 0x1000)
+ *   pcictl plx    <upstream> eeprom [status | read [file] | decode <file>]
+ *                 PLX/Broadcom PEX 8000 switch EEPROM through the controller at
+ *                 260h of port 0 in BAR0 of the upstream port, read only: status, raw dump, the register
+ *                 load list (port, register, value)
  *   pcictl epf    <bdf> [bar]                  pci-epf-test registers
  *   pcictl link   <bdf> [status]               link speed, width, DLLLA, training, ASPM
  *   pcictl link   <port> retrain | disable | enable | speed <1..6> | aspm off|l0s|l1|l0s+l1
@@ -96,6 +105,8 @@ static void __attribute__((noreturn)) usage(void)
 	      "       cfg <bdf> <off> [val] |\n"
 	      "       cmd <bdf> [+-mem +-bme +-io +-serr +-intx] | rd <bdf> <bar> <off> [count] |\n"
 	      "       wr <bdf> <bar> <off> <val>... | dump <bdf> <bar> [off [len]] |\n"
+	      "       snap <bdf> cfg|<bar> [file] | diff [-p page] <a> <b> |\n"
+	      "       plx <upstream> eeprom [status | read [file] | decode <file>] |\n"
 	      "       epf <bdf> [bar] | link <bdf> [status | retrain | disable | enable |\n"
 	      "       speed <1..6> | aspm off|l0s|l1|l0s+l1] | hotreset <bridge> [ms] |\n"
 	      "       ports <bridge> | watch <bdf> [ms] | aer <bdf> [clear] |\n"
@@ -857,6 +868,299 @@ static void cmd_dump(struct pci_dev *d, int argc, char **argv)
 		}
 		putchar('\n');
 	}
+}
+
+/* --- snapshots ------------------------------------------------------------- */
+
+static FILE *out_file(const char *path)
+{
+	FILE *f = path != NULL ? fopen(path, "wb") : stdout;
+
+	if (f == NULL) {
+		die("%s: %s", path, strerror(errno));
+	}
+	return f;
+}
+
+static void cmd_snap(struct pci_dev *d, int argc, char **argv)
+{
+	FILE *f = out_file(argc > 1 ? argv[1] : NULL);
+
+	if (strcmp(argv[0], "cfg") == 0) {
+		uint8_t c[4096];
+
+		memset(c, 0xff, sizeof(c));
+		if (!pci_read_block(d, 0, c, sizeof(c))) {
+			/* not root: the first 256 bytes only */
+			if (!pci_read_block(d, 0, c, 256)) {
+				die("config read failed");
+			}
+			fprintf(stderr, "only 256 bytes of config space (not root?)\n");
+		}
+		fwrite(c, 1, sizeof(c), f);
+	} else {
+		unsigned int bar = (unsigned int)num(argv[0]);
+		struct bar_map m = bar_map(d, bar);
+
+		for (uint64_t o = 0; o < m.size; o += 4U) {
+			uint32_t v = (uint32_t)bar_rd(&m, bar, o);
+
+			fwrite(&v, 4, 1, f);
+		}
+	}
+	if (f != stdout) {
+		fclose(f);
+	}
+}
+
+static uint8_t *slurp(const char *path, size_t *len)
+{
+	FILE *f = fopen(path, "rb");
+	uint8_t *b = NULL;
+	size_t n = 0, cap = 0, r;
+
+	if (f == NULL) {
+		die("%s: %s", path, strerror(errno));
+	}
+	do {
+		if (n == cap) {
+			cap = cap != 0U ? cap * 2U : 65536U;
+			b = realloc(b, cap);
+			if (b == NULL) {
+				die("out of memory");
+			}
+		}
+		r = fread(b + n, 1, cap - n, f);
+		n += r;
+	} while (r != 0U);
+	fclose(f);
+	*len = n;
+	return b;
+}
+
+static int cmd_diff(int argc, char **argv)
+{
+	uint64_t page = 0;
+	size_t la, lb;
+	uint8_t *a, *b;
+	unsigned int n = 0;
+	int i = 0;
+
+	if (argc >= 2 && strcmp(argv[0], "-p") == 0) {
+		page = num(argv[1]);
+		i = 2;
+	}
+	if (argc - i != 2) {
+		usage();
+	}
+	a = slurp(argv[i], &la);
+	b = slurp(argv[i + 1], &lb);
+	if (la != lb) {
+		fprintf(stderr, "sizes differ: %zu, %zu; comparing the first %zu bytes\n", la, lb,
+			la < lb ? la : lb);
+	}
+	for (size_t o = 0; o + 4U <= la && o + 4U <= lb; o += 4U) {
+		uint32_t va, vb;
+
+		memcpy(&va, a + o, 4);
+		memcpy(&vb, b + o, 4);
+		if (va == vb) {
+			continue;
+		}
+		if (page != 0U) {
+			printf("%06zx [%" PRIu64 "+%03" PRIx64 "]: %08x > %08x  (^ %08x)\n", o,
+			       (uint64_t)o / page, (uint64_t)o % page, va, vb, va ^ vb);
+		} else {
+			printf("%06zx: %08x > %08x  (^ %08x)\n", o, va, vb, va ^ vb);
+		}
+		n++;
+	}
+	fprintf(stderr, "%u dwords differ\n", n);
+	free(a);
+	free(b);
+	return n != 0U;
+}
+
+/* --- PLX PEX 8000 switch EEPROM (read only) -------------------------------- */
+
+/*
+ * EEPROM controller in the registers of port 0 (the upstream port), PEX
+ * 8000 families: 260h control/status, 264h data, 26Ch third address byte.
+ * Reached through BAR0 of the upstream port (port N at N * 1000h): in
+ * config space the device-specific registers read as 0 on a PEX 8748.
+ * 260h: [12:0] dword index (bit 13 of it in [20]), [15:13] command, [16]
+ * EEPROM present, [17] CRC error, [18] busy, [19] CRC error at power up
+ * (write 1 to clear), [23:22] address width in bytes, [24] EEPROM not
+ * ready and [30:28] write in progress (valid after a read-status command).
+ * Contents: dword 0 = [7:0] 5Ah signature, [31:16] byte count of the load
+ * list that follows; entries of 6 bytes: [15:0] (register >> 2) | (port
+ * << 10), then the 32-bit value.
+ */
+#define PLX_EE_CTRL       0x260
+#define PLX_EE_DATA       0x264
+#define PLX_EE_PRESENT    (1U << 16)
+#define PLX_EE_CRC_ERR    (1U << 17)
+#define PLX_EE_BUSY       (1U << 18)
+#define PLX_EE_CRC_PWRUP  (1U << 19)
+#define PLX_EE_NOT_READY  (1U << 24)
+#define PLX_EE_WR_BUSY    (7U << 28)
+#define PLX_EE_CMD_SHIFT  13
+#define PLX_EE_CMD_READ   3U
+#define PLX_EE_CMD_STATUS 5U
+/* bits written back: everything but the command, the index and the status bits */
+#define PLX_EE_KEEP       ~((7U << 13) | 0x1fffU | (1U << 20) | PLX_EE_CRC_PWRUP | \
+			    PLX_EE_NOT_READY | PLX_EE_WR_BUSY)
+
+static struct bar_map plx_bar;
+
+static uint32_t plx_rd(uint32_t off)
+{
+	return (uint32_t)bar_rd(&plx_bar, 0, off);
+}
+
+static void plx_wr(uint32_t off, uint32_t v)
+{
+	bar_wr(&plx_bar, 0, off, v);
+}
+
+static bool plx_ee_cmd(uint32_t v)
+{
+	plx_wr(PLX_EE_CTRL, v);
+	for (int i = 0; i < 100000; i++) {
+		if ((plx_rd(PLX_EE_CTRL) & PLX_EE_BUSY) == 0U) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool plx_ee_idle(void)
+{
+	uint32_t v = plx_rd(PLX_EE_CTRL) & PLX_EE_KEEP;
+
+	for (int i = 0; i < 10000; i++) {
+		if (!plx_ee_cmd(v | (PLX_EE_CMD_STATUS << PLX_EE_CMD_SHIFT))) {
+			return false;
+		}
+		if ((plx_rd(PLX_EE_CTRL) & (PLX_EE_NOT_READY | PLX_EE_WR_BUSY)) == 0U) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static unsigned int plx_ee_width(uint32_t ctl)
+{
+	unsigned int w = (ctl >> 22) & 3U;
+
+	return w != 0U ? w : 1U;
+}
+
+static uint32_t plx_ee_read(uint32_t off)
+{
+	uint32_t ctl = plx_rd(PLX_EE_CTRL);
+	uint32_t idx = off / 4U;
+
+	if (off >= (1UL << (8U * plx_ee_width(ctl)))) {
+		die("eeprom offset 0x%x beyond %u-byte addressing", off, plx_ee_width(ctl));
+	}
+	if (plx_ee_width(ctl) == 3U) {
+		plx_wr(PLX_EE_CTRL + 0xc, (plx_rd(PLX_EE_CTRL + 0xc) & ~0xffU) | ((off >> 16) & 0xffU));
+	}
+	if (!plx_ee_idle()) {
+		die("eeprom controller busy (260h = %08x)", plx_rd(PLX_EE_CTRL));
+	}
+	ctl = (plx_rd(PLX_EE_CTRL) & PLX_EE_KEEP) | (idx & 0x1fffU) | (((idx >> 13) & 1U) << 20) |
+	      (PLX_EE_CMD_READ << PLX_EE_CMD_SHIFT);
+	if (!plx_ee_cmd(ctl)) {
+		die("eeprom read 0x%x timed out", off);
+	}
+	return plx_rd(PLX_EE_DATA);
+}
+
+static void plx_decode(const uint8_t *b, size_t len)
+{
+	uint32_t hdr, count;
+
+	if (len < 4U) {
+		die("eeprom image too short");
+	}
+	memcpy(&hdr, b, 4);
+	count = hdr >> 16;
+	printf("signature %02x%s, load list %u bytes (%u registers)\n", hdr & 0xffU,
+	       (hdr & 0xffU) == 0x5aU ? "" : " (not 5a: not loaded)", count, count / 6U);
+	if ((hdr & 0xffU) != 0x5aU) {
+		return;
+	}
+	for (size_t o = 4; o + 6U <= 4U + count && o + 6U <= len; o += 6U) {
+		uint16_t a = (uint16_t)(b[o] | (b[o + 1] << 8));
+		uint32_t v;
+
+		memcpy(&v, b + o + 2, 4);
+		printf("  port %2u  %03xh = %08x\n", a >> 10, (unsigned int)(a & 0x3ffU) << 2, v);
+	}
+	if (4U + count < len) {
+		printf("%zu bytes after the load list\n", len - 4U - count);
+	}
+}
+
+static void cmd_plx(struct pci_dev *d, int argc, char **argv)
+{
+	const char *op = argc > 1 ? argv[1] : "status";
+	uint32_t ctl;
+
+	if (argc < 1 || strcmp(argv[0], "eeprom") != 0) {
+		usage();
+	}
+	if (strcmp(op, "decode") == 0) {
+		size_t len;
+		uint8_t *b;
+
+		if (argc < 3) {
+			usage();
+		}
+		b = slurp(argv[2], &len);
+		plx_decode(b, len);
+		free(b);
+		return;
+	}
+	if (pci_read_word(d, PCI_VENDOR_ID) != 0x10b5) {
+		die("not a PLX device (vendor %04x)", pci_read_word(d, PCI_VENDOR_ID));
+	}
+	width = 32;
+	plx_bar = bar_map(d, 0);
+	ctl = plx_rd(PLX_EE_CTRL);
+	if (strcmp(op, "status") == 0) {
+		printf("260h %08x: %s, %u-byte addressing%s%s\n", ctl,
+		       (ctl & PLX_EE_PRESENT) ? "EEPROM present" : "no EEPROM",
+		       plx_ee_width(ctl), (ctl & PLX_EE_CRC_ERR) ? ", CRC error" : "",
+		       (ctl & PLX_EE_BUSY) ? ", busy" : "");
+		return;
+	}
+	if (strcmp(op, "read") == 0) {
+		FILE *f = out_file(argc > 2 ? argv[2] : NULL);
+		uint32_t hdr, len;
+
+		if ((ctl & PLX_EE_PRESENT) == 0U) {
+			die("no EEPROM (260h = %08x)", ctl);
+		}
+		hdr = plx_ee_read(0);
+		len = (hdr & 0xffU) == 0x5aU ? 4U + (hdr >> 16) : 1024U;
+		len = (len + 3U) & ~3U;
+		fwrite(&hdr, 4, 1, f);
+		for (uint32_t o = 4; o < len; o += 4U) {
+			uint32_t v = plx_ee_read(o);
+
+			fwrite(&v, 4, 1, f);
+		}
+		if (f != stdout) {
+			fclose(f);
+		}
+		fprintf(stderr, "%u bytes%s\n", len,
+			(hdr & 0xffU) == 0x5aU ? "" : " (no 5Ah signature: the first 1 KiB)");
+		return;
+	}
+	usage();
 }
 
 /* --- link, switch ports, errors ------------------------------------------- */
@@ -2411,6 +2715,9 @@ int main(int argc, char **argv)
 		sysfs_write("/sys/bus/pci/rescan", "1");
 		return 0;
 	}
+	if (strcmp(c, "diff") == 0) {
+		return cmd_diff(argc - 1, argv + 1);
+	}
 
 	sigaction(SIGBUS, &sa, NULL);
 	pacc = pci_alloc();
@@ -2443,6 +2750,10 @@ int main(int argc, char **argv)
 			cmd_wr(d, n, a);
 		} else if (strcmp(c, "dump") == 0 && n >= 1) {
 			cmd_dump(d, n, a);
+		} else if (strcmp(c, "snap") == 0 && n >= 1) {
+			cmd_snap(d, n, a);
+		} else if (strcmp(c, "plx") == 0 && n >= 1) {
+			cmd_plx(d, n, a);
 		} else if (strcmp(c, "epf") == 0) {
 			cmd_epf(d, n, a);
 		} else if (strcmp(c, "link") == 0) {
