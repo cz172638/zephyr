@@ -11,11 +11,9 @@
  * measurement runs in a thread pinned to one CPU, so the shell thread
  * moving between CPUs does not mix two of them.
  *
- * "cpu freq": core clocks of both clusters. Until there are regulator
- * drivers the core supplies are read straight from the ROCK Pi 4 PMICs
- * (RK808 BUCK2 vdd_cpu_l, SYR827 vdd_cpu_b on I2C0) and a rate is refused
- * when its operating point (Linux rk3399.dtsi) needs more than the supply
- * gives now.
+ * "cpu freq": core clocks of both clusters at the operating points of the
+ * Linux rk3399.dtsi, with the core supply (devicetree labels vdd_cpu_l and
+ * vdd_cpu_b) set to the voltage of the point.
  */
 
 #include <stdlib.h>
@@ -25,7 +23,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
-#include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/regulator.h>
 #include <zephyr/dt-bindings/clock/rk3399-cru.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
@@ -396,79 +394,83 @@ static const struct opp opp_big[] = {
 static const struct cluster {
 	const char *name;
 	uint32_t clk;
+	const struct device *supply;
 	const struct opp *opp;
 	size_t nopp;
 } clusters[] = {
-	{"little", ARMCLKL, opp_little, ARRAY_SIZE(opp_little)},
-	{"big", ARMCLKB, opp_big, ARRAY_SIZE(opp_big)},
+	{"little", ARMCLKL, DEVICE_DT_GET_OR_NULL(DT_NODELABEL(vdd_cpu_l)), opp_little,
+	 ARRAY_SIZE(opp_little)},
+	{"big", ARMCLKB, DEVICE_DT_GET_OR_NULL(DT_NODELABEL(vdd_cpu_b)), opp_big,
+	 ARRAY_SIZE(opp_big)},
 };
 
-#define RK808_ADDR          0x1bU
-#define RK808_BUCK2_ON_VSEL 0x33U
-#define SYR827_ADDR         0x40U
-#define SYR827_VSEL0        0x00U
-#define SYR827_VSEL1        0x01U
-
-/* 712.5 mV + 12.5 mV * VSEL[5:0] on both; uV, or 0 when not readable */
-static uint32_t vsel_uv(const struct device *i2c, uint8_t addr, uint8_t reg)
+/* supply voltage in uV, 0 when there is no supply regulator or it can't be read */
+static int32_t supply_uv(const struct cluster *c)
 {
-	uint8_t v;
+	int32_t uv;
 
-	if (i2c_reg_read_byte(i2c, addr, reg, &v) != 0) {
+	if (c->supply == NULL || !device_is_ready(c->supply) ||
+	    regulator_get_voltage(c->supply, &uv) != 0) {
 		return 0;
 	}
-	return 712500U + 12500U * (v & 0x3fU);
-}
-
-/*
- * vdd_cpu_b: the VSEL pin picks VSEL0 or VSEL1; take the lower of the two,
- * the SoC never sees less than that.
- */
-static uint32_t core_uv(uint32_t clk)
-{
-#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(i2c0)) && defined(CONFIG_I2C)
-	const struct device *i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
-	uint32_t a, b;
-
-	if (!device_is_ready(i2c)) {
-		return 0;
-	}
-	if (clk == ARMCLKL) {
-		return vsel_uv(i2c, RK808_ADDR, RK808_BUCK2_ON_VSEL);
-	}
-	a = vsel_uv(i2c, SYR827_ADDR, SYR827_VSEL0);
-	b = vsel_uv(i2c, SYR827_ADDR, SYR827_VSEL1);
-	return (a == 0U || b == 0U) ? 0U : MIN(a, b);
-#else
-	ARG_UNUSED(clk);
-	return 0;
-#endif
+	return uv;
 }
 
 static void freq_show(const struct shell *sh, const struct device *cru, const struct cluster *c)
 {
-	uint32_t hz = 0, uv = core_uv(c->clk);
-	uint16_t max = 0;
+	uint32_t hz = 0;
+	int32_t uv = supply_uv(c);
 
 	(void)clock_control_get_rate(cru, (clock_control_subsys_t)(uintptr_t)c->clk, &hz);
-	for (size_t i = 0; i < c->nopp; i++) {
-		if ((uint32_t)c->opp[i].mv * 1000U <= uv) {
-			max = c->opp[i].mhz;
+	if (uv == 0) {
+		shell_print(sh, "%-6s %4u MHz, supply not readable", c->name, hz / 1000000U);
+	} else {
+		shell_print(sh, "%-6s %4u MHz, supply %d mV", c->name, hz / 1000000U, uv / 1000);
+	}
+}
+
+/*
+ * Voltage up before the clock, down after it, so the cluster never runs
+ * faster than its supply allows.
+ */
+static int freq_set(const struct shell *sh, const struct device *cru, const struct cluster *c,
+		    const struct opp *o)
+{
+	int32_t uv = supply_uv(c), want = (int32_t)o->mv * 1000;
+	int ret;
+
+	if (uv == 0) {
+		shell_error(sh, "%s: supply not ready", c->name);
+		return -ENODEV;
+	}
+	if (want > uv) {
+		ret = regulator_set_voltage(c->supply, want, want);
+		if (ret != 0) {
+			shell_error(sh, "supply %d mV: %d", o->mv, ret);
+			return ret;
 		}
 	}
-	shell_fprintf(sh, SHELL_NORMAL, "%-6s %4u MHz", c->name, hz / 1000000U);
-	if (uv == 0U) {
-		shell_print(sh, ", supply not readable");
-	} else {
-		shell_print(sh, ", supply %u mV, up to %u MHz at it", uv / 1000U, max);
+	ret = clock_control_set_rate(cru, (clock_control_subsys_t)(uintptr_t)c->clk,
+				     (clock_control_subsys_rate_t)(uintptr_t)(o->mhz * 1000000U));
+	if (ret != 0) {
+		shell_error(sh, "clock %u MHz: %d", o->mhz, ret);
+		return ret;
 	}
+	if (want < uv) {
+		ret = regulator_set_voltage(c->supply, want, want);
+		if (ret != 0) {
+			shell_error(sh, "supply %d mV: %d", o->mv, ret);
+			return ret;
+		}
+	}
+	return 0;
 }
 
 static int cmd_cpu_freq(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *cru = DEVICE_DT_GET(DT_NODELABEL(cru_clk));
 	const struct cluster *c = NULL;
-	uint32_t mhz, uv;
+	uint32_t mhz;
 	char *end;
 	int ret;
 
@@ -498,24 +500,17 @@ static int cmd_cpu_freq(const struct shell *sh, size_t argc, char **argv)
 	}
 	for (size_t i = 0; i < c->nopp; i++) {
 		if (c->opp[i].mhz == mhz) {
-			uv = core_uv(c->clk);
-			if ((uint32_t)c->opp[i].mv * 1000U > uv) {
-				shell_error(sh, "%u MHz needs %u mV, the supply gives %u mV", mhz,
-					    c->opp[i].mv, uv / 1000U);
-				return -ERANGE;
+			ret = freq_set(sh, cru, c, &c->opp[i]);
+			if (ret == 0) {
+				freq_show(sh, cru, c);
 			}
-			ret = clock_control_set_rate(
-				cru, (clock_control_subsys_t)(uintptr_t)c->clk,
-				(clock_control_subsys_rate_t)(uintptr_t)(mhz * 1000000U));
-			if (ret != 0) {
-				shell_error(sh, "set rate: %d", ret);
-				return ret;
-			}
-			freq_show(sh, cru, c);
-			return 0;
+			return ret;
 		}
 	}
-	shell_error(sh, "%u MHz: not an operating point of the %s cluster", mhz, c->name);
+	shell_error(sh, "%u MHz: not an operating point of the %s cluster:", mhz, c->name);
+	for (size_t i = 0; i < c->nopp; i++) {
+		shell_print(sh, "  %4u MHz at %u mV", c->opp[i].mhz, c->opp[i].mv);
+	}
 	return -EINVAL;
 }
 #endif
