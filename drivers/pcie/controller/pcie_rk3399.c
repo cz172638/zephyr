@@ -40,6 +40,8 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
+#include <soc.h>
+
 #include "../pcie_rk3399_port.h"
 
 LOG_MODULE_REGISTER(pcie_rk3399_rc, LOG_LEVEL_INF);
@@ -225,7 +227,10 @@ static uint32_t rk_rc_conf_read(const struct device *dev, pcie_bdf_t bdf, unsign
 	/* set by every link down: clear it before the access, as Linux does */
 	cwr(dev, AT_LINKDOWN, 0U);
 	cfg_region_type(dev, type1 ? OB_TYPE_CFG1 : OB_TYPE_CFG0);
-	v = sys_read32(data->cfg + ecam_off(bdf, reg));
+	/* Unsupported Request (nothing at that address) aborts the load */
+	if (rk3399_probe_read32(data->cfg + ecam_off(bdf, reg), &v) != 0) {
+		v = 0xffffffffU;
+	}
 	k_spin_unlock(&data->lock, key);
 	return v;
 }
