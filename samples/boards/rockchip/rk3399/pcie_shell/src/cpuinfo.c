@@ -13,7 +13,9 @@
  *
  * "cpu freq": core clocks of both clusters at the operating points of the
  * Linux rk3399.dtsi, with the core supply (devicetree labels vdd_cpu_l and
- * vdd_cpu_b) set to the voltage of the point.
+ * vdd_cpu_b) set to the voltage of the point. "cpu freq save" keeps the
+ * current points in settings; they are applied at boot, before the other
+ * CPUs start, except after a watchdog reset.
  */
 
 #include <stdlib.h>
@@ -25,8 +27,13 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/dt-bindings/clock/rk3399-cru.h>
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/device_mmio.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
 #define SYSREG(name)                                                                               \
@@ -429,6 +436,16 @@ static void freq_show(const struct shell *sh, const struct device *cru, const st
 	}
 }
 
+/* errors to the shell, or to the console at boot (sh == NULL) */
+#define freq_err(sh, fmt, ...)                                                                     \
+	do {                                                                                       \
+		if ((sh) != NULL) {                                                                \
+			shell_error(sh, fmt, ##__VA_ARGS__);                                       \
+		} else {                                                                           \
+			printk("cpu freq: " fmt "\n", ##__VA_ARGS__);                              \
+		}                                                                                  \
+	} while (false)
+
 /*
  * Voltage up before the clock, down after it, so the cluster never runs
  * faster than its supply allows.
@@ -440,31 +457,135 @@ static int freq_set(const struct shell *sh, const struct device *cru, const stru
 	int ret;
 
 	if (uv == 0) {
-		shell_error(sh, "%s: supply not ready", c->name);
+		freq_err(sh, "%s: supply not ready", c->name);
 		return -ENODEV;
 	}
 	if (want > uv) {
 		ret = regulator_set_voltage(c->supply, want, want);
 		if (ret != 0) {
-			shell_error(sh, "supply %d mV: %d", o->mv, ret);
+			freq_err(sh, "%s: supply %u mV: %d", c->name, o->mv, ret);
 			return ret;
 		}
 	}
 	ret = clock_control_set_rate(cru, (clock_control_subsys_t)(uintptr_t)c->clk,
 				     (clock_control_subsys_rate_t)(uintptr_t)(o->mhz * 1000000U));
 	if (ret != 0) {
-		shell_error(sh, "clock %u MHz: %d", o->mhz, ret);
+		freq_err(sh, "%s: clock %u MHz: %d", c->name, o->mhz, ret);
 		return ret;
 	}
 	if (want < uv) {
 		ret = regulator_set_voltage(c->supply, want, want);
 		if (ret != 0) {
-			shell_error(sh, "supply %d mV: %d", o->mv, ret);
+			freq_err(sh, "%s: supply %u mV: %d", c->name, o->mv, ret);
 			return ret;
 		}
 	}
 	return 0;
 }
+
+static const struct opp *opp_find(const struct cluster *c, uint32_t mhz)
+{
+	for (size_t i = 0; i < c->nopp; i++) {
+		if (c->opp[i].mhz == mhz) {
+			return &c->opp[i];
+		}
+	}
+	return NULL;
+}
+
+#if defined(CONFIG_SETTINGS)
+#define FREQ_KEY "cpufreq"
+
+/* settings: cpufreq/<cluster> = MHz (uint16_t) */
+static int freq_load_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+			void *param)
+{
+	uint16_t *mhz = param;
+
+	for (size_t i = 0; i < ARRAY_SIZE(clusters); i++) {
+		if (key != NULL && strcmp(key, clusters[i].name) == 0 && len == sizeof(mhz[i])) {
+			(void)read_cb(cb_arg, &mhz[i], sizeof(mhz[i]));
+		}
+	}
+	return 0;
+}
+
+static int freq_save(const struct shell *sh, const struct device *cru, bool clear)
+{
+	char key[24];
+	int ret = 0;
+
+	for (size_t i = 0; i < ARRAY_SIZE(clusters) && ret == 0; i++) {
+		const struct cluster *c = &clusters[i];
+		uint32_t hz = 0;
+		uint16_t mhz;
+
+		(void)snprintk(key, sizeof(key), FREQ_KEY "/%s", c->name);
+		if (clear) {
+			ret = settings_delete(key);
+			continue;
+		}
+		(void)clock_control_get_rate(cru, (clock_control_subsys_t)(uintptr_t)c->clk, &hz);
+		mhz = (uint16_t)(hz / 1000000U);
+		if (opp_find(c, mhz) == NULL) {
+			shell_error(sh, "%s: %u MHz is not an operating point", c->name, mhz);
+			return -EINVAL;
+		}
+		ret = settings_save_one(key, &mhz, sizeof(mhz));
+		if (ret == 0) {
+			shell_print(sh, "%s %u MHz from the next boot", c->name, mhz);
+		}
+	}
+	if (ret != 0) {
+		shell_error(sh, "settings: %d", ret);
+	} else if (clear) {
+		shell_print(sh, "boot loader clocks from the next boot");
+	}
+	return ret;
+}
+
+#define CRU_BASE           0xff760000UL
+#define CRU_GLB_RST_ST     0x514U
+#define GLB_RST_ST_WDT_MSK (BIT(4) | BIT(5))
+
+/*
+ * APPLICATION level: after the regulators (POST_KERNEL) and the eMMC
+ * settings storage, before the secondary CPUs start (SMP level). After a
+ * watchdog reset the saved points are skipped, in case they hung the board.
+ */
+static int freq_restore(void)
+{
+	const struct device *cru = DEVICE_DT_GET(DT_NODELABEL(cru_clk));
+	uint16_t mhz[ARRAY_SIZE(clusters)] = {0};
+	mm_reg_t rst;
+
+	if (settings_subsys_init() != 0 ||
+	    settings_load_subtree_direct(FREQ_KEY, freq_load_cb, mhz) != 0) {
+		return 0;
+	}
+	device_map(&rst, CRU_BASE, 0x1000, K_MEM_CACHE_NONE);
+	for (size_t i = 0; i < ARRAY_SIZE(clusters); i++) {
+		const struct opp *o = opp_find(&clusters[i], mhz[i]);
+
+		if (mhz[i] == 0U) {
+			continue;
+		}
+		if ((sys_read32(rst + CRU_GLB_RST_ST) & GLB_RST_ST_WDT_MSK) != 0U) {
+			printk("cpu freq: watchdog reset, saved %s %u MHz not applied\n",
+			       clusters[i].name, mhz[i]);
+		} else if (o == NULL) {
+			printk("cpu freq: saved %s %u MHz is not an operating point\n",
+			       clusters[i].name, mhz[i]);
+		} else if (freq_set(NULL, cru, &clusters[i], o) == 0) {
+			printk("cpu freq: %s %u MHz at %u mV (saved)\n", clusters[i].name, o->mhz,
+			       o->mv);
+		}
+	}
+	return 0;
+}
+
+SYS_INIT(freq_restore, APPLICATION, 0);
+#endif
 
 static int cmd_cpu_freq(const struct shell *sh, size_t argc, char **argv)
 {
@@ -480,13 +601,18 @@ static int cmd_cpu_freq(const struct shell *sh, size_t argc, char **argv)
 		}
 		return 0;
 	}
+#if defined(CONFIG_SETTINGS)
+	if (strcmp(argv[1], "save") == 0 || strcmp(argv[1], "clear") == 0) {
+		return freq_save(sh, cru, strcmp(argv[1], "clear") == 0);
+	}
+#endif
 	for (size_t i = 0; i < ARRAY_SIZE(clusters); i++) {
 		if (strcmp(argv[1], clusters[i].name) == 0) {
 			c = &clusters[i];
 		}
 	}
 	if (c == NULL) {
-		shell_error(sh, "cpu freq [little|big [MHz]]");
+		shell_error(sh, "cpu freq [little|big [MHz] | save | clear]");
 		return -EINVAL;
 	}
 	if (argc == 2) {
@@ -498,14 +624,12 @@ static int cmd_cpu_freq(const struct shell *sh, size_t argc, char **argv)
 		shell_error(sh, "MHz: %s", argv[2]);
 		return -EINVAL;
 	}
-	for (size_t i = 0; i < c->nopp; i++) {
-		if (c->opp[i].mhz == mhz) {
-			ret = freq_set(sh, cru, c, &c->opp[i]);
-			if (ret == 0) {
-				freq_show(sh, cru, c);
-			}
-			return ret;
+	if (opp_find(c, mhz) != NULL) {
+		ret = freq_set(sh, cru, c, opp_find(c, mhz));
+		if (ret == 0) {
+			freq_show(sh, cru, c);
 		}
+		return ret;
 	}
 	shell_error(sh, "%u MHz: not an operating point of the %s cluster:", mhz, c->name);
 	for (size_t i = 0; i < c->nopp; i++) {
@@ -521,7 +645,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_cpu,
 		      "[ms] [cpu]: pending interrupt with IRQs masked, exception rate (all CPUs)",
 		      cmd_cpu_irq, 1, 2),
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(cru_clk))
-	SHELL_CMD_ARG(freq, NULL, "[little|big [MHz]]: core clocks and supplies, set a clock",
+	SHELL_CMD_ARG(freq, NULL, "[little|big [MHz] | save | clear]: core clocks and supplies",
 		      cmd_cpu_freq, 1, 2),
 #endif
 	SHELL_SUBCMD_SET_END);
