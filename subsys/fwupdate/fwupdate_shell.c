@@ -17,6 +17,9 @@
  * "nc -N <board> 6969 < flash-image.bin"; the result is sent back on the
  * connection.
  *
+ * "... file <path>" (ymodem, xmodem, tcp) stores the received file on a
+ * file system instead, e.g. images another board boots from.
+ *
  * The whole image is received into RAM first, so an aborted transfer does
  * not touch the flash. Programming erases the first erase unit (the boot
  * header) first and writes it last: if power fails in between, the boot
@@ -37,6 +40,10 @@
 #include <zephyr/sys/ring_buffer.h>
 
 #include "ymodem.h"
+
+#if defined(CONFIG_FILE_SYSTEM)
+#include <zephyr/fs/fs.h>
+#endif
 
 #if defined(CONFIG_FWUPDATE_PROGRAM_EXTERNAL)
 /*
@@ -110,6 +117,7 @@ static struct fwupdate {
 	bool xmodem;
 	bool cut;        /* boot disk: data past FW_SIZE dropped */
 	char name[64];
+	char path[64];   /* "file <path>": store there instead of programming */
 	size_t size;     /* announced by the sender, 0 = unknown */
 	size_t received; /* actual file length */
 	atomic_t busy;
@@ -603,6 +611,50 @@ static int fw_program(const struct shell *sh, size_t len)
 #endif
 }
 
+/* "file <path>": the received bytes into a file, no image checks */
+static int fw_save_file(const struct shell *sh, size_t len)
+{
+#if defined(CONFIG_FILE_SYSTEM)
+	struct fs_file_t f;
+	ssize_t n;
+	int ret;
+
+	fs_file_t_init(&f);
+	ret = fs_open(&f, fw.path, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
+	if (ret != 0) {
+		shell_error(sh, "%s: open %d", fw.path, ret);
+		return ret;
+	}
+	n = fs_write(&f, fw_buf, len);
+	ret = fs_close(&f);
+	if (n != (ssize_t)len || ret != 0) {
+		shell_error(sh, "%s: write %d, close %d", fw.path, (int)n, ret);
+		return n < 0 ? (int)n : -EIO;
+	}
+	shell_print(sh, "%s: %zu bytes", fw.path, len);
+	return 0;
+#else
+	ARG_UNUSED(len);
+	shell_error(sh, "no file system");
+	return -ENOTSUP;
+#endif
+}
+
+/* "dry", "file <path>", other words left to the caller (*i stays) */
+static bool fw_arg(size_t argc, char **argv, size_t *i)
+{
+	if (strcmp(argv[*i], "dry") == 0) {
+		fw.dry = true;
+		return true;
+	}
+	if (strcmp(argv[*i], "file") == 0 && *i + 1 < argc) {
+		strncpy(fw.path, argv[++*i], sizeof(fw.path) - 1);
+		fw.path[sizeof(fw.path) - 1] = '\0';
+		return true;
+	}
+	return false;
+}
+
 static const char *fw_where(void)
 {
 	if (fw_use_disk()) {
@@ -784,6 +836,10 @@ static void fw_worker(void *p1, void *p2, void *p3)
 		shell_print(sh, "(XMODEM: padded by the sender to whole blocks, "
 				"the padding is written too)");
 	}
+	if (fw.path[0] != '\0') {
+		(void)fw_save_file(sh, fw.received);
+		goto done;
+	}
 
 	if (fw_check(sh, fw.received) < 0) {
 		goto done;
@@ -904,6 +960,12 @@ static void fw_tcp_worker(void *p1, void *p2, void *p3)
 	shell_print(sh, "%s", msg);
 	fw_reply(conn, msg);
 
+	if (fw.path[0] != '\0') {
+		ret = fw_save_file(sh, fw.received);
+		fw_reply(conn, ret == 0 ? "fwupdate: file stored\n" : "fwupdate: FAILED\n");
+		goto done;
+	}
+
 	if (fw_check(sh, fw.received) < 0) {
 		fw_reply(conn, "fwupdate: image rejected\n");
 		goto done;
@@ -938,12 +1000,11 @@ static int cmd_tcp(const struct shell *sh, size_t argc, char **argv)
 
 	fw.sh = sh;
 	fw.dry = false;
+	fw.path[0] = '\0';
 	fw.size = 0;
 	fw.received = 0;
 	for (size_t i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "dry") == 0) {
-			fw.dry = true;
-		} else {
+		if (!fw_arg(argc, argv, &i)) {
 			port = strtoul(argv[i], NULL, 0);
 		}
 	}
@@ -951,8 +1012,8 @@ static int cmd_tcp(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "%s: %u KiB. Waiting %d s on TCP port %u, e.g.",
 		    FW_NAME, (unsigned int)(FW_SIZE / 1024),
 		    CONFIG_FWUPDATE_TCP_ACCEPT_TIMEOUT, (unsigned int)port);
-	shell_print(sh, "  nc -N <board> %u < flash-image.bin%s", (unsigned int)port,
-		    fw.dry ? "  (dry run)" : "");
+	shell_print(sh, "  nc -N <board> %u < %s%s", (unsigned int)port,
+		    fw.path[0] != '\0' ? "file" : "flash-image.bin", fw.dry ? "  (dry run)" : "");
 
 	k_thread_create(&fw_thread, fw_stack, K_THREAD_STACK_SIZEOF(fw_stack), fw_tcp_worker,
 			(void *)port, NULL, NULL, CONFIG_FWUPDATE_THREAD_PRIORITY, 0, K_NO_WAIT);
@@ -971,7 +1032,15 @@ static int fw_serial_start(const struct shell *sh, size_t argc, char **argv, boo
 	}
 
 	fw.sh = sh;
-	fw.dry = (argc > 1 && strcmp(argv[1], "dry") == 0);
+	fw.dry = false;
+	fw.path[0] = '\0';
+	for (size_t i = 1; i < argc; i++) {
+		if (!fw_arg(argc, argv, &i)) {
+			atomic_clear(&fw.busy);
+			shell_error(sh, "[dry] [file <path>]");
+			return -EINVAL;
+		}
+	}
 	fw.xmodem = xmodem;
 	fw.cut = false;
 	fw.size = 0;
@@ -1304,15 +1373,18 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	fwupdate_cmds,
 	IF_ENABLED(CONFIG_FWUPDATE_YMODEM,
 		   (SHELL_CMD_ARG(ymodem, NULL,
-				  "[dry]: receive an image with YMODEM and write it to the "
-				  "firmware partition",
-				  cmd_ymodem, 1, 1),
+				  "[dry] [file <path>]: receive an image with YMODEM and write it "
+				  "to the firmware partition, or store it in a file",
+				  cmd_ymodem, 1, 3),
 		    SHELL_CMD_ARG(xmodem, NULL,
-				  "[dry]: the same with XMODEM / XMODEM-1K (CRC or checksum)",
-				  cmd_xmodem, 1, 1),))
+				  "[dry] [file <path>]: the same with XMODEM / XMODEM-1K (CRC or "
+				  "checksum)",
+				  cmd_xmodem, 1, 3),))
 	IF_ENABLED(CONFIG_FWUPDATE_TCP,
-		   (SHELL_CMD_ARG(tcp, NULL, "[port] [dry]: receive an image over one TCP connection",
-				  cmd_tcp, 1, 2),))
+		   (SHELL_CMD_ARG(tcp, NULL,
+				  "[port] [dry] [file <path>]: receive an image over one TCP "
+				  "connection",
+				  cmd_tcp, 1, 4),))
 	IF_ENABLED(CONFIG_FWUPDATE_DISK,
 		   (SHELL_CMD(gpt, &fw_gpt_cmds, "GPT of the SATA boot disk", NULL),))
 	SHELL_SUBCMD_SET_END);
