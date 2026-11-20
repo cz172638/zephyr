@@ -142,3 +142,12 @@ config PCIE_CTRL_SHELL
 	  root complex and endpoint controllers of any vendor; the drivers
 	  register a backend (pcie_shell_register()). Replaces the generic
 	  PCIE_SHELL, which uses the same command name.
+
+config PCIE_CTRL_SHELL_BOOT
+	bool "pcie boot: boot an endpoint over PCIe"
+	default y
+	depends on PCIE_CTRL_SHELL && PCIE_CONTROLLER && FILE_SYSTEM
+	help
+	  "pcie boot <file>...": in root complex mode, write boot images
+	  from a file system into the BAR0 of an endpoint running U-Boot SPL
+	  with CONFIG_SPL_PCI_DFU, one file per boot stage.
