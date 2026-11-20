@@ -1,0 +1,18 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config REGULATOR_RK808
+	bool "Rockchip RK808 PMIC regulator driver"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK808_REGULATOR_ENABLED
+	select I2C
+	help
+	  Driver for the DCDC_REG1 and DCDC_REG2 buck converters of the
+	  Rockchip RK808 PMIC.
+
+config REGULATOR_RK808_INIT_PRIORITY
+	int "Rockchip RK808 regulator driver init priority"
+	default 75
+	depends on REGULATOR_RK808
+	help
+	  Init priority of the RK808 regulators; above the I2C bus driver.

@@ -10,12 +10,21 @@
  * The PMU, the cache and the GIC CPU interface are per CPU: with SMP every
  * measurement runs in a thread pinned to one CPU, so the shell thread
  * moving between CPUs does not mix two of them.
+ *
+ * "cpu freq": core clocks of both clusters at the operating points of the
+ * Linux rk3399.dtsi, with the core supply (devicetree labels vdd_cpu_l and
+ * vdd_cpu_b) set to the voltage of the point.
  */
 
 #include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/arch/pmu.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/regulator.h>
+#include <zephyr/dt-bindings/clock/rk3399-cru.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/util.h>
@@ -89,7 +98,7 @@ static void pmu_setup(const struct shell *sh)
 	}
 	pmu_counter_enable_all();
 	pmu_ok = true;
-	shell_print(sh, "PMU: %u counters, core clock %u MHz (cycle counter vs. CNTVCT)",
+	shell_print(sh, "PMU: %u counters, core clock at PMU init %u MHz (cycles vs. CNTVCT)",
 		    pmu_num_counters(), arch_pmu_cpu_freq_mhz());
 }
 
@@ -367,11 +376,154 @@ static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(cru_clk))
+struct opp {
+	uint16_t mhz;
+	uint16_t mv;
+};
+
+static const struct opp opp_little[] = {
+	{408, 825}, {600, 825}, {816, 850}, {1008, 925}, {1200, 1000}, {1416, 1125},
+};
+
+static const struct opp opp_big[] = {
+	{408, 825},   {600, 825},   {816, 825},   {1008, 875},
+	{1200, 950},  {1416, 1025}, {1608, 1100}, {1800, 1200},
+};
+
+static const struct cluster {
+	const char *name;
+	uint32_t clk;
+	const struct device *supply;
+	const struct opp *opp;
+	size_t nopp;
+} clusters[] = {
+	{"little", ARMCLKL, DEVICE_DT_GET_OR_NULL(DT_NODELABEL(vdd_cpu_l)), opp_little,
+	 ARRAY_SIZE(opp_little)},
+	{"big", ARMCLKB, DEVICE_DT_GET_OR_NULL(DT_NODELABEL(vdd_cpu_b)), opp_big,
+	 ARRAY_SIZE(opp_big)},
+};
+
+/* supply voltage in uV, 0 when there is no supply regulator or it can't be read */
+static int32_t supply_uv(const struct cluster *c)
+{
+	int32_t uv;
+
+	if (c->supply == NULL || !device_is_ready(c->supply) ||
+	    regulator_get_voltage(c->supply, &uv) != 0) {
+		return 0;
+	}
+	return uv;
+}
+
+static void freq_show(const struct shell *sh, const struct device *cru, const struct cluster *c)
+{
+	uint32_t hz = 0;
+	int32_t uv = supply_uv(c);
+
+	(void)clock_control_get_rate(cru, (clock_control_subsys_t)(uintptr_t)c->clk, &hz);
+	if (uv == 0) {
+		shell_print(sh, "%-6s %4u MHz, supply not readable", c->name, hz / 1000000U);
+	} else {
+		shell_print(sh, "%-6s %4u MHz, supply %d mV", c->name, hz / 1000000U, uv / 1000);
+	}
+}
+
+/*
+ * Voltage up before the clock, down after it, so the cluster never runs
+ * faster than its supply allows.
+ */
+static int freq_set(const struct shell *sh, const struct device *cru, const struct cluster *c,
+		    const struct opp *o)
+{
+	int32_t uv = supply_uv(c), want = (int32_t)o->mv * 1000;
+	int ret;
+
+	if (uv == 0) {
+		shell_error(sh, "%s: supply not ready", c->name);
+		return -ENODEV;
+	}
+	if (want > uv) {
+		ret = regulator_set_voltage(c->supply, want, want);
+		if (ret != 0) {
+			shell_error(sh, "supply %d mV: %d", o->mv, ret);
+			return ret;
+		}
+	}
+	ret = clock_control_set_rate(cru, (clock_control_subsys_t)(uintptr_t)c->clk,
+				     (clock_control_subsys_rate_t)(uintptr_t)(o->mhz * 1000000U));
+	if (ret != 0) {
+		shell_error(sh, "clock %u MHz: %d", o->mhz, ret);
+		return ret;
+	}
+	if (want < uv) {
+		ret = regulator_set_voltage(c->supply, want, want);
+		if (ret != 0) {
+			shell_error(sh, "supply %d mV: %d", o->mv, ret);
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static int cmd_cpu_freq(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *cru = DEVICE_DT_GET(DT_NODELABEL(cru_clk));
+	const struct cluster *c = NULL;
+	uint32_t mhz;
+	char *end;
+	int ret;
+
+	if (argc == 1) {
+		for (size_t i = 0; i < ARRAY_SIZE(clusters); i++) {
+			freq_show(sh, cru, &clusters[i]);
+		}
+		return 0;
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(clusters); i++) {
+		if (strcmp(argv[1], clusters[i].name) == 0) {
+			c = &clusters[i];
+		}
+	}
+	if (c == NULL) {
+		shell_error(sh, "cpu freq [little|big [MHz]]");
+		return -EINVAL;
+	}
+	if (argc == 2) {
+		freq_show(sh, cru, c);
+		return 0;
+	}
+	mhz = strtoul(argv[2], &end, 0);
+	if (*end != '\0') {
+		shell_error(sh, "MHz: %s", argv[2]);
+		return -EINVAL;
+	}
+	for (size_t i = 0; i < c->nopp; i++) {
+		if (c->opp[i].mhz == mhz) {
+			ret = freq_set(sh, cru, c, &c->opp[i]);
+			if (ret == 0) {
+				freq_show(sh, cru, c);
+			}
+			return ret;
+		}
+	}
+	shell_error(sh, "%u MHz: not an operating point of the %s cluster:", mhz, c->name);
+	for (size_t i = 0; i < c->nopp; i++) {
+		shell_print(sh, "  %4u MHz at %u mV", c->opp[i].mhz, c->opp[i].mv);
+	}
+	return -EINVAL;
+}
+#endif
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_cpu,
 	SHELL_CMD_ARG(info, NULL, "[cpu]: the same as cpu [cpu]", cmd_cpu_info, 1, 1),
 	SHELL_CMD_ARG(irq, NULL,
 		      "[ms] [cpu]: pending interrupt with IRQs masked, exception rate (all CPUs)",
 		      cmd_cpu_irq, 1, 2),
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(cru_clk))
+	SHELL_CMD_ARG(freq, NULL, "[little|big [MHz]]: core clocks and supplies, set a clock",
+		      cmd_cpu_freq, 1, 2),
+#endif
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_ARG_REGISTER(cpu, &sub_cpu,

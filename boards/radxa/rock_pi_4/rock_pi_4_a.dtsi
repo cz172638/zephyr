@@ -77,6 +77,39 @@
 	pinctrl-names = "default";
 	clock-frequency = <I2C_BITRATE_STANDARD>;
 	status = "okay";
+
+	pmic@1b {
+		compatible = "rockchip,rk808";
+		reg = <0x1b>;
+
+		regulators {
+			compatible = "rockchip,rk808-regulator";
+
+			vdd_center: DCDC_REG1 {
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <750000>;
+				regulator-max-microvolt = <1350000>;
+			};
+
+			vdd_cpu_l: DCDC_REG2 {
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <750000>;
+				regulator-max-microvolt = <1350000>;
+			};
+		};
+	};
+
+	/* VSEL0 in use while running, as in Linux (fcs,suspend-voltage-selector = <1>) */
+	vdd_cpu_b: regulator@40 {
+		compatible = "silergy,syr827";
+		reg = <0x40>;
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <712500>;
+		regulator-max-microvolt = <1500000>;
+	};
 };
 
 /*

@@ -4,8 +4,10 @@
  *
  * Rockchip RK3399 CRU/PMUCRU clock gate controller, plus rates of the few
  * composite clocks drivers need (SPI, SDMMC, the PMU I2Cs). PLLs are left as
- * the boot loader set them (U-Boot SPL: GPLL 594 MHz, CPLL 384 MHz; TF-A:
- * PPLL 676 MHz).
+ * the boot loader set them (U-Boot SPL: GPLL 594 MHz, CPLL 384 MHz, LPLL and
+ * BPLL 600 MHz; TF-A: PPLL 676 MHz), except the cluster PLLs, which set_rate
+ * on ARMCLKL/ARMCLKB reprograms. The caller owns the core supply: the rate
+ * must be valid at the voltage the cluster runs at.
  */
 
 #define DT_DRV_COMPAT rockchip_rk3399_cru_clk
@@ -15,6 +17,7 @@
 
 #include <zephyr/arch/cpu.h>
 #include <zephyr/device.h>
+#include <zephyr/kernel.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/dt-bindings/clock/rk3399-cru.h>
 #include <zephyr/sys/device_mmio.h>
@@ -213,6 +216,112 @@ static int pmu_i2c_find(const struct device *dev, uint32_t id)
 	return -1;
 }
 
+/*
+ * Cluster core clocks: clk_core_l/b = PLL selected by CLKSEL_CON0/2[7:6]
+ * divided by [4:0] + 1. aclkm (CLKSEL_CON0/2[12:8]), atclk and pclk_dbg
+ * (CLKSEL_CON1/3[4:0] and [12:8]) divide the core clock; the values are the
+ * ones of the Linux clk-rk3399 cpuclk tables. All PLL outputs from 24 MHz
+ * with REFDIV 1 in integer mode.
+ */
+#define CRU_LPLL           0x00U
+#define CRU_BPLL           0x20U
+#define CRU_DPLL           0x40U
+#define PLL_CON3_MODE      (0x3U << 8)
+#define PLL_CON3_MODE_NORM (0x1U << 8)
+#define PLL_CON3_DSMPD     BIT(3)
+#define PLL_CON2_LOCK      BIT(31)
+#define PLL_LOCK_US        1000U
+#define HIWORD(mask, val)  (((mask) << 16) | (val))
+
+static const struct rk_armclk_rate {
+	uint16_t mhz;
+	uint8_t fbdiv;
+	uint8_t postdiv1;
+	uint8_t postdiv2;
+	uint8_t atclk; /* atclk and pclk_dbg divider - 1 */
+} rk_armclk_rates[] = {
+	{96, 64, 4, 4, 1},    {216, 72, 4, 2, 1},   {312, 52, 2, 2, 1},   {408, 68, 2, 2, 2},
+	{600, 75, 3, 1, 3},   {696, 58, 2, 1, 3},   {816, 68, 2, 1, 4},   {1008, 84, 2, 1, 5},
+	{1200, 50, 1, 1, 5},  {1416, 59, 1, 1, 6},  {1488, 62, 1, 1, 6},  {1512, 63, 1, 1, 7},
+	{1608, 67, 1, 1, 7},  {1704, 71, 1, 1, 8},  {1800, 75, 1, 1, 8},
+};
+
+static struct k_spinlock armclk_lock;
+
+static bool rk_is_armclk(const struct device *dev, uint32_t id)
+{
+	const struct clock_control_rk3399_config *cfg = dev->config;
+
+	return cfg->gate_offset == 0x300U && (id == ARMCLKL || id == ARMCLKB);
+}
+
+/* ARMCLKL: PLL LPLL, CLKSEL_CON0/1, mux 0; ARMCLKB: BPLL, CLKSEL_CON2/3, mux 1 */
+static uint32_t rk_armclk_get(const struct device *dev, uint32_t id)
+{
+	static const uint32_t mux_pll[] = {CRU_LPLL, CRU_BPLL, CRU_DPLL, CRU_GPLL};
+	uint32_t v = sys_read32(DEVICE_MMIO_GET(dev) + CRU_CLKSEL(id == ARMCLKL ? 0U : 2U));
+
+	return rk_pll_rate(dev, mux_pll[(v >> 6) & 0x3U]) / ((v & 0x1fU) + 1U);
+}
+
+static void rk_armclk_divs(mm_reg_t sel, const struct rk_armclk_rate *r, uint32_t mux)
+{
+	sys_write32(HIWORD((0x1fU << 8) | (0x3U << 6) | 0x1fU, (1U << 8) | (mux << 6)), sel);
+	sys_write32(HIWORD((0x1fU << 8) | 0x1fU, ((uint32_t)r->atclk << 8) | r->atclk), sel + 4U);
+}
+
+/*
+ * Slow mode runs the cluster from the 24 MHz oscillator while the PLL
+ * relocks (some 10 us). Dividers go first when the rate rises and last when
+ * it falls, so aclkm, atclk and pclk_dbg never run above their table rate.
+ */
+static int rk_armclk_set(const struct device *dev, uint32_t id, uint32_t want)
+{
+	mm_reg_t pll = DEVICE_MMIO_GET(dev) + (id == ARMCLKL ? CRU_LPLL : CRU_BPLL);
+	mm_reg_t sel = DEVICE_MMIO_GET(dev) + CRU_CLKSEL(id == ARMCLKL ? 0U : 2U);
+	uint32_t mux = id == ARMCLKL ? 0U : 1U;
+	const struct rk_armclk_rate *r = NULL;
+	k_spinlock_key_t key;
+	bool up;
+	int ret = 0;
+
+	for (size_t i = 0; i < ARRAY_SIZE(rk_armclk_rates); i++) {
+		if ((uint32_t)rk_armclk_rates[i].mhz * 1000000U <= want) {
+			r = &rk_armclk_rates[i];
+		}
+	}
+	if (r == NULL) {
+		return -ERANGE;
+	}
+
+	key = k_spin_lock(&armclk_lock);
+	up = (uint32_t)r->mhz * 1000000U > rk_armclk_get(dev, id);
+	if (up) {
+		rk_armclk_divs(sel, r, mux);
+	}
+	sys_write32(HIWORD(PLL_CON3_MODE, 0U), pll + 12U);
+	sys_write32(HIWORD(PLL_CON3_DSMPD, PLL_CON3_DSMPD), pll + 12U);
+	sys_write32(HIWORD(0xfffU, r->fbdiv), pll);
+	sys_write32(HIWORD((0x7U << 12) | (0x7U << 8) | 0x3fU,
+			   ((uint32_t)r->postdiv2 << 12) | ((uint32_t)r->postdiv1 << 8) | 1U),
+		    pll + 4U);
+	for (uint32_t us = 0; (sys_read32(pll + 8U) & PLL_CON2_LOCK) == 0U; us++) {
+		if (us == PLL_LOCK_US) {
+			ret = -ETIMEDOUT; /* left in slow mode, at 24 MHz */
+			break;
+		}
+		k_busy_wait(1);
+	}
+	if (ret == 0) {
+		sys_write32(HIWORD(PLL_CON3_MODE, PLL_CON3_MODE_NORM), pll + 12U);
+		if (!up) {
+			rk_armclk_divs(sel, r, mux);
+		}
+	}
+	k_spin_unlock(&armclk_lock, key);
+	return ret;
+}
+
 static int clock_control_rk3399_get_rate(const struct device *dev, clock_control_subsys_t sys,
 					 uint32_t *rate)
 {
@@ -221,6 +330,10 @@ static int clock_control_rk3399_get_rate(const struct device *dev, clock_control
 	int p = pmu_i2c_find(dev, (uint32_t)(uintptr_t)sys);
 	uint32_t v;
 
+	if (rk_is_armclk(dev, (uint32_t)(uintptr_t)sys)) {
+		*rate = rk_armclk_get(dev, (uint32_t)(uintptr_t)sys);
+		return 0;
+	}
 	if ((uint32_t)(uintptr_t)sys == PCLK_WDT && cfg->gate_offset == 0x300U) {
 		/* pclk_alive: GPLL / (CLKSEL_CON57[4:0] + 1) */
 		v = sys_read32(DEVICE_MMIO_GET(dev) + CRU_CLKSEL(57));
@@ -253,6 +366,9 @@ static int clock_control_rk3399_set_rate(const struct device *dev, clock_control
 
 	if (want == 0U) {
 		return -EINVAL;
+	}
+	if (rk_is_armclk(dev, (uint32_t)(uintptr_t)sys)) {
+		return rk_armclk_set(dev, (uint32_t)(uintptr_t)sys, want);
 	}
 	if (p >= 0) {
 		src = rk_pll_rate(dev, PMUCRU_PPLL);
