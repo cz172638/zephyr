@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config I2C_ROCKCHIP
+	bool "Rockchip I2C controller"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_I2C_ENABLED
+	select PINCTRL if $(dt_compat_any_has_prop,$(DT_COMPAT_ROCKCHIP_RK3399_I2C),pinctrl-0)
+	help
+	  Polled driver for the Rockchip I2C controller of the RK3399
+	  ("rk3x", v1 timing): standard and fast mode, 7-bit addresses,
+	  chunks of up to 32 bytes, register reads of up to three address
+	  bytes as one transaction.

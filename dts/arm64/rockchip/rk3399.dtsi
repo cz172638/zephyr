@@ -162,6 +162,13 @@
 		compatible = "rockchip,rk3399-pinctrl";
 		status = "okay";
 
+		/omit-if-no-ref/ i2c0_pins: i2c0-pins {
+			group {
+				pinmux = <RK_PINMUX(1, RK_PB7, 2, RK_PULL_NONE)>,	/* sda */
+					 <RK_PINMUX(1, RK_PC0, 2, RK_PULL_NONE)>;	/* scl */
+			};
+		};
+
 		/omit-if-no-ref/ spi1_pins: spi1-pins {
 			group {
 				pinmux = <RK_PINMUX(1, RK_PA7, 2, RK_PULL_UP)>,	/* rx */
@@ -275,6 +282,17 @@
 		interrupts = <GIC_SPI 68 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 		clocks = <&cru_clk SCLK_SPI0>, <&cru_clk PCLK_SPI0>;
 		clock-names = "spiclk", "apb_pclk";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	i2c0: i2c@ff3c0000 {
+		compatible = "rockchip,rk3399-i2c";
+		reg = <0xff3c0000 0x1000>;
+		interrupts = <GIC_SPI 57 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		clocks = <&pmucru_clk SCLK_I2C0_PMU>, <&pmucru_clk PCLK_I2C0_PMU>;
+		clock-names = "i2c", "pclk";
 		#address-cells = <1>;
 		#size-cells = <0>;
 		status = "disabled";
