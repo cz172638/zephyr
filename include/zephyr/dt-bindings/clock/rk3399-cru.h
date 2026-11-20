@@ -57,10 +57,13 @@
 #define HCLK_SDMMC		RK3399_CLK_GATE(33, 8)
 #define PCLK_SPI5		RK3399_CLK_GATE(34, 5)
 
-/* clocks without a CRU gate: get_rate only, on/off do nothing */
+/* clocks without a CRU gate: on/off do nothing */
 #define RK3399_CLK_NOGATE(n)	(0x1000 + (n))
 /* watchdog: pclk_alive, gated in the secure GRF (SGRF_SOC_CON3[8]) */
 #define PCLK_WDT		RK3399_CLK_NOGATE(0)
+/* core clocks of the A53 (LPLL) and A72 (BPLL) clusters, set_rate reprograms the PLL */
+#define ARMCLKL			RK3399_CLK_NOGATE(1)
+#define ARMCLKB			RK3399_CLK_NOGATE(2)
 
 /* PMUCRU */
 #define SCLK_I2C0_PMU		RK3399_CLK_GATE(0, 9)
