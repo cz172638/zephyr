@@ -119,6 +119,7 @@ static const struct {
 	{0x0010, true, "sriov", "SR-IOV"},
 	{0x0012, true, "mcast", "Multicast"},
 	{0x0015, true, "rebar", "Resizable BAR"},
+	{0x0017, true, "tph", "TPH Requester"},
 	{0x0018, true, "ltr", "Latency Tolerance Reporting"},
 	{0x0019, true, "secpci", "Secondary PCI Express"},
 	{0x001e, true, "l1ss", "L1 PM Substates"},
