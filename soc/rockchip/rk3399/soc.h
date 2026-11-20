@@ -35,6 +35,14 @@
 #define RK_HIWORD(val, mask, shift) \
 	((((val) & (mask)) << (shift)) | (((mask) << (shift)) << 16U))
 
+#if defined(CONFIG_ARM64) && !defined(_ASMLANGUAGE)
+#include <stdint.h>
+
+/* 32-bit read that returns -EIO on an external abort instead of a fatal error (probe.c) */
+int rk3399_probe_read32(uintptr_t va, uint32_t *val);
+extern volatile uint32_t rk3399_probe_faults;
+#endif
+
 #if defined(CONFIG_CPU_CORTEX_M) && !defined(_ASMLANGUAGE)
 
 /* CMSIS device configuration of the Cortex-M0 cores */

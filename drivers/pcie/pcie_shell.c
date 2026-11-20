@@ -19,6 +19,8 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
+#include "pcie_shell_priv.h"
+
 #define MAX_CTRL 4
 
 static const struct pcie_shell_ctrl *ctrls[MAX_CTRL];
@@ -41,7 +43,7 @@ static bool is_active(const struct pcie_shell_ctrl *c)
 	return c->active == NULL || c->active(c->dev);
 }
 
-static const struct pcie_shell_ctrl *active_ctrl(const struct shell *sh)
+const struct pcie_shell_ctrl *pcie_shell_active(const struct shell *sh)
 {
 	for (int i = 0; i < n_ctrls; i++) {
 		if (is_active(ctrls[i])) {
@@ -117,6 +119,7 @@ static const struct {
 	{0x0010, true, "sriov", "SR-IOV"},
 	{0x0012, true, "mcast", "Multicast"},
 	{0x0015, true, "rebar", "Resizable BAR"},
+	{0x0017, true, "tph", "TPH Requester"},
 	{0x0018, true, "ltr", "Latency Tolerance Reporting"},
 	{0x0019, true, "secpci", "Secondary PCI Express"},
 	{0x001e, true, "l1ss", "L1 PM Substates"},
@@ -399,7 +402,7 @@ static void ls_bus(const struct shell *sh, const struct pcie_shell_ctrl *c, unsi
 
 static int cmd_ls(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 
 	if (c == NULL) {
 		return -ENODEV;
@@ -413,7 +416,7 @@ static int cmd_ls(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_cfg(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 	unsigned long off = 0, len = 0x100;
 	pcie_bdf_t bdf;
 
@@ -435,7 +438,7 @@ static int cmd_cfg(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_cfg_set(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 	unsigned long off;
 	pcie_bdf_t bdf;
 
@@ -459,7 +462,7 @@ static int cmd_cfg_set(const struct shell *sh, size_t argc, char **argv)
 static int cap_prep(const struct shell *sh, char *bdf_s, const struct pcie_shell_ctrl **c,
 		    pcie_bdf_t *bdf, struct cap *caps, int *n)
 {
-	*c = active_ctrl(sh);
+	*c = pcie_shell_active(sh);
 	if (*c == NULL || bdf_arg(sh, bdf_s, bdf) != 0) {
 		return -EINVAL;
 	}
@@ -585,7 +588,7 @@ static int cmd_ctrl_info(const struct shell *sh, size_t argc, char **argv)
 			    c->name, role_name(c->role), has_saved ? ", saved mode " : "",
 			    has_saved ? role_name(saved) : "");
 	}
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 
 	if (c != NULL && c->info != NULL) {
 		c->info(c->dev, sh);
@@ -595,7 +598,7 @@ static int cmd_ctrl_info(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_ctrl_mode(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 	enum pcie_shell_role r;
 	int ret;
 
@@ -636,7 +639,7 @@ static int cmd_ctrl_mode(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_ctrl_link(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 
 	if (argc > 1 && strcmp(argv[1], "trace") == 0) {
 		if (c == NULL || c->link_trace == NULL) {
@@ -654,7 +657,7 @@ static int cmd_ctrl_link(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_ctrl_scan(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
@@ -667,7 +670,7 @@ static int cmd_ctrl_scan(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_ctrl_irq(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
@@ -678,7 +681,7 @@ static int cmd_ctrl_irq(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-static int parse_pair(const char *s, uint16_t *a, uint16_t *b)
+int pcie_shell_parse_pair(const char *s, uint16_t *a, uint16_t *b)
 {
 	char *e;
 	unsigned long x = strtoul(s, &e, 16), y;
@@ -698,7 +701,7 @@ static int parse_pair(const char *s, uint16_t *a, uint16_t *b)
 /* id [<b:d.f>] [<vid:did> [<svid:ssid> [<class>]]] | id [<b:d.f>] reset */
 static int cmd_ctrl_id(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 	struct pcie_shell_id id;
 	pcie_bdf_t bdf = PCIE_BDF(0, 0, 0);
 	size_t a = 1;
@@ -726,8 +729,8 @@ static int cmd_ctrl_id(const struct shell *sh, size_t argc, char **argv)
 	}
 	if (argc > a) {
 		id.class_code = UINT32_MAX;
-		if (parse_pair(argv[a], &id.vid, &id.did) != 0 ||
-		    (argc > a + 1 && parse_pair(argv[a + 1], &id.svid, &id.ssid) != 0)) {
+		if (pcie_shell_parse_pair(argv[a], &id.vid, &id.did) != 0 ||
+		    (argc > a + 1 && pcie_shell_parse_pair(argv[a + 1], &id.svid, &id.ssid) != 0)) {
 			shell_error(sh, "<vid:did> [<svid:ssid> [<class>]] in hex");
 			return -EINVAL;
 		}
@@ -754,7 +757,7 @@ static int cmd_ctrl_id(const struct shell *sh, size_t argc, char **argv)
 /* dsn [<b:d.f>] [<hex> | uid | new | reset] */
 static int cmd_ctrl_dsn(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 	pcie_bdf_t bdf = PCIE_BDF(0, 0, 0);
 	const char *src = NULL;
 	uint64_t v = 0;
@@ -963,7 +966,7 @@ static void aer_clear_fn(const struct device *dev, pcie_bdf_t bdf, void *user)
 /* pcie aer [<b:d.f> | setup [ur] [urbridge] [ecrc] | clear | poll] */
 static int cmd_aer(const struct shell *sh, size_t argc, char **argv)
 {
-	const struct pcie_shell_ctrl *c = active_ctrl(sh);
+	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 	const pcie_bdf_t root = PCIE_BDF(0, 0, 0);
 	const struct pcie_aer_stat *st;
 	pcie_bdf_t bdf;
@@ -1221,6 +1224,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cmds,
 #endif
 	SHELL_CMD(debug, PCIE_DEBUG_SUBCMDS, "Controller specific bring-up and test commands",
 		  NULL),
+#if defined(CONFIG_PCIE_CTRL_SHELL_BOOT)
+	SHELL_CMD_ARG(boot, NULL,
+		      "[-i <vid:did>] [-t <s>] <file>... Boot an endpoint over PCIe (U-Boot "
+		      "SPL_PCI_DFU): each stage gets the file named by its boot phase",
+		      pcie_shell_cmd_boot, 2, 6),
+#endif
 #if defined(CONFIG_PCIE_FABRIC_SHELL)
 	SHELL_CMD(fabric, &pcie_fabric_cmds,
 		  "Fabric: node, ping, send, recv, put, rma, poll; manager: ls, scan, up, down, "
