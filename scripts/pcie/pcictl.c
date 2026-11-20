@@ -16,6 +16,11 @@
  *   pcictl rd     <bdf> <bar> <off> [count]    BAR read
  *   pcictl wr     <bdf> <bar> <off> <val>...   BAR write
  *   pcictl dump   <bdf> <bar> [off [len]]      BAR hex dump
+ *   pcictl snap   <bdf> cfg|<bar> [file]       raw snapshot: 4 KiB config space or a
+ *                                              whole BAR (32-bit reads), to file or stdout
+ *   pcictl diff   [-p page] <a> <b>            dwords that differ between two snapshots;
+ *                                              -p 4096: also page and offset in it (e.g.
+ *                                              a PLX switch BAR0, port N at N * 0x1000)
  *   pcictl epf    <bdf> [bar]                  pci-epf-test registers
  *   pcictl link   <bdf> [status]               link speed, width, DLLLA, training, ASPM
  *   pcictl link   <port> retrain | disable | enable | speed <1..6> | aspm off|l0s|l1|l0s+l1
@@ -96,6 +101,7 @@ static void __attribute__((noreturn)) usage(void)
 	      "       cfg <bdf> <off> [val] |\n"
 	      "       cmd <bdf> [+-mem +-bme +-io +-serr +-intx] | rd <bdf> <bar> <off> [count] |\n"
 	      "       wr <bdf> <bar> <off> <val>... | dump <bdf> <bar> [off [len]] |\n"
+	      "       snap <bdf> cfg|<bar> [file] | diff [-p page] <a> <b> |\n"
 	      "       epf <bdf> [bar] | link <bdf> [status | retrain | disable | enable |\n"
 	      "       speed <1..6> | aspm off|l0s|l1|l0s+l1] | hotreset <bridge> [ms] |\n"
 	      "       ports <bridge> | watch <bdf> [ms] | aer <bdf> [clear] |\n"
@@ -857,6 +863,117 @@ static void cmd_dump(struct pci_dev *d, int argc, char **argv)
 		}
 		putchar('\n');
 	}
+}
+
+/* --- snapshots ------------------------------------------------------------- */
+
+static FILE *out_file(const char *path)
+{
+	FILE *f = path != NULL ? fopen(path, "wb") : stdout;
+
+	if (f == NULL) {
+		die("%s: %s", path, strerror(errno));
+	}
+	return f;
+}
+
+static void cmd_snap(struct pci_dev *d, int argc, char **argv)
+{
+	FILE *f = out_file(argc > 1 ? argv[1] : NULL);
+
+	if (strcmp(argv[0], "cfg") == 0) {
+		uint8_t c[4096];
+
+		memset(c, 0xff, sizeof(c));
+		if (!pci_read_block(d, 0, c, sizeof(c))) {
+			/* not root: the first 256 bytes only */
+			if (!pci_read_block(d, 0, c, 256)) {
+				die("config read failed");
+			}
+			fprintf(stderr, "only 256 bytes of config space (not root?)\n");
+		}
+		fwrite(c, 1, sizeof(c), f);
+	} else {
+		unsigned int bar = (unsigned int)num(argv[0]);
+		struct bar_map m = bar_map(d, bar);
+
+		for (uint64_t o = 0; o < m.size; o += 4U) {
+			uint32_t v = (uint32_t)bar_rd(&m, bar, o);
+
+			fwrite(&v, 4, 1, f);
+		}
+	}
+	if (f != stdout) {
+		fclose(f);
+	}
+}
+
+static uint8_t *slurp(const char *path, size_t *len)
+{
+	FILE *f = fopen(path, "rb");
+	uint8_t *b = NULL;
+	size_t n = 0, cap = 0, r;
+
+	if (f == NULL) {
+		die("%s: %s", path, strerror(errno));
+	}
+	do {
+		if (n == cap) {
+			cap = cap != 0U ? cap * 2U : 65536U;
+			b = realloc(b, cap);
+			if (b == NULL) {
+				die("out of memory");
+			}
+		}
+		r = fread(b + n, 1, cap - n, f);
+		n += r;
+	} while (r != 0U);
+	fclose(f);
+	*len = n;
+	return b;
+}
+
+static int cmd_diff(int argc, char **argv)
+{
+	uint64_t page = 0;
+	size_t la, lb;
+	uint8_t *a, *b;
+	unsigned int n = 0;
+	int i = 0;
+
+	if (argc >= 2 && strcmp(argv[0], "-p") == 0) {
+		page = num(argv[1]);
+		i = 2;
+	}
+	if (argc - i != 2) {
+		usage();
+	}
+	a = slurp(argv[i], &la);
+	b = slurp(argv[i + 1], &lb);
+	if (la != lb) {
+		fprintf(stderr, "sizes differ: %zu, %zu; comparing the first %zu bytes\n", la, lb,
+			la < lb ? la : lb);
+	}
+	for (size_t o = 0; o + 4U <= la && o + 4U <= lb; o += 4U) {
+		uint32_t va, vb;
+
+		memcpy(&va, a + o, 4);
+		memcpy(&vb, b + o, 4);
+		if (va == vb) {
+			continue;
+		}
+		if (page != 0U) {
+			printf("%06zx [%" PRIu64 "+%03" PRIx64 "]: %08x > %08x  (^ %08x)\n", o,
+			       (uint64_t)o / page, (uint64_t)o % page, va, vb, va ^ vb);
+		} else {
+			printf("%06zx: %08x > %08x  (^ %08x)\n", o, va, vb, va ^ vb);
+		}
+		n++;
+	}
+	fprintf(stderr, "%u dwords differ\n", n);
+	free(a);
+	free(b);
+	return n != 0U;
 }
 
 /* --- link, switch ports, errors ------------------------------------------- */
@@ -2411,6 +2528,9 @@ int main(int argc, char **argv)
 		sysfs_write("/sys/bus/pci/rescan", "1");
 		return 0;
 	}
+	if (strcmp(c, "diff") == 0) {
+		return cmd_diff(argc - 1, argv + 1);
+	}
 
 	sigaction(SIGBUS, &sa, NULL);
 	pacc = pci_alloc();
@@ -2443,6 +2563,8 @@ int main(int argc, char **argv)
 			cmd_wr(d, n, a);
 		} else if (strcmp(c, "dump") == 0 && n >= 1) {
 			cmd_dump(d, n, a);
+		} else if (strcmp(c, "snap") == 0 && n >= 1) {
+			cmd_snap(d, n, a);
 		} else if (strcmp(c, "epf") == 0) {
 			cmd_epf(d, n, a);
 		} else if (strcmp(c, "link") == 0) {
