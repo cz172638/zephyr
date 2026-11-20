@@ -8,18 +8,23 @@ RK3399: two Cortex-A72 cores (big cluster), four Cortex-A53 cores (little
 cluster) and two Cortex-M0 cores, one in the PMU power domain and one in the
 PERILP power domain.
 
-Every core type is a separate Zephyr target:
+Zephyr targets and the cores they run on:
 
 ======================================= =======================================
 Target                                  Cores
 ======================================= =======================================
 ``rock_pi_4/rk3399/a53``                CPU0 (Cortex-A53)
 ``rock_pi_4/rk3399/a53/smp``            CPU0-CPU3 (Cortex-A53)
+``rock_pi_4/rk3399/a53/hmp``            CPU0-CPU5 (Cortex-A53 and Cortex-A72)
 ``rock_pi_4/rk3399/a72``                CPU4 (Cortex-A72)
 ``rock_pi_4/rk3399/a72/smp``            CPU4-CPU5 (Cortex-A72)
 ``rock_pi_4/rk3399/m0_pmu``             PMU Cortex-M0
 ``rock_pi_4/rk3399/m0_perilp``          PERILP Cortex-M0
 ======================================= =======================================
+
+``rock_pi_4/rk3399/a53/hmp`` boots on CPU0 and brings up the A72 cores as well,
+so no ``a72`` image can run next to it; the M0 images still can. The scheduler
+treats all six cores alike.
 
 Hardware
 ********

@@ -9,3 +9,5 @@ board:
           cpucluster: a53
         - name: smp
           cpucluster: a72
+        - name: hmp
+          cpucluster: a53
