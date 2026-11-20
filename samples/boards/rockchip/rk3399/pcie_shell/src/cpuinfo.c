@@ -10,12 +10,23 @@
  * The PMU, the cache and the GIC CPU interface are per CPU: with SMP every
  * measurement runs in a thread pinned to one CPU, so the shell thread
  * moving between CPUs does not mix two of them.
+ *
+ * "cpu freq": core clocks of both clusters. Until there are regulator
+ * drivers the core supplies are read straight from the ROCK Pi 4 PMICs
+ * (RK808 BUCK2 vdd_cpu_l, SYR827 vdd_cpu_b on I2C0) and a rate is refused
+ * when its operating point (Linux rk3399.dtsi) needs more than the supply
+ * gives now.
  */
 
 #include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/arch/pmu.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/i2c.h>
+#include <zephyr/dt-bindings/clock/rk3399-cru.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/util.h>
@@ -89,7 +100,7 @@ static void pmu_setup(const struct shell *sh)
 	}
 	pmu_counter_enable_all();
 	pmu_ok = true;
-	shell_print(sh, "PMU: %u counters, core clock %u MHz (cycle counter vs. CNTVCT)",
+	shell_print(sh, "PMU: %u counters, core clock at PMU init %u MHz (cycles vs. CNTVCT)",
 		    pmu_num_counters(), arch_pmu_cpu_freq_mhz());
 }
 
@@ -367,11 +378,157 @@ static int cmd_cpu_irq(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(cru_clk))
+struct opp {
+	uint16_t mhz;
+	uint16_t mv;
+};
+
+static const struct opp opp_little[] = {
+	{408, 825}, {600, 825}, {816, 850}, {1008, 925}, {1200, 1000}, {1416, 1125},
+};
+
+static const struct opp opp_big[] = {
+	{408, 825},   {600, 825},   {816, 825},   {1008, 875},
+	{1200, 950},  {1416, 1025}, {1608, 1100}, {1800, 1200},
+};
+
+static const struct cluster {
+	const char *name;
+	uint32_t clk;
+	const struct opp *opp;
+	size_t nopp;
+} clusters[] = {
+	{"little", ARMCLKL, opp_little, ARRAY_SIZE(opp_little)},
+	{"big", ARMCLKB, opp_big, ARRAY_SIZE(opp_big)},
+};
+
+#define RK808_ADDR          0x1bU
+#define RK808_BUCK2_ON_VSEL 0x33U
+#define SYR827_ADDR         0x40U
+#define SYR827_VSEL0        0x00U
+#define SYR827_VSEL1        0x01U
+
+/* 712.5 mV + 12.5 mV * VSEL[5:0] on both; uV, or 0 when not readable */
+static uint32_t vsel_uv(const struct device *i2c, uint8_t addr, uint8_t reg)
+{
+	uint8_t v;
+
+	if (i2c_reg_read_byte(i2c, addr, reg, &v) != 0) {
+		return 0;
+	}
+	return 712500U + 12500U * (v & 0x3fU);
+}
+
+/*
+ * vdd_cpu_b: the VSEL pin picks VSEL0 or VSEL1; take the lower of the two,
+ * the SoC never sees less than that.
+ */
+static uint32_t core_uv(uint32_t clk)
+{
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(i2c0)) && defined(CONFIG_I2C)
+	const struct device *i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+	uint32_t a, b;
+
+	if (!device_is_ready(i2c)) {
+		return 0;
+	}
+	if (clk == ARMCLKL) {
+		return vsel_uv(i2c, RK808_ADDR, RK808_BUCK2_ON_VSEL);
+	}
+	a = vsel_uv(i2c, SYR827_ADDR, SYR827_VSEL0);
+	b = vsel_uv(i2c, SYR827_ADDR, SYR827_VSEL1);
+	return (a == 0U || b == 0U) ? 0U : MIN(a, b);
+#else
+	ARG_UNUSED(clk);
+	return 0;
+#endif
+}
+
+static void freq_show(const struct shell *sh, const struct device *cru, const struct cluster *c)
+{
+	uint32_t hz = 0, uv = core_uv(c->clk);
+	uint16_t max = 0;
+
+	(void)clock_control_get_rate(cru, (clock_control_subsys_t)(uintptr_t)c->clk, &hz);
+	for (size_t i = 0; i < c->nopp; i++) {
+		if ((uint32_t)c->opp[i].mv * 1000U <= uv) {
+			max = c->opp[i].mhz;
+		}
+	}
+	shell_fprintf(sh, SHELL_NORMAL, "%-6s %4u MHz", c->name, hz / 1000000U);
+	if (uv == 0U) {
+		shell_print(sh, ", supply not readable");
+	} else {
+		shell_print(sh, ", supply %u mV, up to %u MHz at it", uv / 1000U, max);
+	}
+}
+
+static int cmd_cpu_freq(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *cru = DEVICE_DT_GET(DT_NODELABEL(cru_clk));
+	const struct cluster *c = NULL;
+	uint32_t mhz, uv;
+	char *end;
+	int ret;
+
+	if (argc == 1) {
+		for (size_t i = 0; i < ARRAY_SIZE(clusters); i++) {
+			freq_show(sh, cru, &clusters[i]);
+		}
+		return 0;
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(clusters); i++) {
+		if (strcmp(argv[1], clusters[i].name) == 0) {
+			c = &clusters[i];
+		}
+	}
+	if (c == NULL) {
+		shell_error(sh, "cpu freq [little|big [MHz]]");
+		return -EINVAL;
+	}
+	if (argc == 2) {
+		freq_show(sh, cru, c);
+		return 0;
+	}
+	mhz = strtoul(argv[2], &end, 0);
+	if (*end != '\0') {
+		shell_error(sh, "MHz: %s", argv[2]);
+		return -EINVAL;
+	}
+	for (size_t i = 0; i < c->nopp; i++) {
+		if (c->opp[i].mhz == mhz) {
+			uv = core_uv(c->clk);
+			if ((uint32_t)c->opp[i].mv * 1000U > uv) {
+				shell_error(sh, "%u MHz needs %u mV, the supply gives %u mV", mhz,
+					    c->opp[i].mv, uv / 1000U);
+				return -ERANGE;
+			}
+			ret = clock_control_set_rate(
+				cru, (clock_control_subsys_t)(uintptr_t)c->clk,
+				(clock_control_subsys_rate_t)(uintptr_t)(mhz * 1000000U));
+			if (ret != 0) {
+				shell_error(sh, "set rate: %d", ret);
+				return ret;
+			}
+			freq_show(sh, cru, c);
+			return 0;
+		}
+	}
+	shell_error(sh, "%u MHz: not an operating point of the %s cluster", mhz, c->name);
+	return -EINVAL;
+}
+#endif
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_cpu,
 	SHELL_CMD_ARG(info, NULL, "[cpu]: the same as cpu [cpu]", cmd_cpu_info, 1, 1),
 	SHELL_CMD_ARG(irq, NULL,
 		      "[ms] [cpu]: pending interrupt with IRQs masked, exception rate (all CPUs)",
 		      cmd_cpu_irq, 1, 2),
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(cru_clk))
+	SHELL_CMD_ARG(freq, NULL, "[little|big [MHz]]: core clocks and supplies, set a clock",
+		      cmd_cpu_freq, 1, 2),
+#endif
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_ARG_REGISTER(cpu, &sub_cpu,
