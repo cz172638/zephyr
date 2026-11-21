@@ -1,0 +1,26 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_SUN55I_A523
+
+config NUM_IRQS
+	default 256
+
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default $(dt_node_int_prop_int,/timer,clock-frequency)
+
+config FLASH_SIZE
+	default 0
+
+config FLASH_BASE_ADDRESS
+	default 0
+
+# sys_reboot() and secondary CPUs through PSCI (TF-A BL31)
+config PM_CPU_OPS
+	default y
+
+# DesignWare APB UARTs: only 32-bit accesses (U-Boot: SYS_NS16550_MEM32)
+configdefault UART_NS16550_ACCESS_WORD_ONLY
+	default y
+
+endif # SOC_SUN55I_A523
