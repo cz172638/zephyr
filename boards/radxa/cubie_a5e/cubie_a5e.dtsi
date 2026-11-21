@@ -1,0 +1,33 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <allwinner/sun55i-a523.dtsi>
+
+/ {
+	model = "Radxa Cubie A5E";
+	compatible = "radxa,cubie-a5e", "allwinner,sun55i-a527", "allwinner,sun55i-a523";
+
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,sram = &dram0;
+	};
+
+	/*
+	 * TF-A BL31 runs from SRAM A2 and enters BL33 at 0x4a000000
+	 * (PRELOADED_BL33_BASE). 512 MiB fit every memory option of the board.
+	 */
+	dram0: memory@4a000000 {
+		compatible = "mmio-sram";
+		device_type = "memory";
+		reg = <0x4a000000 DT_SIZE_M(512)>;
+	};
+};
+
+/* 40-pin header pins 8 (TX) and 10 (RX): PB9/PB10, muxed by U-Boot SPL */
+&uart0 {
+	current-speed = <115200>;
+	status = "okay";
+};
