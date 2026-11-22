@@ -172,6 +172,44 @@
 			status = "disabled";
 		};
 
+		/*
+		 * The bus gate, reset and module clock are handled directly by
+		 * the SPI driver, allwinner,ccu-instance maps the controller to
+		 * its CCU (SPI0 = 0, SPI1 = 1, SPI2 = 2).
+		 */
+		spi0: spi@4025000 {
+			compatible = "allwinner,sun55i-a523-spi";
+			reg = <0x04025000 0x1000>;
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			allwinner,ccu-instance = <0>;
+			status = "disabled";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		spi1: spi@4026000 {
+			compatible = "allwinner,sun55i-a523-spi";
+			reg = <0x04026000 0x1000>;
+			interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			allwinner,ccu-instance = <1>;
+			status = "disabled";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		spi2: spi@4027000 {
+			compatible = "allwinner,sun55i-a523-spi";
+			reg = <0x04027000 0x1000>;
+			interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			allwinner,ccu-instance = <2>;
+			status = "disabled";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
 		gic: interrupt-controller@3400000 {
 			compatible = "arm,gic-v3", "arm,gic";
 			reg = <0x03400000 0x10000>, /* GICD */

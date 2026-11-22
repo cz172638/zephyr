@@ -31,3 +31,19 @@
 	current-speed = <115200>;
 	status = "okay";
 };
+
+/*
+ * 16 MiB SPI NOR flash on SPI0 (pins PC2, PC3, PC4 and PC12, single-bit
+ * mode). On boards populated with eMMC the HOLD and WP signals of the
+ * flash are not wired, which rules out dual/quad transfers.
+ */
+&spi0 {
+	status = "okay";
+
+	flash0: flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(24)>;
+		size = <DT_SIZE_M(128)>;
+	};
+};
