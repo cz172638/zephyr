@@ -91,21 +91,28 @@ Same content as cubie-0005 (SPL + U-Boot FIT; sha256 `cbf7a43a...a9d5a`,
 SPL at offset 0 (eGON.BT0, header length 0xC000), the FIT at 0xC000
 (= `max(sunxi_get_spl_size(), CONFIG_SYS_SPI_U_BOOT_OFFS)`).
 
-Program it from the U-Boot shell of cubie-0005:
+**VERIFIED ON HARDWARE — the board cold-boots from SPI NOR with this image.**
+After programming, a full power cycle (no USB) gives on UART0:
 
 ```
-sunxi-fel -v uboot fel/cubie-0005-uboot-spi-flash-fel.bin \
-    write 0x40080000 fel/cubie-0006-uboot-spi-flash-nor.bin
+U-Boot SPL ... Trying to boot from sunxi SPI
+U-Boot ... SF: Detected w25q128fw with page size 256 Bytes,
+           erase size 4 KiB, total 16 MiB
+```
+
+Recommended write procedure (ymodem via `loady` — no FEL DRAM addresses
+involved at all):
+
+```
+sunxi-fel -v uboot fel/cubie-0005-uboot-spi-flash-fel.bin
 # (stop autoboot)
-sf probe
+loady 0x40080000        # send cubie-0006-uboot-spi-flash-nor.bin via ymodem
+md 0x40080000 4         # must show "eGON" (4e4f4765 ...)
 sf erase 0 +0x100000
 sf write 0x40080000 0 0xcba01
-# verify the write landed:
-sf read 0x40100000 0 0x40
-crc32 0x40100000 0x40
-md 0x40100000 4        # must show the eGON.BT0 magic ("eGON")
-sf read 0x40101000 0xc000 0x20
-md 0x40101000 2        # must show 0xd00dfeed (FIT FDT magic)
+sf read 0x40100000 0 0x40 && md 0x40100000 4   # eGON at offset 0
+sf read 0x40101000 0xc000 0x20 && md 0x40101000 2   # d00dfeed at 0xC000
+# full power cycle -> cold boot from NOR
 ```
 
 **Known pitfall (bit us on the first attempt):** the `sf write` source
