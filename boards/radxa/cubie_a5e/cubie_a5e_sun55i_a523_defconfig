@@ -14,3 +14,10 @@ CONFIG_PM_CPU_OPS_PSCI=y
 
 # sys_reboot() through PSCI SYSTEM_RESET (BL31: R_WDOG reset)
 CONFIG_REBOOT=y
+
+# optional SPI NOR on SPI0: geometry from SFDP, as the part varies
+CONFIG_FLASH=y
+CONFIG_SPI=y
+CONFIG_SPI_NOR=y
+CONFIG_SPI_NOR_SFDP_RUNTIME=y
+CONFIG_FLASH_MAP=y
