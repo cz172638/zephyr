@@ -330,3 +330,13 @@ Two changes on top of cubie-0013:
    `boot_partition` @0 (1 MiB, the eGON+FIT image) and `storage_partition`
    @0x100000 (15 MiB). Usage: run `fwupdate ymodem` in the Zephyr shell and
    send a cubie-NNN .bin (SPL+FIT)+light image from tio (ctrl-t y / `sb`).
+
+## cubie-0015-zephyr-xlat16-fwupdate-fel.bin
+
+sha256: `5cdc206e5cae581ad8d80aec0ff600b81078c2ac82a2a5c80e230d99f96b5645` (186783 B)
+
+cubie-0014 died at MK2 (map ccu) with "CONFIG_MAX_XLAT_TABLES is too small":
+after adding fwupdate (RAM grew 1192 -> 2232 KB) the default 8 translation
+tables no longer cover all mapped windows. The smoke app prj.conf now sets
+CONFIG_MAX_XLAT_TABLES=16. All other content identical to cubie-0014
+(PIO bank stride 0x30 pinmux fix + fwupdate ymodem).
