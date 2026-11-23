@@ -239,6 +239,30 @@ Run: `sunxi-fel -v uboot fel/cubie-0009-zephyr-spi-fine-debug-fel.bin`
 (178583 bytes, sha256 `77e748f3e3fc41f1...`). The `MF` line printed last
 pins the exact MMIO access at which the SoC stops replying.
 
+## cubie-0010-zephyr-lock-debug-fel.bin
+
+**Zephyr lock-path debug (like cubie-0009).** Evidence from cubie-0009:
+output stops after `MM0: transceive enter` with no `MF0` — i.e. between the
+transceive entry print and the first print inside the transfer function.
+That interval contains no MMIO access at all, only `spi_context_lock()`
+(`k_sem_take`, would block forever if the semaphore were somehow at 0),
+`spi_allwinner_configure()` (pure checks), `spi_context_buffers_setup()`
+and the `xfer()` prologue. This build adds one marker per step with the
+lock count and buffer lengths:
+
+```
+MM0: transceive enter lock_cnt=...
+MM6: locked
+MM7: configure ok / or rc
+MM8: bufs tx_len=.. rx_len=.. tx_buf=.. rx_buf=..
+MF0..MM5 — transfer path markers (as in cubie-0009)
+```
+
+Run: `sunxi-fel -v uboot fel/cubie-0010-zephyr-lock-debug-fel.bin`
+(178583 bytes, sha256 `7437f3d57202a4e0...`). NOTE: 0008/0009/0010 have
+identical sizes and differ only in content — verify the sha256 of the
+file on the host before loading.
+
 ## fel/sunxi-tools-a523-spiflash.patch
 
 Patch for sunxi-tools adding A523 (soc_id 0x1890) support to the
