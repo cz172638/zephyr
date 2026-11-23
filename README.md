@@ -48,6 +48,14 @@ U-Boot proper (no TF-A, upstream handles EL3 entry itself) as the payload.
 Verified working on hardware — proves the image layout, DRAM init and warm
 reset entry are correct.
 
+## cubie-0004-zephyr-spi-flash-fel-atf.bin
+
+**Current smoke test build (recommended).** Same chain as cubie-0001, with
+the SPI driver fixed to map its controller, CCU and PIO MMIO windows with
+`device_map()` before use (boot via BL31 runs Zephyr with the MMU enabled;
+the previous build took a data abort on the first CCU register access,
+`FAR 0x0200196c`).
+
 ## cubie-0003-zephyr-spi-flash-fel-noatf.bin
 
 Diagnostic variant: SPL + FIT with Zephyr only as the payload (no BL31,
