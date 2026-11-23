@@ -1,0 +1,28 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Allwinner A523/A527 SPI controller.
+
+  The bus clock, module clock and reset are controlled directly by the
+  driver through the SoC CCU using the allwinner,ccu-instance index; the
+  controller operates in polling mode and does not use interrupts or DMA.
+
+compatible: "allwinner,sun55i-a523-spi"
+
+include: [spi-controller.yaml]
+
+properties:
+  clock-frequency:
+    type: int
+    required: true
+    description: |
+      Rate of the SPI module (parent) clock in Hz. The SCLK is derived from
+      it with an integer divider in the CCU.
+
+  allwinner,ccu-instance:
+    type: int
+    required: true
+    description: |
+      Index of this controller in the SoC CCU (0 = SPI0, 1 = SPI1,
+      2 = SPI2), used for the module clock register, bus gate and reset.
