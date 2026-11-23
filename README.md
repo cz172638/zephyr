@@ -100,9 +100,50 @@ sunxi-fel -v uboot fel/cubie-0005-uboot-spi-flash-fel.bin \
 sf probe
 sf erase 0 +0x100000
 sf write 0x40080000 0 0xcba01
+# verify the write landed:
+sf read 0x40100000 0 0x40
+crc32 0x40100000 0x40
+md 0x40100000 4        # must show the eGON.BT0 magic ("eGON")
+sf read 0x40101000 0xc000 0x20
+md 0x40101000 2        # must show 0xd00dfeed (FIT FDT magic)
 ```
+
+**Known pitfall (bit us on the first attempt):** the `sf write` source
+address is only valid if the very same `sunxi-fel` invocation also carries
+the `write 0x40080000 <file>` payload; `sunxi-fel` never places the full
+SPL+FIT file contiguously into DRAM on its own (SPL goes to SRAM, the FIT
+components go to their load addresses). Writing NOR from an address that
+was never loaded silently programs blank content (read back as all 0xFF),
+and the BROM then falls through every boot source into FEL without ever
+starting anything from SPI. Always verify with `sf read` + `md` (eGON at 0,
+`d00dfeed` at 0xC000) before doing a cold-boot power cycle — this matches
+what the BROM checks: it boots a plain eGON image from SPI NOR offset 0
+(Andre Przywara's A523 SPI series, Armbian #11461 both confirm this).
 
 Then do a full power cycle: if the A523 BROM picks SPI NOR as the boot
 source, U-Boot starts off the flash on its own. If the BROM does not offer
 SPI NOR boot on this SoC, the fallback chain stays SPL-via-FEL and the NOR
 is used only as payload storage.
+
+### Alternative: write the NOR directly via FEL (no U-Boot needed)
+
+`sunxi-fel spiflash-read/write` programs the SPI NOR straight from the FEL
+session, which removes the DRAM-address pitfall entirely. Upstream
+sunxi-tools does not know the A523 yet; apply `fel/sunxi-tools-a523-spiflash.patch`
+(A523: SPI0 @ 0x04025000, PIO @ 0x02000000, CCM @ 0x02001000, SPI0 BGR/CLK
+= +0x96C/+0x940, pins PC2/PC3/PC4/PC12 = fn4, H6-style gate/reset bits) and
+rebuild, then:
+
+```
+sunxi-fel ver                 # confirm genuine FEL mode first
+sunxi-fel spiflash-info       # expect: Winbond W25Qxx (id ef40)
+sunxi-fel spiflash-write 0 fel/cubie-0006-uboot-spi-flash-nor.bin
+sunxi-fel spiflash-read 0 0x40 ver.bin && xxd ver.bin | head
+```
+
+## fel/sunxi-tools-a523-spiflash.patch
+
+Patch for sunxi-tools adding A523 (soc_id 0x1890) support to the
+`spiflash-info`/`spiflash-read`/`spiflash-write` FEL commands. Compile with
+`make` in a sunxi-tools tree where the patch was applied with
+`git apply`. Unverified on hardware as of this writing.

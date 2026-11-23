@@ -1,0 +1,86 @@
+diff --git a/fel-spiflash.c b/fel-spiflash.c
+index 95cab87..18e1010 100644
+--- a/fel-spiflash.c
++++ b/fel-spiflash.c
+@@ -87,6 +87,9 @@ void fel_writel(feldev_handle *dev, uint32_t addr, uint32_t val);
+ #define H6_CCM_SPI_BGR              (0x03001000 + 0x96C)
+ #define H6_CCM_SPI0_GATE_RESET      (1 << 0 | 1 << 16)
+ 
++/* A523/A527/T527: H6-style registers, but the CCM lives at 0x02001000 */
++#define A523_CCM_BASE               (0x02001000)
++
+ #define SUNIV_GPC_SPI0              (2)
+ #define SUNXI_GPC_SPI0              (3)
+ #define SUN50I_GPC_SPI0             (4)
+@@ -131,6 +134,8 @@ static uint32_t gpio_base(feldev_handle *dev)
+ 	case 0x1728: /* H6 */
+ 	case 0x1823: /* H616 */
+ 		return 0x0300B000;
++	case 0x1890: /* A523 */
++		return 0x02000000;
+ 	default:
+ 		return 0x01C20800;
+ 	}
+@@ -151,6 +156,8 @@ static uint32_t spi_base(feldev_handle *dev)
+ 	case 0x1728: /* H6 */
+ 	case 0x1823: /* H616 */
+ 		return 0x05010000;
++	case 0x1890: /* A523 */
++		return 0x04025000;
+ 	default:
+ 		return 0x01C68000;
+ 	}
+@@ -192,12 +199,19 @@ static bool soc_is_h6_style(feldev_handle *dev)
+ 	case 0x1817: /* V831 */
+ 	case 0x1728: /* H6 */
+ 	case 0x1823: /* H616 */
++	case 0x1890: /* A523 */
+ 		return true;
+ 	default:
+ 		return false;
+ 	}
+ }
+ 
++/* Base of the CCU for H6-style SoCs */
++static uint32_t ccm_base(feldev_handle *dev)
++{
++	return dev->soc_info->soc_id == 0x1890 ? A523_CCM_BASE : 0x03001000;
++}
++
+ /*
+  * Init the SPI0 controller and setup pins muxing.
+  */
+@@ -259,6 +273,12 @@ static bool spi0_init(feldev_handle *dev)
+ 		gpio_set_cfgpin(dev, PC, 3, SUN50I_GPC_SPI0);	/* SPI0_CS0 */
+ 		gpio_set_cfgpin(dev, PC, 4, SUN50I_GPC_SPI0);	/* SPI0_MISO */
+ 		break;
++	case 0x1890: /* Allwinner A523/A527/T527 */
++		gpio_set_cfgpin(dev, PC, 2, SUN50I_GPC_SPI0);
++		gpio_set_cfgpin(dev, PC, 3, SUN50I_GPC_SPI0);
++		gpio_set_cfgpin(dev, PC, 4, SUN50I_GPC_SPI0);
++		gpio_set_cfgpin(dev, PC, 12, SUN50I_GPC_SPI0);
++		break;
+ 	default: /* Unknown/Unsupported SoC */
+ 		printf("SPI support not implemented yet for %x (%s)!\n",
+ 		       soc_info->soc_id, soc_info->name);
+@@ -266,9 +286,9 @@ static bool spi0_init(feldev_handle *dev)
+ 	}
+ 
+ 	if (soc_is_h6_style(dev)) {
+-		reg_val = readl(H6_CCM_SPI_BGR);
++		reg_val = readl(ccm_base(dev) + 0x96C);
+ 		reg_val |= H6_CCM_SPI0_GATE_RESET;
+-		writel(reg_val, H6_CCM_SPI_BGR);
++		writel(reg_val, ccm_base(dev) + 0x96C);
+ 	} else {
+ 		if (spi_is_sun6i(dev)) {
+ 			/* Deassert SPI0 reset */
+@@ -302,7 +322,7 @@ static bool spi0_init(feldev_handle *dev)
+ 		       spi_is_sun6i(dev) ? SUN6I_SPI0_CCTL : SUN4I_SPI0_CCTL);
+ 		/* Choose 24MHz from OSC24M and enable clock */
+ 		writel(1U << 31,
+-		       soc_is_h6_style(dev) ? H6_CCM_SPI0_CLK : CCM_SPI0_CLK);
++		       soc_is_h6_style(dev) ? ccm_base(dev) + 0x940 : CCM_SPI0_CLK);
+ 	}
+ 
+ 	if (spi_is_sun6i(dev)) {
