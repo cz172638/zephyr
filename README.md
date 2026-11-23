@@ -411,3 +411,19 @@ Fix: CS is asserted before each burst but de-asserted only after the
 final burst of the whole transceive (U-Boot's SPI_XFER_BEGIN..END
 framing). Expect now `MM9: rx0=… 00 …`, `MN3 jedec id=ef 40 18`,
 `MN4 sfdp rc=0`, smoke PASS.
+
+## cubie-0020-zephyr-cs-stay-low-fel.bin
+
+sha256: `2983791dab17d66202302c1c82e3083da997434442a147070e0e4124f0284319` (186783 B)
+
+Follow-up on cubie-0019: the log showed burst2 starting with
+`tcr=000020c4` (SS_LEVEL=1) — the TCR rebuild at the top of every
+`xfer()` call re-applied the idle level, re-opening CS between the
+opcode burst and the data burst of the same transceive. The 0019 fix
+in `transceive()` was therefore still ineffective.
+
+Fix: removed the SS_LEVEL idle-write from the per-burst TCR rebuild.
+Idle level is now set only at init and after the last burst of a
+transceive. Expected trace now:
+- `MF3 tcr=00002044` for burst2 (SS_LEVEL stays 0 through the frame)
+- `MM9: rx0=… 00 …`, `MN3 jedec id=ef 40 18`, `MN4 sfdp rc=0`
