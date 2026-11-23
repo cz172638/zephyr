@@ -286,3 +286,15 @@ before returning. Debug markers (MK/MN/MM/MF) are still present in this build.
 
 Load the same way as cubie-0006/0007 via FEL + ymodem, or flash to NOR at offset 0
 (replaces the whole eGON+FIT blob).
+
+## cubie-0012-zephyr-sfdp-debug-fel.bin
+
+sha256: `de95a74e0143ed8974495bb52371753da44ae539a80448cee9a0d5594cb30729` (178583 B)
+
+cubie-0011 confirmed the lock fix: all SPI transfers complete (ret=0) and Zephyr
+boots to the shell, but `spi_nor` init still returns -ENODEV ("flash device not
+ready"). With CONFIG_SPI_NOR_SFDP_RUNTIME the JEDEC memcmp is skipped, so the
+failure is inside `spi_nor_process_sfdp` (or a nearby -ENODEV path). New markers:
+- `MN3: jedec rc=.. id=..` after JEDEC ID read (expect RC=0, EF 40 18)
+- `MN4: sfdp rc=..` after SFDP processing
+- `MM9: rx0=..` first received bytes of every SPI transfer (detects garbage RX)
