@@ -392,3 +392,22 @@ shell reachable on first boot):
 - burst: `TCR &= ~SS_LEVEL` before setting XCH (asserted)
 - after burst: `TCR |= SS_LEVEL` (de-asserted)
 - inverted for SPI_CS_ACTIVE_HIGH
+
+## cubie-0019-zephyr-cs-fullframe-fel.bin
+
+sha256: `4ea633b8f409a0dad8e4bfbfdb1112b6aa3516c0ecb9dcca962e381cb5c18302` (186783 B)
+
+cubie-0018 confirmed the SS_LEVEL toggling itself now runs correctly
+(idle `tcr=0x21c4` with SS_LEVEL=1, during XCH `tcr=80002144` with
+SS_LEVEL=0) yet RX stayed 0xFF. Root cause #6 found in the same logs:
+the driver de-asserted CS after **every** burst, and a Zephyr transceive
+runs as two bursts (opcode phase, then data phase). So the flash saw:
+`CS-` opcode `05`, **CS released**, `CS-` 8 clocks -> aborted command,
+never a valid one -> MISO Hi-Z -> 0xFF, RF_CNT stuck at 0. This also
+explains why MN3 JEDEC read 00 00 00 in early builds: the data phase
+clocked with no command ever completing.
+
+Fix: CS is asserted before each burst but de-asserted only after the
+final burst of the whole transceive (U-Boot's SPI_XFER_BEGIN..END
+framing). Expect now `MM9: rx0=… 00 …`, `MN3 jedec id=ef 40 18`,
+`MN4 sfdp rc=0`, smoke PASS.
