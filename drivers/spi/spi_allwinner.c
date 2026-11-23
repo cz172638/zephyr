@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(spi_allwinner);
 #include <zephyr/device.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/time_units.h>
 #include <zephyr/sys/util.h>
 
@@ -71,6 +72,7 @@ LOG_MODULE_REGISTER(spi_allwinner);
 
 /* A523 CCU: module clock plus bus gate and reset of the SPI controllers */
 #define SPI_CCU_BASE 0x02001000
+#define SPI_CCU_SIZE 0x1000
 #define SPI_CCU_MOD_CLK_REG 0x940
 #define SPI_CCU_MOD_CLK_M_MASK GENMASK(4, 0)
 #define SPI_CCU_MOD_CLK_GATE BIT(31)
@@ -78,49 +80,55 @@ LOG_MODULE_REGISTER(spi_allwinner);
 
 /* PIO (GPIO) block: pin configuration registers, per-port banks of 0x24 */
 #define SPI_PIO_BASE 0x02000000
-#define SPI_PIO_CFG_REG(port, idx) (SPI_PIO_BASE + ((port) - 'A') * 0x24 + (idx) * 4)
+#define SPI_PIO_SIZE 0x1000
+#define SPI_PIO_CFG_REG(port, idx) (((port) - 'A') * 0x24 + (idx) * 4)
 
 #define SPI_TIMEOUT_MSEC(len, speed)                                                             \
 	MIN(60000u, MAX(100u, (uint32_t)MIN((uint64_t)(len) * 40u * 1000 / (speed), 40000u)))
 
 struct spi_allwinner_config {
-	mm_reg_t base;
+	uintptr_t base_phys;
+	uint32_t base_size;
 	uint32_t clock_frequency;
 	uint8_t ccu_instance;
 };
 
 struct spi_allwinner_data {
 	struct spi_context ctx;
+	mm_reg_t base;
+	mm_reg_t ccu;
+	mm_reg_t pio;
 };
 
-static inline uint32_t spi_allwinner_read(const struct spi_allwinner_config *cfg, uint32_t reg)
+static inline uint32_t spi_allwinner_read(struct spi_allwinner_data *data, uint32_t reg)
 {
-	return sys_read32(cfg->base + reg);
+	return sys_read32(data->base + reg);
 }
 
-static inline void spi_allwinner_write(const struct spi_allwinner_config *cfg, uint32_t reg,
+static inline void spi_allwinner_write(struct spi_allwinner_data *data, uint32_t reg,
 				       uint32_t value)
 {
-	sys_write32(value, cfg->base + reg);
+	sys_write32(value, data->base + reg);
 }
 
-static void spi_allwinner_ccu_enable(uint8_t ccu_instance)
+static void spi_allwinner_ccu_enable(struct spi_allwinner_data *data, uint8_t ccu_instance)
 {
 	uint32_t reg;
 
-	reg = sys_read32(SPI_CCU_BASE + SPI_CCU_BUS_REG);
+	reg = sys_read32(data->ccu + SPI_CCU_BUS_REG);
 	reg |= BIT(ccu_instance) | BIT(ccu_instance + 16);
-	sys_write32(reg, SPI_CCU_BASE + SPI_CCU_BUS_REG);
+	sys_write32(reg, data->ccu + SPI_CCU_BUS_REG);
 
 	/* Module clock from the always-on 24 MHz oscillator, divided by one */
 	sys_write32(SPI_CCU_MOD_CLK_GATE,
-		    SPI_CCU_BASE + SPI_CCU_MOD_CLK_REG + ccu_instance * 4);
+		    data->ccu + SPI_CCU_MOD_CLK_REG + ccu_instance * 4);
 }
 
-static int spi_allwinner_set_frequency(const struct spi_allwinner_config *cfg, uint32_t frequency,
+static int spi_allwinner_set_frequency(const struct spi_allwinner_config *cfg,
+				       struct spi_allwinner_data *data, uint32_t frequency,
 				       uint32_t *effective_speed)
 {
-	uintptr_t clk_reg = SPI_CCU_BASE + SPI_CCU_MOD_CLK_REG + cfg->ccu_instance * 4;
+	mm_reg_t clk_reg = data->ccu + SPI_CCU_MOD_CLK_REG + cfg->ccu_instance * 4;
 	uint32_t div;
 
 	if (frequency == 0 || frequency > cfg->clock_frequency) {
@@ -139,22 +147,22 @@ static int spi_allwinner_set_frequency(const struct spi_allwinner_config *cfg, u
 }
 
 #if defined(CONFIG_SPI_ALLWINNER_A523_SPI0_PC_PINMUX)
-static void spi_allwinner_pinmux_spi0_pc(void)
+static void spi_allwinner_pinmux_spi0_pc(struct spi_allwinner_data *data)
 {
 	/* PC2, PC3 -> CFG0, PC4 -> CFG1, PC12 -> CFG2, function "spi0" */
 	uint32_t reg;
 
-	reg = sys_read32(SPI_PIO_CFG_REG('C', 0));
+	reg = sys_read32(data->pio + SPI_PIO_CFG_REG('C', 0));
 	reg = (reg & ~(GENMASK(11, 8) | GENMASK(15, 12))) | 4u << 8 | 4u << 12;
-	sys_write32(reg, SPI_PIO_CFG_REG('C', 0));
+	sys_write32(reg, data->pio + SPI_PIO_CFG_REG('C', 0));
 
-	reg = sys_read32(SPI_PIO_CFG_REG('C', 1));
+	reg = sys_read32(data->pio + SPI_PIO_CFG_REG('C', 1));
 	reg = (reg & ~GENMASK(3, 0)) | 4u;
-	sys_write32(reg, SPI_PIO_CFG_REG('C', 1));
+	sys_write32(reg, data->pio + SPI_PIO_CFG_REG('C', 1));
 
-	reg = sys_read32(SPI_PIO_CFG_REG('C', 2));
+	reg = sys_read32(data->pio + SPI_PIO_CFG_REG('C', 2));
 	reg = (reg & ~GENMASK(19, 16)) | 4u << 16;
-	sys_write32(reg, SPI_PIO_CFG_REG('C', 2));
+	sys_write32(reg, data->pio + SPI_PIO_CFG_REG('C', 2));
 }
 #endif
 
@@ -173,16 +181,16 @@ static int spi_allwinner_configure(const struct device *dev, const struct spi_co
 	return 0;
 }
 
-static void spi_allwinner_fill_fifo(const struct spi_allwinner_config *cfg, const uint8_t **tx,
+static void spi_allwinner_fill_fifo(struct spi_allwinner_data *data, const uint8_t **tx,
 				    uint32_t *tx_left)
 {
-	uint32_t level = (spi_allwinner_read(cfg, SPI_FSR_REG) & SPI_FSR_TF_CNT) >>
+	uint32_t level = (spi_allwinner_read(data, SPI_FSR_REG) & SPI_FSR_TF_CNT) >>
 			 SPI_FSR_TF_CNT_SHIFT;
 
 	for (uint32_t count = MIN(SPI_FIFO_DEPTH - level, *tx_left); count != 0; count--) {
 		uint8_t byte = (*tx != NULL) ? **tx : 0;
 
-		sys_write8(byte, cfg->base + SPI_TXD_REG);
+		sys_write8(byte, data->base + SPI_TXD_REG);
 		if (*tx != NULL) {
 			(*tx)++;
 		}
@@ -190,12 +198,12 @@ static void spi_allwinner_fill_fifo(const struct spi_allwinner_config *cfg, cons
 	}
 }
 
-static void spi_allwinner_drain_fifo(const struct spi_allwinner_config *cfg, uint8_t **rx,
+static void spi_allwinner_drain_fifo(struct spi_allwinner_data *data, uint8_t **rx,
 				     uint32_t *rx_left)
 {
-	for (uint32_t level = spi_allwinner_read(cfg, SPI_FSR_REG) & SPI_FSR_RF_CNT;
+	for (uint32_t level = spi_allwinner_read(data, SPI_FSR_REG) & SPI_FSR_RF_CNT;
 	     level != 0 && *rx_left != 0; level--) {
-		**rx = sys_read8(cfg->base + SPI_RXD_REG);
+		**rx = sys_read8(data->base + SPI_RXD_REG);
 		(*rx)++;
 		(*rx_left)--;
 	}
@@ -219,15 +227,15 @@ static int spi_allwinner_xfer(const struct device *dev, const struct spi_config 
 		return -EMSGSIZE;
 	}
 
-	ret = spi_allwinner_set_frequency(cfg, config->frequency, &effective_speed);
+	ret = spi_allwinner_set_frequency(cfg, data, config->frequency, &effective_speed);
 	if (ret < 0) {
 		return ret;
 	}
 
-	spi_allwinner_write(cfg, SPI_INT_STA_REG, SPI_INT_STA_TC);
-	spi_allwinner_write(cfg, SPI_FCR_REG, SPI_FCR_RF_RST | SPI_FCR_TF_RST);
+	spi_allwinner_write(data, SPI_INT_STA_REG, SPI_INT_STA_TC);
+	spi_allwinner_write(data, SPI_FCR_REG, SPI_FCR_RF_RST | SPI_FCR_TF_RST);
 
-	tcr = spi_allwinner_read(cfg, SPI_TCR_REG);
+	tcr = spi_allwinner_read(data, SPI_TCR_REG);
 	tcr &= ~(SPI_TCR_CPHA | SPI_TCR_CPOL | SPI_TCR_SPOL | SPI_TCR_DHB | SPI_TCR_FBS |
 		 SPI_TCR_SDM | SPI_TCR_SS_LEVEL);
 	if (config->operation & SPI_MODE_CPOL) {
@@ -253,39 +261,39 @@ static int spi_allwinner_xfer(const struct device *dev, const struct spi_config 
 	tcr |= SPI_TCR_SS_MANUAL;
 	/* Normal sample mode: SCLK <= 24 MHz */
 	tcr |= SPI_TCR_SDM;
-	spi_allwinner_write(cfg, SPI_TCR_REG, tcr);
+	spi_allwinner_write(data, SPI_TCR_REG, tcr);
 
-	reg = spi_allwinner_read(cfg, SPI_GCR_REG);
-	spi_allwinner_write(cfg, SPI_GCR_REG, reg | SPI_GCR_BUS_ENABLE);
+	reg = spi_allwinner_read(data, SPI_GCR_REG);
+	spi_allwinner_write(data, SPI_GCR_REG, reg | SPI_GCR_BUS_ENABLE);
 
-	spi_allwinner_write(cfg, SPI_BC_REG, len);
-	spi_allwinner_write(cfg, SPI_TC_REG, len);
-	spi_allwinner_write(cfg, SPI_BCC_REG, len & SPI_BCC_STC_MASK);
+	spi_allwinner_write(data, SPI_BC_REG, len);
+	spi_allwinner_write(data, SPI_TC_REG, len);
+	spi_allwinner_write(data, SPI_BCC_REG, len & SPI_BCC_STC_MASK);
 
-	spi_allwinner_fill_fifo(cfg, &tx, &tx_left);
+	spi_allwinner_fill_fifo(data, &tx, &tx_left);
 
 	/* Assert CS and start the burst */
-	spi_allwinner_write(cfg, SPI_TCR_REG, tcr | SPI_TCR_SS_LEVEL | SPI_TCR_XCH);
+	spi_allwinner_write(data, SPI_TCR_REG, tcr | SPI_TCR_SS_LEVEL | SPI_TCR_XCH);
 
 	end = sys_timepoint_calc(K_MSEC(SPI_TIMEOUT_MSEC(len, effective_speed)));
-	while (!(spi_allwinner_read(cfg, SPI_INT_STA_REG) & SPI_INT_STA_TC)) {
+	while (!(spi_allwinner_read(data, SPI_INT_STA_REG) & SPI_INT_STA_TC)) {
 		if (sys_timepoint_expired(end)) {
 			LOG_ERR("Transfer timeout, %u bytes remaining", tx_left + rx_left);
 			ret = -ETIMEDOUT;
 			break;
 		}
 
-		spi_allwinner_fill_fifo(cfg, &tx, &tx_left);
-		spi_allwinner_drain_fifo(cfg, &rx, &rx_left);
+		spi_allwinner_fill_fifo(data, &tx, &tx_left);
+		spi_allwinner_drain_fifo(data, &rx, &rx_left);
 	}
 
-	spi_allwinner_drain_fifo(cfg, &rx, &rx_left);
+	spi_allwinner_drain_fifo(data, &rx, &rx_left);
 
 	/* De-assert CS */
-	tcr = spi_allwinner_read(cfg, SPI_TCR_REG) & ~SPI_TCR_SS_LEVEL;
-	spi_allwinner_write(cfg, SPI_TCR_REG, tcr);
+	tcr = spi_allwinner_read(data, SPI_TCR_REG) & ~SPI_TCR_SS_LEVEL;
+	spi_allwinner_write(data, SPI_TCR_REG, tcr);
 
-	spi_allwinner_write(cfg, SPI_INT_STA_REG, SPI_INT_STA_TC);
+	spi_allwinner_write(data, SPI_INT_STA_REG, SPI_INT_STA_TC);
 
 	return ret;
 }
@@ -345,32 +353,36 @@ static int spi_allwinner_init(const struct device *dev)
 	struct spi_allwinner_data *data = dev->data;
 	uint32_t reg, timeout = 1000;
 
-	spi_allwinner_ccu_enable(cfg->ccu_instance);
+	device_map(&data->base, cfg->base_phys, cfg->base_size, K_MEM_CACHE_NONE);
+	device_map(&data->ccu, SPI_CCU_BASE, SPI_CCU_SIZE, K_MEM_CACHE_NONE);
+	device_map(&data->pio, SPI_PIO_BASE, SPI_PIO_SIZE, K_MEM_CACHE_NONE);
+
+	spi_allwinner_ccu_enable(data, cfg->ccu_instance);
 
 #if defined(CONFIG_SPI_ALLWINNER_A523_SPI0_PC_PINMUX)
 	if (cfg->ccu_instance == 0) {
-		spi_allwinner_pinmux_spi0_pc();
+		spi_allwinner_pinmux_spi0_pc(data);
 	}
 #endif
 
 	/* Soft reset the controller */
-	spi_allwinner_write(cfg, SPI_GCR_REG, SPI_GCR_SRST);
+	spi_allwinner_write(data, SPI_GCR_REG, SPI_GCR_SRST);
 	do {
-		reg = spi_allwinner_read(cfg, SPI_GCR_REG);
+		reg = spi_allwinner_read(data, SPI_GCR_REG);
 	} while ((reg & SPI_GCR_SRST) != 0 && --timeout != 0);
 	if (timeout == 0) {
 		LOG_ERR("Controller reset timed out");
 		return -ETIMEDOUT;
 	}
 
-	spi_allwinner_write(cfg, SPI_GCR_REG, SPI_GCR_MASTER | SPI_GCR_TP);
+	spi_allwinner_write(data, SPI_GCR_REG, SPI_GCR_MASTER | SPI_GCR_TP);
 
 	spi_context_cs_configure_all(&data->ctx);
 
 	/* Keep CS de-asserted while the controller is idle */
-	reg = spi_allwinner_read(cfg, SPI_TCR_REG) & ~SPI_TCR_SS_LEVEL;
+	reg = spi_allwinner_read(data, SPI_TCR_REG) & ~SPI_TCR_SS_LEVEL;
 	reg |= SPI_TCR_SS_MANUAL;
-	spi_allwinner_write(cfg, SPI_TCR_REG, reg);
+	spi_allwinner_write(data, SPI_TCR_REG, reg);
 
 	return 0;
 }
@@ -381,7 +393,8 @@ static int spi_allwinner_init(const struct device *dev)
 		SPI_CONTEXT_INIT_SYNC(spi_allwinner_data_##inst, ctx),                        \
 	};                                                                                    \
 	static const struct spi_allwinner_config spi_allwinner_cfg_##inst = {                 \
-		.base = DT_INST_REG_ADDR(inst),                                               \
+		.base_phys = DT_INST_REG_ADDR(inst),                                          \
+		.base_size = DT_INST_REG_SIZE(inst),                                          \
 		.clock_frequency = DT_INST_PROP(inst, clock_frequency),                       \
 		.ccu_instance = DT_INST_PROP(inst, allwinner_ccu_instance),                   \
 	};                                                                                    \
