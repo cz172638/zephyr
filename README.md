@@ -211,6 +211,34 @@ Reading the output:
 - reaches `MM5` repeatedly then `MN2` → transfer path OK, hang is further
   on (banner/main).
 
+## cubie-0009-zephyr-spi-fine-debug-fel.bin
+
+**Zephyr fine-grained transfer debug (like cubie-0008).** Evidence from
+cubie-0008: the whole init completes, `spi_nor` init starts (`MN0`),
+`pm_device_driver_init` triggers the first SPI transfer (`MM0`), and the
+system vanishes between `MM0` and `MM1` — i.e. inside the first
+`spi_allwinner_xfer()`: `set_frequency` (CCU 0x940, already proven by MK4),
+then the first-ever accesses to `INT_STA (0x14)`, `FCR (0x18)`, `TCR`,
+`GCR`, `BC (0x30)`, `TC (0x34)`, `BCC (0x38)` and the `FSR (0x1c)` read in
+the `MM1` arguments.
+
+This build brackets each group of accesses with an `MF` marker including
+read-backs:
+
+```
+MF0: xfer enter (len, rx pointer)
+MF1: set_frequency result (+effective speed) or rc
+MF2: after INT_STA/FCR writes (+read-back INT_STA, FSR)
+MF3: after BC/TC/BCC writes (+read-back TCR/GCR/BC/TC/BCC)
+MM1: pre-fill, MM2: post-fill, MM3: XCH start
+MM4: one line per poll iteration (poll counter, INT_STA, FSR, TCR)
+MM5: xfer ret + FIFO status
+```
+
+Run: `sunxi-fel -v uboot fel/cubie-0009-zephyr-spi-fine-debug-fel.bin`
+(178583 bytes, sha256 `77e748f3e3fc41f1...`). The `MF` line printed last
+pins the exact MMIO access at which the SoC stops replying.
+
 ## fel/sunxi-tools-a523-spiflash.patch
 
 Patch for sunxi-tools adding A523 (soc_id 0x1890) support to the
