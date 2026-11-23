@@ -340,3 +340,19 @@ after adding fwupdate (RAM grew 1192 -> 2232 KB) the default 8 translation
 tables no longer cover all mapped windows. The smoke app prj.conf now sets
 CONFIG_MAX_XLAT_TABLES=16. All other content identical to cubie-0014
 (PIO bank stride 0x30 pinmux fix + fwupdate ymodem).
+
+## cubie-0016-zephyr-cs-polarity-fel.bin
+
+sha256: `78a701144b1313aff9056e1c979f57f1d8ae3160b6b639d07fe79d7d646fbace` (186783 B)
+
+cubie-0015 got the pinmux right (MK5b `cfg0=fff444ff / cfg1=fff4ffff`) but
+RDSR then returned 0xFF forever (spi_nor_wait_until_ready loop): the flash
+never drove MISO. Register-by-register diff against the U-Boot driver that
+works on this silicon (A523 maps to the sun50i-r329 variant) found the
+difference: U-Boot sets TCR bit2 (CS_ACTIVE_LOW / SS polarity) at claim bus,
+the Zephyr driver only set it for SPI_CS_ACTIVE_HIGH, i.e. the (active-low)
+flash was never selected and MISO floated high.
+
+Fix: SPOL is now set by default (active-low), cleared only for
+SPI_CS_ACTIVE_HIGH. Also added the FCR FIFO-reset self-clear poll as in
+U-Boot. Expect now `MN3 id=ef 40 18`, SFDP valid, smoke PASS.
