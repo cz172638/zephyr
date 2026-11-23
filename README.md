@@ -269,3 +269,20 @@ Patch for sunxi-tools adding A523 (soc_id 0x1890) support to the
 `spiflash-info`/`spiflash-read`/`spiflash-write` FEL commands. Compile with
 `make` in a sunxi-tools tree where the patch was applied with
 `git apply`. Unverified on hardware as of this writing.
+
+## cubie-0011-zephyr-lockfix-fel.bin
+
+sha256: `2b2cce67fdd00ba954de2fe8e1f8b8cad8a314c7b9f506633c4d8d4e860ee1e3` (178583 B)
+
+Root-cause fix for the silent boot of cubie-0008..0010. Markers confirmed the first
+SPI transceive (`spi_nor` init -> `exit_dpd`) hung in `spi_context_lock()`:
+`MM0: transceive enter lock_cnt=0` and silence. The lock semaphore is initialized
+with count 0 (`SPI_CONTEXT_INIT_LOCK`, same as upstream), so drivers must call
+`spi_context_unlock_unconditionally()` at the end of their init function —
+`spi_allwinner_init()` was missing that call (it was only in `release()`).
+
+Change: `spi_allwinner_init()` now calls `spi_context_unlock_unconditionally(&data->ctx)`
+before returning. Debug markers (MK/MN/MM/MF) are still present in this build.
+
+Load the same way as cubie-0006/0007 via FEL + ymodem, or flash to NOR at offset 0
+(replaces the whole eGON+FIT blob).
