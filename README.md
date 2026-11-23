@@ -313,3 +313,20 @@ FIFO counts fine) but no clock reached the flash, so RX was all zeros.
 
 Fix: CFG0 = PC2/PC3/PC4 -> fn4, CFG1 = PC12 -> fn4. New marker `MK5b` prints
 CFG0/CFG1 contents for on-hardware verification.
+
+## cubie-0014-zephyr-pinmux-bank30-fwupdate-fel.bin
+
+sha256: `417db8273dd9d8a5ee0def12a89f45bbac08fbb6c79979cc2c8c5aa70787a5e2` (186783 B)
+
+Two changes on top of cubie-0013:
+1. PIO bank stride fix: MK5b in cubie-0013 showed `cfg0=01100011 / cfg1=00000000`
+   - the pinmux writes never landed. The A523 uses the new-generation pin
+   controller with bank size 0x30 (U-Boot `SUNXI_NEW_PINCTRL`), not 0x24;
+   Port C CFG registers are at PIO+0x60, and 0x48 is Port B's PULL register.
+   `SPI_PIO_CFG_REG` now uses the 0x30 stride.
+2. `fwupdate ymodem` from `subsys/fwupdate` added to the smoke app
+   (CONFIG_FWUPDATE + CONFIG_FLASH_MAP; YMODEM on the shell UART, as on other
+   boards). The board dtsi gained fixed partitions on flash0:
+   `boot_partition` @0 (1 MiB, the eGON+FIT image) and `storage_partition`
+   @0x100000 (15 MiB). Usage: run `fwupdate ymodem` in the Zephyr shell and
+   send a cubie-NNN .bin (SPL+FIT)+light image from tio (ctrl-t y / `sb`).
