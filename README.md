@@ -148,6 +148,40 @@ sunxi-fel spiflash-write 0 fel/cubie-0006-uboot-spi-flash-nor.bin
 sunxi-fel spiflash-read 0 0x40 ver.bin && xxd ver.bin | head
 ```
 
+## cubie-0007-zephyr-spi-flash-debug-fel.bin
+
+**Zephyr marker-debug build (SPL + FIT with BL31 + Zephyr, like cubie-0004).**
+SPI driver prints `MK` progress markers on UART0 (115200) from its
+`POST_KERNEL` init, via `printk`:
+
+```
+MK0: spi0 init enter
+MK1: map base phys=0x04025000 / base VA=...
+MK2: map ccu       / ccu VA=...
+MK3: map pio       / pio VA=...
+MK4: ccu enable
+MK5: pinmux / pinmux done
+MK6: srst poll enter / (srst poll, timeout=... reg=...)
+MK7: srst poll exit timeout=... reg=...
+MK8: cs configure
+MK9: spi0 init done
+*** Booting Zephyr OS ... ***
+cubie_a5e SPI flash smoke test
+...
+```
+
+The last printed `MK` number localises the hang precisely:
+- stops between MK0..MK3 → `device_map()` (`k_mem_map_phys_bare`) never
+  returns — suspected deadlock in the fail path holding `z_mm_lock`
+  (kernel/mmu.c fail path does not release the lock before `k_panic()`),
+- stops at MK4 → CCU write (gate/clock) hangs the bus,
+- never reaches MK7 → GCR soft-reset poll loop never sees SRST clear
+  (controller not clocked / bus gate problem),
+- reaches MK9 → init is fine and the fault is elsewhere (app or flash bus).
+
+Run: `sunxi-fel -v uboot fel/cubie-0007-zephyr-spi-flash-debug-fel.bin`
+(178583 bytes, sha256 `a0610b882c79831c...`).
+
 ## fel/sunxi-tools-a523-spiflash.patch
 
 Patch for sunxi-tools adding A523 (soc_id 0x1890) support to the
