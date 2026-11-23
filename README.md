@@ -371,3 +371,24 @@ For a byte-accurate diff this build dumps the full SPI register map:
 To compare, run the same dump in U-Boot after sf probe:
 `md 0x04025000 0x50` (0x04025004..0x38 counted in the output word-aligned)
 and the CCU bits if needed.
+
+## cubie-0018-zephyr-cs-sslevel-fix-fel.bin
+
+sha256: `a58cacc10409c7ac53d3e08ae92bbe8bfd882b13124fea969167ca71a9034301` (186783 B)
+
+Root cause #5 found via the cubie-0017 register dump: during the burst the
+driver wrote `TCR = SS_LEVEL=1` while `SS_OWNER=1` (manual CS) and `SPOL=1`
+(active low). SS_LEVEL=1 drives the pad **high** = CS de-asserted for the
+whole transfer, and after the transfer the driver cleared SS_LEVEL, leaving
+CS asserted in idle. U-Boot does the exact inverse (`sun4i_spi_set_cs()`:
+enable -> clear CS_LEVEL bit), so the flash never saw a falling edge on CS,
+never registered a command, kept MISO in Hi-Z and RDSR returned 0xFF, with
+FSR RF_CNT staying 0.
+
+Fix (expected now, with all of: MK10 confirms `tcr` low during XCH, between
+frames CS idles high, RDSR returns 0x00, JEDEC `ef 40 18`, SFDP valid,
+shell reachable on first boot):
+- idle: `TCR |= SS_LEVEL` (init + per-configure, de-asserted)
+- burst: `TCR &= ~SS_LEVEL` before setting XCH (asserted)
+- after burst: `TCR |= SS_LEVEL` (de-asserted)
+- inverted for SPI_CS_ACTIVE_HIGH
