@@ -298,3 +298,18 @@ failure is inside `spi_nor_process_sfdp` (or a nearby -ENODEV path). New markers
 - `MN3: jedec rc=.. id=..` after JEDEC ID read (expect RC=0, EF 40 18)
 - `MN4: sfdp rc=..` after SFDP processing
 - `MM9: rx0=..` first received bytes of every SPI transfer (detects garbage RX)
+
+## cubie-0013-zephyr-pinmux-fix-fel.bin
+
+sha256: `8f7bb1f35c4eb63f14f0ebb3dbef01ba04d2b1ee285d2e4735bc47169dc89d2c` (178583 B)
+
+Root cause of the all-zero RX data (cubie-0012: `MN3 id=00 00 00`, `MN4 sfdp rc=-22`):
+the PC pinmux function placed the CONF nibbles wrong. On Allwinner PIO each CFG
+register covers 8 pins (4-bit field per pin), so PC4 belongs to CFG0 bits[19:16]
+(same register as PC2/PC3) and PC12 to CFG1 bits[19:16]. The old code wrote
+CFG1[3:0] and CFG2[19:16] instead - i.e. it remapped PC8 and PC20 to fn4 and
+never muxed SCK (PC4) or CS (PC12). The controller clocked internally (TC set,
+FIFO counts fine) but no clock reached the flash, so RX was all zeros.
+
+Fix: CFG0 = PC2/PC3/PC4 -> fn4, CFG1 = PC12 -> fn4. New marker `MK5b` prints
+CFG0/CFG1 contents for on-hardware verification.
