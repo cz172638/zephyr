@@ -182,6 +182,35 @@ The last printed `MK` number localises the hang precisely:
 Run: `sunxi-fel -v uboot fel/cubie-0007-zephyr-spi-flash-debug-fel.bin`
 (178583 bytes, sha256 `a0610b882c79831c...`).
 
+## cubie-0008-zephyr-spi-xfer-debug-fel.bin
+
+**Zephyr transfer-path debug build (like cubie-0007).** Evidence from
+cubie-0007: the whole SPI driver init completes (`MK0`–`MK9`), so the silent
+hang sits beyond it — the next thing the kernel initialises is `flash@0`
+(`jedec,spi-nor`), whose init performs the *first* SPI transfer (SFDP/JEDEC
+read). This build adds:
+
+- `MN0/MN1/MN2` markers inside the generic `spi_nor` driver init,
+- `MM0`–`MM5` markers around every SPI transfer (enter, fill FIFO, XCH
+  start, status/FSR/TCR dump once per poll iteration in the completion
+  wait, exit with return code and FIFO status).
+
+Run: `sunxi-fel -v uboot fel/cubie-0008-zephyr-spi-xfer-debug-fel.bin`
+(178583 bytes, sha256 `a1ff3f450b112110...`).
+
+Reading the output:
+
+- stops after `MM0`/`MM1`/`MM2` → controller-side register interaction
+  hangs (bus gate/clock),
+- `MM3` printed with no `MM4`/`MM5` → burst never completes: pin mux, CS,
+  clock or the flash chip itself not responding (check SCK/MOSI with a
+  scope/git, and that the transfer clock is within spec),
+- `MM4` repeating with status stuck → flash never returns the TC bit
+  (wrong mode/wiring), but the poll has a real timeout, so `MM5` with a
+  negative rc should follow,
+- reaches `MM5` repeatedly then `MN2` → transfer path OK, hang is further
+  on (banner/main).
+
 ## fel/sunxi-tools-a523-spiflash.patch
 
 Patch for sunxi-tools adding A523 (soc_id 0x1890) support to the
