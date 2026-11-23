@@ -356,3 +356,18 @@ flash was never selected and MISO floated high.
 Fix: SPOL is now set by default (active-low), cleared only for
 SPI_CS_ACTIVE_HIGH. Also added the FCR FIFO-reset self-clear poll as in
 U-Boot. Expect now `MN3 id=ef 40 18`, SFDP valid, smoke PASS.
+
+## cubie-0017-zephyr-spi-regdump-fel.bin
+
+sha256: `0d3172a3b0573d5e96bea8c17dc494f874bf1318822a8d52141fe3fb77d311fe` (186783 B)
+
+cubie-0016 (CS polarity fix, TCR bit2) still saw all-0xFF RDSR responses;
+the register state during transfer now matches the working U-Boot driver.
+For a byte-accurate diff this build dumps the full SPI register map:
+- `MK10`: GCR/TCR/INT_CTL/INT_STA, FCR/FSR/CCR/BC/TC/BCC, 0x3c/0x40/0x44/0x48
+  after init
+- `MF4`: CCR / INT_CTL / 0x3c during the transfer
+
+To compare, run the same dump in U-Boot after sf probe:
+`md 0x04025000 0x50` (0x04025004..0x38 counted in the output word-aligned)
+and the CCU bits if needed.
