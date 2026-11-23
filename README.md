@@ -82,3 +82,27 @@ Extra payload for writing can be pushed through FEL along with the boot:
 sunxi-fel -v uboot fel/cubie-0005-uboot-spi-flash-fel.bin \
     write 0x40080000 <some-file.bin>
 ```
+
+## cubie-0006-uboot-spi-flash-nor.bin
+
+**Image for programming the on-board SPI NOR (bytes, from offset 0).**
+Same content as cubie-0005 (SPL + U-Boot FIT; sha256 `cbf7a43a...a9d5a`,
+834049 bytes). Layout matches what U-Boot SPL expects when booting from NOR:
+SPL at offset 0 (eGON.BT0, header length 0xC000), the FIT at 0xC000
+(= `max(sunxi_get_spl_size(), CONFIG_SYS_SPI_U_BOOT_OFFS)`).
+
+Program it from the U-Boot shell of cubie-0005:
+
+```
+sunxi-fel -v uboot fel/cubie-0005-uboot-spi-flash-fel.bin \
+    write 0x40080000 fel/cubie-0006-uboot-spi-flash-nor.bin
+# (stop autoboot)
+sf probe
+sf erase 0 +0x100000
+sf write 0x40080000 0 0xcba01
+```
+
+Then do a full power cycle: if the A523 BROM picks SPI NOR as the boot
+source, U-Boot starts off the flash on its own. If the BROM does not offer
+SPI NOR boot on this SoC, the fallback chain stays SPL-via-FEL and the NOR
+is used only as payload storage.
