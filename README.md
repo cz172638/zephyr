@@ -61,3 +61,24 @@ the previous build took a data abort on the first CCU register access,
 Diagnostic variant: SPL + FIT with Zephyr only as the payload (no BL31,
 Zephyr entered directly at EL3 via RMR). Silent on hardware — Zephyr on this
 board expects the TF-A BL31 setup; use cubie-0001.
+
+## cubie-0005-uboot-spi-flash-fel.bin
+
+U-Boot proper (same chain as cubie-0002) rebuilt with the on-board SPI NOR
+reachable from the U-Boot command line: `CONFIG_SPI_SUNXI` (`spi-sunxi` DM
+driver with the `allwinner,sun55i-a523-spi` variant) and `&spi0` enabled in
+the board DT (pins PC2/PC3/PC4/PC12, `flash@0 jedec,spi-nor`, 24 MHz from
+OSC24M).
+
+```
+sf probe            # expect: SF: Detected w25q128 ...
+sf erase <off> +<size>
+sf write <dram_addr> <off> <size>
+```
+
+Extra payload for writing can be pushed through FEL along with the boot:
+
+```
+sunxi-fel -v uboot fel/cubie-0005-uboot-spi-flash-fel.bin \
+    write 0x40080000 <some-file.bin>
+```
