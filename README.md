@@ -427,3 +427,41 @@ Idle level is now set only at init and after the last burst of a
 transceive. Expected trace now:
 - `MF3 tcr=00002044` for burst2 (SS_LEVEL stays 0 through the frame)
 - `MM9: rx0=… 00 …`, `MN3 jedec id=ef 40 18`, `MN4 sfdp rc=0`
+
+## cubie-0021-zephyr-rx-ovf-fix-fel.bin
+
+sha256: `6a20a0f11d09f5faebcfbe8bbffbffd2c67d33e29a60fa9db90d74905cba2eee` (186783 B)
+
+Diagnosis after cubie-0020: SPI NOR init fully passes (RDSR 0x00, JEDEC
+`ef 60 18`, SFDP signature OK, shell boots, 16 MiB detected) but the
+app-level `flash_read` (0x03) returned 0xFF, while the register flow of
+the failing frames was identical to the working init frames.
+
+Root cause #7: **RX FIFO overflow during the 80-byte SFDP read wedges
+the receiver.** In the cubie-0020 marker build the busy-wait poll loop
+executed a printer call (`MM4: poll=...`) on every iteration; one printk
+line takes several milliseconds while the hardware clocks the remaining
+burst bytes in microseconds. The 80-byte SFDP data burst therefore fits
+only 64 bytes into the RX FIFO (A523 FIFO depth 64) before the CPU gets
+to drain it for the first time — RX overflow. Every RX read afterwards
+returned 0xFF; the driver only cleared the TC status bit, never the
+overflow flag, so the wedge persisted.
+
+Fix in cubie-0021:
+- INT_STA is now fully W1C-cleared (`0xffffffff`) at the start of every
+  burst instead of clearing only TC.
+- The per-poll printk is limited to the first poll iteration, so the
+  polling loop keeps pace with the hardware again.
+- `MM5b` prints the final INT_STA after each burst (stale OVF/THF flags
+  become visible), `MM1a` prints the first 8 TX bytes of each burst.
+
+Same wiring note confirmed in the board schematic meanwhile: SPIF-CS0 =
+PC3, SPIF-MOSI = PC2, SPIF-MISO = PC4, SPIF-CLK = PC12 (sheet 09; flash
+part drawn as NC/25Q64DWZPIG "optional", the populated variant carries
+the W25Q128FW). Pin mapping matches the driver; the schematic does not
+explain the 0xFF reads — it was a driver/software issue.
+
+Expected: reads after init return real data — `read(0,3)` should print
+the eGON payload bytes at offset 0 (NOR carries the flashed boot image),
+`read(0,16)` non-FF bytes, `MN4 sfdp rc=0` with `MM5b int_sta` free of
+overflow flags.
