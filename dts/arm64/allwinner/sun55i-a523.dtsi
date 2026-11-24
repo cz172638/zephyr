@@ -296,6 +296,31 @@
 			status = "okay";
 		};
 
+		/*
+		 * PCIe 2.1 x1 (DesignWare, root complex only) with the INNO
+		 * combo PHY shared with USB 3.0. The controller decodes
+		 * 0x20000000..0x2fffffff: configuration requests in the first
+		 * 16 MiB, I/O and memory from "ranges" above.
+		 */
+		pcie: pcie@4800000 {
+			compatible = "allwinner,sun55i-a523-pcie";
+			reg = <0x04800000 0x480000>,
+			      <0x20000000 DT_SIZE_M(16)>,
+			      <0x04f00000 0x100000>;
+			reg-names = "dbi", "config", "combo";
+			interrupts = <GIC_SPI 107 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+				     <GIC_SPI 106 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "msi", "sii";
+			device_type = "pci";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges = <0x81000000 0x0 0x00000000 0x21000000 0x0 0x10000>,
+				 <0x82000000 0x0 0x22000000 0x22000000 0x0 0x0e000000>;
+			num-lanes = <1>;
+			max-link-speed = <2>;
+			status = "disabled";
+		};
+
 		r_gpiol: gpio@7022000 {
 			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
 			reg = <0x07022000 0x30>, <0x07022000 0x800>;
