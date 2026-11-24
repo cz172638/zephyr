@@ -124,6 +124,7 @@ static const struct {
 	{0x0019, true, "secpci", "Secondary PCI Express"},
 	{0x001e, true, "l1ss", "L1 PM Substates"},
 	{0x001f, true, "ptm", "Precision Time Measurement"},
+	{0x0021, true, "frsq", "FRS Queueing"},
 	{0x0025, true, "dlf", "Data Link Feature"},
 	{0x0026, true, "pl16", "Physical Layer 16 GT/s"},
 };
