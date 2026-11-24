@@ -73,5 +73,16 @@
 			status = "disabled";
 		};
 
+		qspi: spi@1550000 {
+			compatible = "fsl,ls1021a-qspi";
+			reg = <0x0 0x01550000 0x0 0x10000>,
+			      <0x0 0x40000000 0x0 0x10000000>;
+			reg-names = "ctrl", "mem";
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 99 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			status = "disabled";
+		};
 	};
 };
