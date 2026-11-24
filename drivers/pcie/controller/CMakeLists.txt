@@ -8,4 +8,5 @@ zephyr_library_sources_ifdef(CONFIG_PCIE_AARDVARK pcie_aardvark.c)
 zephyr_library_sources_ifdef(CONFIG_PCIE_BRCMSTB pcie_brcmstb.c)
 zephyr_library_sources_ifdef(CONFIG_PCIE_ECAM pcie_ecam.c)
 zephyr_library_sources_ifdef(CONFIG_PCIE_RK3399 pcie_rk3399.c)
+zephyr_library_sources_ifdef(CONFIG_PCIE_SUN55I pcie_sun55i.c)
 # zephyr-keep-sorted-stop
