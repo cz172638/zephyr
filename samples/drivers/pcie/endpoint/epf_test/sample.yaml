@@ -15,6 +15,7 @@ tests:
     platform_allow:
       - espressobin/armada3720
       - espressobin/armada3720/smp
+      - frwy_ls1012a
     integration_platforms:
       - espressobin/armada3720
     build_only: true
