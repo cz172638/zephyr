@@ -31,3 +31,42 @@
 	current-speed = <115200>;
 	status = "okay";
 };
+
+/*
+ * SPI NOR flash on SPI0: PC2 MOSI, PC3 CS0, PC4 MISO, PC12 CLK, 1.8 V.
+ * The part is optional (schematic: 25Q64DW, boards seen with a 16 MiB
+ * W25Q128JW, JEDEC ID ef 60 18); its WP and HOLD lines share
+ * PC15/PC16 with the eMMC data lines, so only single-bit transfers are
+ * used. The size comes from SFDP at run time.
+ */
+&spi0 {
+	status = "okay";
+
+	flash0: flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(24)>;
+
+		/* laid out for the smallest part, 8 MiB */
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/*
+			 * The BROM loads the eGON SPL from offset 0; the SPL
+			 * then the FIT with BL31 and Zephyr (or U-Boot).
+			 * fwupdate replaces the whole image.
+			 */
+			boot_partition: partition@0 {
+				label = "boot";
+				reg = <0x0 0x400000>;
+			};
+
+			storage_partition: partition@400000 {
+				label = "storage";
+				reg = <0x400000 0x400000>;
+			};
+		};
+	};
+};

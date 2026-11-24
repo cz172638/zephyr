@@ -1,0 +1,23 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config SPI_ALLWINNER
+	bool "Allwinner SPI controller driver"
+	default y
+	depends on DT_HAS_ALLWINNER_SUN55I_A523_SPI_ENABLED
+	help
+	  Enable the SPI controllers found on the Allwinner A523/A527/T527
+	  SoCs. Transfers are polled, the controller clock is derived from
+	  the always-on 24 MHz oscillator.
+
+if SPI_ALLWINNER
+
+config SPI_ALLWINNER_A523_SPI0_PC_PINMUX
+	bool "Configure SPI0 pins on port C"
+	default y
+	help
+	  Mux PC2, PC3 (CS0), PC4 and PC12 to the "spi0" function. Disable
+	  this option if the SPI0 pins are muxed by earlier firmware boot
+	  stages, e.g. U-Boot, or are used differently.
+
+endif # SPI_ALLWINNER
