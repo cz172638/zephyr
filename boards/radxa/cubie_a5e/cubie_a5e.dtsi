@@ -4,6 +4,7 @@
  */
 
 #include <allwinner/sun55i-a523.dtsi>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
 	model = "Radxa Cubie A5E";
@@ -13,6 +14,7 @@
 		zephyr,console = &uart0;
 		zephyr,shell-uart = &uart0;
 		zephyr,sram = &dram0;
+		zephyr,pcie-controller = &pcie;
 	};
 
 	/*
@@ -29,5 +31,35 @@
 /* 40-pin header pins 8 (TX) and 10 (RX): PB9/PB10, muxed by U-Boot SPL */
 &uart0 {
 	current-speed = <115200>;
+	status = "okay";
+};
+
+/*
+ * The combo PHY lane goes through a GMA340 switch: SEL (PB6) high routes it
+ * to the M.2 Key-M slot (PCIe), low to the USB-A port (USB 3.0); OE# (PB7)
+ * low enables the switch.
+ */
+&gpiob {
+	status = "okay";
+
+	lane-sel-hog {
+		gpio-hog;
+		gpios = <6 GPIO_ACTIVE_HIGH>, <7 GPIO_ACTIVE_LOW>;
+		output-high;
+	};
+};
+
+&gpioh {
+	status = "okay";
+};
+
+&r_gpiol {
+	status = "okay";
+};
+
+/* M.2 Key-M slot: PERST# PH11, 3.3 V switch PCIE_PWREN_H on PL11 */
+&pcie {
+	perst-gpios = <&gpioh 11 GPIO_ACTIVE_LOW>;
+	slot-power-gpios = <&r_gpiol 11 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
