@@ -2414,6 +2414,8 @@ static const struct pcie_shell_ctrl ep_shell = {
 	.name = "aardvark",
 	.dev = EP_DEV,
 	.role = PCIE_SHELL_ROLE_EP,
+	/* dual-mode controller */
+	.roles = BIT(PCIE_SHELL_ROLE_RC) | BIT(PCIE_SHELL_ROLE_EP),
 	.active = sh_active,
 	.info = sh_info,
 #if defined(CONFIG_PCIE_AARDVARK_MODE)

@@ -11,6 +11,12 @@
  * shell offers the same commands for all of them:
  *
  *   pcie controller [info|mode [rc|ep]|link [retrain]|scan|irq|id ...|dsn ...]
+ *
+ * A role can be selected only when a driver for it registered a backend,
+ * i.e. its devicetree node is enabled, or a backend lists it in roles (a
+ * dual-mode controller whose other driver is not in this build): "mode ep"
+ * on a controller with only a root complex node is refused and nothing is
+ * saved, and a saved role that is not available is reported at boot.
  *   pcie ls [-v]
  *   pcie cfg <b:d.f> [<off> [<len>]] | pcie cfg set <b:d.f> <off> <val>
  *   pcie cap ls|get|set <b:d.f> [<cap> [<off> [<val>]]]
@@ -53,6 +59,11 @@ struct pcie_shell_ctrl {
 	const char *name;
 	const struct device *dev;
 	enum pcie_shell_role role;
+	/**
+	 * Roles the hardware can take, BIT(enum pcie_shell_role); 0: only the
+	 * roles of the registered backends
+	 */
+	uint8_t roles;
 	/** Is this backend the one in use this boot? */
 	bool (*active)(const struct device *dev);
 	/** Free-form state: link, LTSSM, windows, ... */

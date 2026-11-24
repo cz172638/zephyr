@@ -14,6 +14,7 @@
 #if defined(CONFIG_LAB_EXT)
 #include <zephyr/lab/mod.h>
 #endif
+#include <zephyr/init.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
@@ -58,6 +59,46 @@ static const char *role_name(enum pcie_shell_role r)
 {
 	return r == PCIE_SHELL_ROLE_RC ? "rc" : "ep";
 }
+
+/*
+ * A role exists when a driver for it registered a backend, which it does
+ * whenever its devicetree node is enabled, also in a boot that uses the
+ * other role, or when a backend lists it in roles. A controller with only
+ * a root complex node (or only an endpoint node) cannot be switched.
+ */
+static bool role_available(enum pcie_shell_role r)
+{
+	for (int i = 0; i < n_ctrls; i++) {
+		if (ctrls[i]->role == r || (ctrls[i]->roles & BIT(r)) != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static const char *role_long(enum pcie_shell_role r)
+{
+	return r == PCIE_SHELL_ROLE_RC ? "root complex" : "endpoint";
+}
+
+/* After the drivers registered: a saved role this build cannot run */
+static int pcie_shell_check_saved(void)
+{
+	for (int i = 0; i < n_ctrls; i++) {
+		const struct pcie_shell_ctrl *c = ctrls[i];
+		enum pcie_shell_role saved;
+
+		if (c->mode_saved != NULL && c->mode_saved(c->dev, &saved) &&
+		    !role_available(saved)) {
+			printk("pcie: %s: saved mode %s is not supported (no %s controller in the "
+			       "devicetree), running as %s\n",
+			       c->dev->name, role_name(saved), role_long(saved), role_long(c->role));
+		}
+	}
+	return 0;
+}
+
+SYS_INIT(pcie_shell_check_saved, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
 int pcie_shell_parse_bdf(const char *s, pcie_bdf_t *bdf)
 {
@@ -584,9 +625,10 @@ static int cmd_ctrl_info(const struct shell *sh, size_t argc, char **argv)
 		enum pcie_shell_role saved;
 		bool has_saved = c->mode_saved != NULL && c->mode_saved(c->dev, &saved);
 
-		shell_print(sh, "%s %s: %s %s%s%s", is_active(c) ? "*" : " ", c->dev->name,
+		shell_print(sh, "%s %s: %s %s%s%s%s", is_active(c) ? "*" : " ", c->dev->name,
 			    c->name, role_name(c->role), has_saved ? ", saved mode " : "",
-			    has_saved ? role_name(saved) : "");
+			    has_saved ? role_name(saved) : "",
+			    has_saved && !role_available(saved) ? " (not supported)" : "");
 	}
 	const struct pcie_shell_ctrl *c = pcie_shell_active(sh);
 
@@ -608,11 +650,16 @@ static int cmd_ctrl_mode(const struct shell *sh, size_t argc, char **argv)
 	if (argc < 2) {
 		enum pcie_shell_role saved;
 
-		shell_print(sh, "running as %s%s%s", role_name(c->role),
-			    c->mode_saved != NULL && c->mode_saved(c->dev, &saved) ? ", saved " : "",
-			    c->mode_saved != NULL && c->mode_saved(c->dev, &saved)
-				    ? role_name(saved)
-				    : "");
+		bool has_saved = c->mode_saved != NULL && c->mode_saved(c->dev, &saved);
+
+		shell_print(sh, "running as %s%s%s%s; supported: %s%s%s", role_name(c->role),
+			    has_saved ? ", saved " : "", has_saved ? role_name(saved) : "",
+			    has_saved && !role_available(saved) ? " (not supported)" : "",
+			    role_available(PCIE_SHELL_ROLE_RC) ? "rc" : "",
+			    role_available(PCIE_SHELL_ROLE_RC) && role_available(PCIE_SHELL_ROLE_EP)
+				    ? " "
+				    : "",
+			    role_available(PCIE_SHELL_ROLE_EP) ? "ep" : "");
 		return 0;
 	}
 	if (strcmp(argv[1], "rc") == 0) {
@@ -622,6 +669,11 @@ static int cmd_ctrl_mode(const struct shell *sh, size_t argc, char **argv)
 	} else {
 		shell_error(sh, "rc or ep");
 		return -EINVAL;
+	}
+	if (!role_available(r)) {
+		shell_error(sh, "%s: %s mode is not supported (no %s controller in the devicetree), "
+			    "not saved", c->dev->name, argv[1], role_long(r));
+		return -ENOTSUP;
 	}
 	if (c->mode_set == NULL) {
 		shell_error(sh, "%s: role fixed", c->dev->name);
