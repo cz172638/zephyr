@@ -1,0 +1,45 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  NXP Layerscape PCIe controller (Synopsys DesignWare) in endpoint mode.
+
+  The role is selected by the RCW (HOST_AGT_PEX on LS1012A); the driver
+  leaves the controller alone when it reads a type 1 header.
+
+compatible: "fsl,ls-pcie-ep"
+
+include: pcie-ep-controller.yaml
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: |
+      "regs": controller registers (DBI, DBI2 shadow, PF block),
+      "addr_space": the AXI range the controller forwards to PCIe, used
+      for outbound windows.
+
+  interrupts:
+    description: Controller interrupt (not used, the driver polls).
+
+  big-endian:
+    type: boolean
+    description: The PF block is big-endian.
+
+  dbi2-offset:
+    type: int
+    default: 0x1000
+    description: Offset of the DBI2 shadow (BAR masks) from the DBI base.
+
+  pf-offset:
+    type: int
+    default: 0xc0000
+    description: Offset of the PF block from the DBI base.
+
+  bar-fixed-64bit:
+    type: int
+    default: 0
+    description: Bit mask of the BARs that are 64-bit prefetchable in hardware.

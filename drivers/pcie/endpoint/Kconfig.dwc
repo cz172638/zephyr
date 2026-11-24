@@ -1,0 +1,37 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config PCIE_EPC_DWC
+	bool
+	select PCIE_EPC
+	help
+	  Register level support for the Synopsys DesignWare PCIe controller
+	  in endpoint mode, used by SoC specific glue drivers.
+
+config PCIE_EPC_LAYERSCAPE
+	bool "NXP Layerscape PCIe endpoint controller"
+	default y
+	depends on DT_HAS_FSL_LS_PCIE_EP_ENABLED
+	select PCIE_EPC_DWC
+	help
+	  The DesignWare based PCIe controller of the Layerscape SoCs in
+	  endpoint mode (RCW agent mode): header, BARs, outbound windows,
+	  MSI and link events.
+
+if PCIE_EPC_DWC
+
+config PCIE_EPC_DWC_POLL_MS
+	int "Link poll period [ms]"
+	default 20
+	help
+	  Link state, bus master enable and the glue's link events are
+	  polled.
+
+config PCIE_EPC_DWC_OB_SIZE
+	hex "Outbound window mapped from the controller address space"
+	default 0x1000000
+	help
+	  Part of the controller's address space mapped for outbound
+	  windows (MSI, host memory access).
+
+endif # PCIE_EPC_DWC
