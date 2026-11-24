@@ -100,6 +100,120 @@
 		compatible = "simple-bus";
 		ranges;
 
+		/*
+		 * GPIO banks: 0x30 bytes per bank, the interrupt registers at
+		 * 0x200 + bank * 0x20 of the pin controller. No port A.
+		 */
+		gpiob: gpio@2000030 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x02000030 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 69 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <1>;
+			status = "disabled";
+		};
+
+		gpioc: gpio@2000060 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x02000060 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 71 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <2>;
+			status = "disabled";
+		};
+
+		gpiod: gpio@2000090 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x02000090 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <3>;
+			status = "disabled";
+		};
+
+		gpioe: gpio@20000c0 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x020000c0 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 75 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <4>;
+			status = "disabled";
+		};
+
+		gpiof: gpio@20000f0 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x020000f0 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 77 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <5>;
+			status = "disabled";
+		};
+
+		gpiog: gpio@2000120 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x02000120 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <6>;
+			status = "disabled";
+		};
+
+		gpioh: gpio@2000150 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x02000150 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <7>;
+			status = "disabled";
+		};
+
+		gpioi: gpio@2000180 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x02000180 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 83 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <8>;
+			status = "disabled";
+		};
+
+		gpioj: gpio@20001b0 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x020001b0 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 85 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <9>;
+			status = "disabled";
+		};
+
+		gpiok: gpio@20001e0 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x020001e0 0x30>, <0x02000000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 140 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <10>;
+			status = "disabled";
+		};
+
 		uart0: serial@2500000 {
 			compatible = "snps,dw-apb-uart", "ns16550";
 			reg = <0x02500000 0x400>;
@@ -180,6 +294,28 @@
 			#interrupt-cells = <4>;
 			interrupt-controller;
 			status = "okay";
+		};
+
+		r_gpiol: gpio@7022000 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x07022000 0x30>, <0x07022000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 159 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <0>;
+			status = "disabled";
+		};
+
+		r_gpiom: gpio@7022030 {
+			compatible = "allwinner,sun55i-a523-gpio", "allwinner,sunxi-gpio";
+			reg = <0x07022030 0x30>, <0x07022000 0x800>;
+			reg-names = "reg_base", "pio_base";
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupts = <GIC_SPI 161 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			allwinner,hw-bank = <1>;
+			status = "disabled";
 		};
 	};
 };
