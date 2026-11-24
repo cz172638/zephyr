@@ -1,0 +1,16 @@
+sample:
+  name: A523 PCIe controller probe
+tests:
+  sample.boards.allwinner.sun55i_a523.pcie_probe:
+    platform_allow:
+      - cubie_a5e/sun55i_a523
+      - cubie_a5e/sun55i_a523/smp
+    integration_platforms:
+      - cubie_a5e/sun55i_a523/smp
+    harness: console
+    harness_config:
+      type: one_line
+      regex:
+        - "a523pcie: ready"
+    tags:
+      - pcie
