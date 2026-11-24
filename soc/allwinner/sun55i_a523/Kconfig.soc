@@ -1,0 +1,8 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_SUN55I_A523
+	bool
+
+config SOC
+	default "sun55i_a523" if SOC_SUN55I_A523

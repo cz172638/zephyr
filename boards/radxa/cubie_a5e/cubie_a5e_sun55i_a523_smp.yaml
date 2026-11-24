@@ -1,0 +1,13 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+identifier: cubie_a5e/sun55i_a523/smp
+name: Radxa Cubie A5E (SMP)
+type: mcu
+arch: arm64
+toolchain:
+  - zephyr
+ram: 524288
+vendor: radxa
+supported:
+  - uart

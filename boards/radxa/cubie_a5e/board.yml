@@ -1,0 +1,11 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: cubie_a5e
+  full_name: Cubie A5E
+  vendor: radxa
+  socs:
+    - name: sun55i_a523
+      variants:
+        - name: smp
