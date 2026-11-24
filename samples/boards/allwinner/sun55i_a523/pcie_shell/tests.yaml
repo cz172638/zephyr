@@ -1,0 +1,18 @@
+sample:
+  name: A523 PCIe root complex shell
+  description: PCIe shell on the A523 root complex (Cubie A5E M.2 slot)
+common:
+  tags:
+    - pcie
+  platform_allow:
+    - cubie_a5e/sun55i_a523
+    - cubie_a5e/sun55i_a523/smp
+  integration_platforms:
+    - cubie_a5e/sun55i_a523
+  harness: console
+  harness_config:
+    type: one_line
+    regex:
+      - "pcie: root complex"
+tests:
+  sample.boards.allwinner.sun55i_a523.pcie_shell: {}
