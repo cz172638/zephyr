@@ -1,0 +1,68 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <nxp/nxp_ls1012a.dtsi>
+
+/ {
+	model = "NXP FRWY-LS1012A";
+	compatible = "fsl,ls1012a-frwy", "fsl,ls1012a";
+
+	chosen {
+		zephyr,console = &duart0;
+		zephyr,shell-uart = &duart0;
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,flash-controller = &qspi;
+	};
+
+	/*
+	 * 1 GiB DDR3L at 0x80000000, secure memory (BL31) at its top.
+	 * Zephyr at the BL33 address of the NXP TF-A, also usable from U-Boot.
+	 */
+	sram0: memory@82000000 {
+		reg = <0x0 0x82000000 0x0 DT_SIZE_M(16)>;
+	};
+};
+
+&duart0 {
+	status = "okay";
+	current-speed = <115200>;
+};
+
+/* W25M161AW: the 2 MiB NOR die (w25q16dw), selected after reset */
+&qspi {
+	status = "okay";
+
+	flash0: flash@0 {
+		compatible = "soc-nv-flash";
+		reg = <0x0 DT_SIZE_M(2)>;
+		erase-block-size = <4096>;
+		write-block-size = <1>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/*
+			 * PBL (RCW, PBI, BL2) at 0 and the FIP (BL31, BL33) at
+			 * 0x60000, as the NXP TF-A expects; fwupdate replaces
+			 * both with one image, the first erase unit last.
+			 */
+			boot_partition: partition@0 {
+				label = "boot";
+				reg = <0x0 0x1d0000>;
+			};
+
+			storage_partition: partition@1d0000 {
+				label = "storage";
+				reg = <0x1d0000 0x30000>;
+			};
+		};
+	};
+};

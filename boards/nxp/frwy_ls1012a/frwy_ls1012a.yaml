@@ -1,0 +1,11 @@
+identifier: frwy_ls1012a
+name: NXP FRWY-LS1012A
+type: mcu
+arch: arm64
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 16
+vendor: nxp
+supported:
+  - uart

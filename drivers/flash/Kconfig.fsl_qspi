@@ -1,0 +1,14 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config FLASH_FSL_QSPI
+	bool "Freescale QuadSPI SPI NOR flash driver (Layerscape)"
+	default y
+	depends on DT_HAS_FSL_LS1021A_QSPI_ENABLED
+	select FLASH_HAS_DRIVER_ENABLED
+	select FLASH_HAS_PAGE_LAYOUT
+	select FLASH_HAS_EXPLICIT_ERASE
+	help
+	  SPI NOR flash on the QuadSPI controller of the NXP Layerscape
+	  LS1021A and LS1012A, single wire, through IP commands and the AHB
+	  read buffer.

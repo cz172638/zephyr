@@ -1,0 +1,10 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_FRWY_LS1012A
+
+# "fwupdate ymodem" of PBL + FIP into the boot partition of the QSPI NOR
+config FWUPDATE
+	default y if SHELL && FLASH && FLASH_MAP
+
+endif # BOARD_FRWY_LS1012A

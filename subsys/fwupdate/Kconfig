@@ -76,6 +76,15 @@ config FWUPDATE_TIM_HEADER
 	  Refuse images that do not carry a TIM header ("TIMH" at offset 4),
 	  as produced by the Armada 3700 TF-A mrvl_flash target.
 
+config FWUPDATE_LS_PBL
+	bool "Require a Layerscape QSPI PBL"
+	default y if SOC_SERIES_LS1012A
+	help
+	  Refuse images that do not start with the pre-boot loader preamble
+	  and RCW load command as they are stored in QSPI (64-bit byte
+	  swapped: 00 01 ee 01 55 aa 55 aa), e.g. a FIP alone instead of
+	  the whole PBL + FIP image.
+
 config FWUPDATE_DISK
 	bool "SATA boot images onto a disk"
 	default y if AHCI && FWUPDATE_TIM_HEADER

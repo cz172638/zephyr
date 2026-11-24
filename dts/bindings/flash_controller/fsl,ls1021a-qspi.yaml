@@ -1,0 +1,25 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Freescale QuadSPI controller of the NXP Layerscape LS1021A and LS1012A
+  with one SPI NOR flash on chip select A1. The flash is a child node
+  "flash@0" (soc-nv-flash) giving its size, erase block size and the
+  partitions.
+
+compatible: "fsl,ls1021a-qspi"
+
+include: flash-controller.yaml
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: |
+      "ctrl": controller registers, "mem": the AHB window
+      onto the flash.
+
+  interrupts:
+    description: Controller interrupt (not used, the driver polls).

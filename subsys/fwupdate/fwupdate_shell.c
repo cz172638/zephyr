@@ -94,6 +94,9 @@ int fwupdate_program_external(const void *img, size_t len, uint32_t *crc);
 #define TIM_MAGIC_OFFSET 4
 #define TIM_MAGIC        0x54494d48
 
+/* Layerscape PBL in QSPI: preamble and RCW load command, 64-bit byte swapped */
+static const uint8_t ls_pbl_magic[] = {0x00, 0x01, 0xee, 0x01, 0x55, 0xaa, 0x55, 0xaa};
+
 static inline bool fw_use_disk(void)
 {
 #if !defined(CONFIG_FWUPDATE_BOOT_DISK)
@@ -268,6 +271,11 @@ static int fw_check(const struct shell *sh, size_t len)
 	if (IS_ENABLED(CONFIG_FWUPDATE_TIM_HEADER) &&
 	    (len < TIM_MAGIC_OFFSET + 4 || sys_get_le32(&fw_buf[TIM_MAGIC_OFFSET]) != TIM_MAGIC)) {
 		FW_ERR(sh, "no Marvell TIM header (TIMH) at offset 4, refusing to flash");
+		return -ENOEXEC;
+	}
+	if (IS_ENABLED(CONFIG_FWUPDATE_LS_PBL) &&
+	    (len < sizeof(ls_pbl_magic) || memcmp(fw_buf, ls_pbl_magic, sizeof(ls_pbl_magic)) != 0)) {
+		FW_ERR(sh, "no Layerscape PBL (QSPI byte order) at offset 0, refusing to flash");
 		return -ENOEXEC;
 	}
 	return 0;
@@ -735,7 +743,7 @@ static int fw_scp_close(void *h, bool ok, char *msg, size_t msg_len)
 	crc = crc32_ieee(fw_buf, fw.received);
 	ret = fw_check(NULL, fw.received);
 	if (ret < 0) {
-		snprintk(msg, msg_len, "image rejected (empty, size or no TIMH header)");
+		snprintk(msg, msg_len, "image rejected (empty, size or boot header)");
 		goto done;
 	}
 	if (fw.dry) {
