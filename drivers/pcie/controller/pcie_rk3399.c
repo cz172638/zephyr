@@ -696,6 +696,8 @@ static const struct pcie_shell_ctrl rc_shell = {
 	.name = "rk3399",
 	.dev = DEVICE_DT_INST_GET(0),
 	.role = PCIE_SHELL_ROLE_RC,
+	/* dual-mode controller */
+	.roles = BIT(PCIE_SHELL_ROLE_RC) | BIT(PCIE_SHELL_ROLE_EP),
 	.active = sh_active,
 	.info = sh_info,
 #if defined(CONFIG_PCIE_ROLE)

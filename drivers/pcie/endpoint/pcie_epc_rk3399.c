@@ -1903,6 +1903,8 @@ static int epc_rk3399_init(const struct device *dev)
 		.name = "rk3399",
 		.dev = DEVICE_DT_INST_GET(0),
 		.role = PCIE_SHELL_ROLE_EP,
+		/* dual-mode controller */
+		.roles = BIT(PCIE_SHELL_ROLE_RC) | BIT(PCIE_SHELL_ROLE_EP),
 		.active = sh_active,
 		.info = sh_info,
 #if defined(CONFIG_PCIE_ROLE)
