@@ -17,6 +17,7 @@
 #include <zephyr/init.h>
 #include <string.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/pm/device_runtime.h>
@@ -1620,6 +1621,8 @@ static int spi_nor_configure(const struct device *dev)
 	 */
 
 	rc = spi_nor_read_jedec_id(dev, jedec_id);
+	printk("MN3: jedec rc=%d id=%02x %02x %02x\n", rc,
+	       jedec_id[0], jedec_id[1], jedec_id[2]);
 	if (rc != 0) {
 		LOG_ERR("JEDEC ID read failed: %d", rc);
 		return -ENODEV;
@@ -1680,6 +1683,7 @@ static int spi_nor_configure(const struct device *dev)
 	 * set up or validate page layout.
 	 */
 	rc = spi_nor_process_sfdp(dev);
+	printk("MN4: sfdp rc=%d\n", rc);
 	if (rc != 0) {
 		LOG_ERR("SFDP read failed: %d", rc);
 		return -ENODEV;
@@ -1748,6 +1752,7 @@ static int spi_nor_pm_control(const struct device *dev, enum pm_device_action ac
  */
 static int spi_nor_init(const struct device *dev)
 {
+	printk("MN0: spi_nor init enter\n");
 	if (IS_ENABLED(CONFIG_MULTITHREADING)) {
 		struct spi_nor_data *const driver_data = dev->data;
 
@@ -1779,7 +1784,10 @@ static int spi_nor_init(const struct device *dev)
 	}
 #endif /* ANY_INST_HAS_HOLD_GPIOS */
 
-	return pm_device_driver_init(dev, spi_nor_pm_control);
+	printk("MN1: spi_nor pm init\n");
+	int rc = pm_device_driver_init(dev, spi_nor_pm_control);
+	printk("MN2: spi_nor init done rc=%d\n", rc);
+	return rc;
 }
 
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)

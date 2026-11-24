@@ -45,5 +45,22 @@
 		reg = <0>;
 		spi-max-frequency = <DT_FREQ_M(24)>;
 		size = <DT_SIZE_M(128)>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/* the eGON SPL + U-Boot FIT image flashed at offset 0 */
+			boot_partition: partition@0 {
+				label = "boot";
+				reg = <0x0 0x100000>;
+			};
+
+			storage_partition: partition@100000 {
+				label = "storage";
+				reg = <0x100000 0xf00000>;
+			};
+		};
 	};
 };

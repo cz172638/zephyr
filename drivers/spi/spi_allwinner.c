@@ -24,6 +24,7 @@ LOG_MODULE_REGISTER(spi_allwinner);
 #include <zephyr/drivers/spi.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/device_mmio.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/sys/time_units.h>
 #include <zephyr/sys/util.h>
 
@@ -78,10 +79,10 @@ LOG_MODULE_REGISTER(spi_allwinner);
 #define SPI_CCU_MOD_CLK_GATE BIT(31)
 #define SPI_CCU_BUS_REG 0x96c
 
-/* PIO (GPIO) block: pin configuration registers, per-port banks of 0x24 */
+/* PIO (GPIO) block: new-ggen pinctrl, per-port banks of 0x30 */
 #define SPI_PIO_BASE 0x02000000
 #define SPI_PIO_SIZE 0x1000
-#define SPI_PIO_CFG_REG(port, idx) (((port) - 'A') * 0x24 + (idx) * 4)
+#define SPI_PIO_CFG_REG(port, idx) (((port) - 'A') * 0x30 + (idx) * 4)
 
 #define SPI_TIMEOUT_MSEC(len, speed)                                                             \
 	MIN(60000u, MAX(100u, (uint32_t)MIN((uint64_t)(len) * 40u * 1000 / (speed), 40000u)))
@@ -149,20 +150,21 @@ static int spi_allwinner_set_frequency(const struct spi_allwinner_config *cfg,
 #if defined(CONFIG_SPI_ALLWINNER_A523_SPI0_PC_PINMUX)
 static void spi_allwinner_pinmux_spi0_pc(struct spi_allwinner_data *data)
 {
-	/* PC2, PC3 -> CFG0, PC4 -> CFG1, PC12 -> CFG2, function "spi0" */
+	/* PC2, PC3, PC4 -> CFG0, PC12 -> CFG1, function "spi0" */
 	uint32_t reg;
 
 	reg = sys_read32(data->pio + SPI_PIO_CFG_REG('C', 0));
-	reg = (reg & ~(GENMASK(11, 8) | GENMASK(15, 12))) | 4u << 8 | 4u << 12;
+	reg = (reg & ~(GENMASK(11, 8) | GENMASK(15, 12) | GENMASK(19, 16))) |
+	      4u << 8 | 4u << 12 | 4u << 16;
 	sys_write32(reg, data->pio + SPI_PIO_CFG_REG('C', 0));
 
 	reg = sys_read32(data->pio + SPI_PIO_CFG_REG('C', 1));
-	reg = (reg & ~GENMASK(3, 0)) | 4u;
+	reg = (reg & ~GENMASK(19, 16)) | 4u << 16;
 	sys_write32(reg, data->pio + SPI_PIO_CFG_REG('C', 1));
 
-	reg = sys_read32(data->pio + SPI_PIO_CFG_REG('C', 2));
-	reg = (reg & ~GENMASK(19, 16)) | 4u << 16;
-	sys_write32(reg, data->pio + SPI_PIO_CFG_REG('C', 2));
+	printk("MK5b: cfg0=%08x cfg1=%08x\n",
+	       sys_read32(data->pio + SPI_PIO_CFG_REG('C', 0)),
+	       sys_read32(data->pio + SPI_PIO_CFG_REG('C', 1)));
 }
 #endif
 
@@ -216,6 +218,7 @@ static int spi_allwinner_xfer(const struct device *dev, const struct spi_config 
 	struct spi_context *ctx = &data->ctx;
 	const uint8_t *tx = ctx->tx_buf;
 	uint8_t *rx = ctx->rx_buf;
+	uint8_t *rx0 = ctx->rx_buf;
 	/* Dummy zero bytes are sent for RX-only transfers */
 	uint32_t len = MAX(ctx->tx_len, ctx->rx_len);
 	uint32_t tx_left = len, rx_left = (rx != NULL) ? len : 0;
@@ -223,17 +226,28 @@ static int spi_allwinner_xfer(const struct device *dev, const struct spi_config 
 	k_timepoint_t end;
 	int ret;
 
+	printk("MF0: xfer enter len=%u rx=%p\n", len, (void *)rx);
+
 	if (len > SPI_MAX_XFER_SIZE - 1) {
 		return -EMSGSIZE;
 	}
 
 	ret = spi_allwinner_set_frequency(cfg, data, config->frequency, &effective_speed);
 	if (ret < 0) {
+		printk("MF1: set_frequency rc=%d\n", ret);
 		return ret;
 	}
+	printk("MF1: freq ok speed=%u\n", effective_speed);
 
-	spi_allwinner_write(data, SPI_INT_STA_REG, SPI_INT_STA_TC);
+	/* Clear every W1C status flag, not just TC: a leftover RX overflow
+	 * flag from a previous burst must not wedge the receiver.
+	 */
+	spi_allwinner_write(data, SPI_INT_STA_REG, 0xffffffffu);
 	spi_allwinner_write(data, SPI_FCR_REG, SPI_FCR_RF_RST | SPI_FCR_TF_RST);
+	printk("MF2: int_sta=%08x fsr=%08x\n", spi_allwinner_read(data, SPI_INT_STA_REG),
+	       spi_allwinner_read(data, SPI_FSR_REG));
+	while (spi_allwinner_read(data, SPI_FCR_REG) & (SPI_FCR_RF_RST | SPI_FCR_TF_RST)) {
+	}
 
 	tcr = spi_allwinner_read(data, SPI_TCR_REG);
 	tcr &= ~(SPI_TCR_CPHA | SPI_TCR_CPOL | SPI_TCR_SPOL | SPI_TCR_DHB | SPI_TCR_FBS |
@@ -247,7 +261,10 @@ static int spi_allwinner_xfer(const struct device *dev, const struct spi_config 
 	if (config->operation & SPI_TRANSFER_LSB) {
 		tcr |= SPI_TCR_FBS;
 	}
-	if (config->operation & SPI_CS_ACTIVE_HIGH) {
+	/* SS polarity: the pad is driven active-low (SPOL set), as done by
+	 * U-Boot and Linux; the SPI_CS_ACTIVE_HIGH flag inverts it.
+	 */
+	if (!(config->operation & SPI_CS_ACTIVE_HIGH)) {
 		tcr |= SPI_TCR_SPOL;
 	}
 	/* Do not fill the RX FIFO with bogus data on TX-only transfers */
@@ -269,14 +286,48 @@ static int spi_allwinner_xfer(const struct device *dev, const struct spi_config 
 	spi_allwinner_write(data, SPI_BC_REG, len);
 	spi_allwinner_write(data, SPI_TC_REG, len);
 	spi_allwinner_write(data, SPI_BCC_REG, len & SPI_BCC_STC_MASK);
+	printk("MF3: tcr=%08x gcr=%08x bc=%08x tc=%08x bcc=%08x\n", tcr, reg,
+	       spi_allwinner_read(data, SPI_BC_REG), spi_allwinner_read(data, SPI_TC_REG),
+	       spi_allwinner_read(data, SPI_BCC_REG));
 
+	printk("MM1: pre-fill len=%u tx_left=%u fsr=%08x\n", len, tx_left,
+	       spi_allwinner_read(data, SPI_FSR_REG));
+	if (tx != NULL) {
+		printk("MM1a: tx0=%p %02x %02x %02x %02x %02x %02x %02x %02x\n",
+		       (const void *)ctx->tx_buf, ctx->tx_buf[0], ctx->tx_buf[1],
+		       ctx->tx_buf[2], ctx->tx_buf[3],
+		       (len > 4) ? ctx->tx_buf[4] : 0, (len > 5) ? ctx->tx_buf[5] : 0,
+		       (len > 6) ? ctx->tx_buf[6] : 0, (len > 7) ? ctx->tx_buf[7] : 0);
+	}
 	spi_allwinner_fill_fifo(data, &tx, &tx_left);
+	printk("MM2: post-fill tx_left=%u fsr=%08x\n", tx_left,
+	       spi_allwinner_read(data, SPI_FSR_REG));
 
-	/* Assert CS and start the burst */
-	spi_allwinner_write(data, SPI_TCR_REG, tcr | SPI_TCR_SS_LEVEL | SPI_TCR_XCH);
+	/* Assert CS and start the burst: SS_LEVEL=0 drives the pad low
+	 * with active-low CS (SPOL=1), inverted for SPI_CS_ACTIVE_HIGH.
+	 */
+	printk("MM3: start xch len=%u speed=%u\n", len, effective_speed);
+	if (config->operation & SPI_CS_ACTIVE_HIGH) {
+		reg = tcr | SPI_TCR_SS_LEVEL;
+	} else {
+		reg = tcr & ~SPI_TCR_SS_LEVEL;
+	}
+	spi_allwinner_write(data, SPI_TCR_REG, reg | SPI_TCR_XCH);
 
 	end = sys_timepoint_calc(K_MSEC(SPI_TIMEOUT_MSEC(len, effective_speed)));
+	uint32_t polls = 0;
 	while (!(spi_allwinner_read(data, SPI_INT_STA_REG) & SPI_INT_STA_TC)) {
+		/* Print only the first poll: a printk here takes milliseconds
+		 * while the hardware clocks a whole burst in microseconds, which
+		 * overflows the RX FIFO and poisons every later measurement.
+		 */
+		if (polls == 0) {
+			printk("MM4: poll=0 status=%08x fsr=%08x tcr=%08x\n",
+			       spi_allwinner_read(data, SPI_INT_STA_REG),
+			       spi_allwinner_read(data, SPI_FSR_REG),
+			       spi_allwinner_read(data, SPI_TCR_REG));
+		}
+		polls++;
 		if (sys_timepoint_expired(end)) {
 			LOG_ERR("Transfer timeout, %u bytes remaining", tx_left + rx_left);
 			ret = -ETIMEDOUT;
@@ -289,11 +340,21 @@ static int spi_allwinner_xfer(const struct device *dev, const struct spi_config 
 
 	spi_allwinner_drain_fifo(data, &rx, &rx_left);
 
-	/* De-assert CS */
-	tcr = spi_allwinner_read(data, SPI_TCR_REG) & ~SPI_TCR_SS_LEVEL;
-	spi_allwinner_write(data, SPI_TCR_REG, tcr);
-
 	spi_allwinner_write(data, SPI_INT_STA_REG, SPI_INT_STA_TC);
+
+	printk("MM5: xfer ret=%d tx_left=%u rx_left=%u fsr=%08x\n", ret, tx_left,
+	       rx_left, spi_allwinner_read(data, SPI_FSR_REG));
+	printk("MM5b: int_sta=%08x polls=%u\n",
+	       spi_allwinner_read(data, SPI_INT_STA_REG), polls);
+	printk("MF4: ccr=%08x int_ctl=%08x r3c=%08x\n",
+	       spi_allwinner_read(data, 0x24),
+	       spi_allwinner_read(data, 0x10),
+	       spi_allwinner_read(data, 0x3c));
+	if (rx0 != NULL) {
+		printk("MM9: rx0=%p %02x %02x %02x %02x %02x %02x\n", (void *)rx0,
+		       rx0[0], rx0[1], rx0[2], rx0[3],
+		       (len >= 5) ? rx0[4] : 0, (len >= 6) ? rx0[5] : 0);
+	}
 
 	return ret;
 }
@@ -304,17 +365,25 @@ static int spi_allwinner_transceive(const struct device *dev, const struct spi_c
 {
 	struct spi_allwinner_data *data = dev->data;
 	struct spi_context *ctx = &data->ctx;
+	uint32_t reg;
 	int ret;
 
+	printk("MM0: transceive enter lock_cnt=%u\n", (unsigned int)k_sem_count_get(&ctx->lock));
 	spi_context_lock(ctx, false, NULL, NULL, config);
+	printk("MM6: locked\n");
 
 	ret = spi_allwinner_configure(dev, config);
 	if (ret != 0) {
+		printk("MM7: configure rc=%d\n", ret);
 		spi_context_release(ctx, ret);
 		return ret;
 	}
+	printk("MM7: configure ok\n");
 
 	spi_context_buffers_setup(ctx, tx_bufs, rx_bufs, 1);
+	printk("MM8: bufs tx_len=%u rx_len=%u tx_buf=%p rx_buf=%p\n",
+	       (unsigned int)ctx->tx_len, (unsigned int)ctx->rx_len,
+	       (void *)ctx->tx_buf, (void *)ctx->rx_buf);
 
 	do {
 		uint32_t len = MAX(ctx->tx_len, ctx->rx_len);
@@ -327,6 +396,19 @@ static int spi_allwinner_transceive(const struct device *dev, const struct spi_c
 		spi_context_update_tx(ctx, 1, len);
 		spi_context_update_rx(ctx, 1, len);
 	} while (spi_context_tx_on(ctx) || spi_context_rx_on(ctx));
+
+	/*
+	 * De-assert CS only after the complete frame: a flash command
+	 * (opcode plus address/data) must stay selected across every
+	 * burst of the transceive.
+	 */
+	reg = spi_allwinner_read(data, SPI_TCR_REG);
+	if (config->operation & SPI_CS_ACTIVE_HIGH) {
+		reg &= ~SPI_TCR_SS_LEVEL;
+	} else {
+		reg |= SPI_TCR_SS_LEVEL;
+	}
+	spi_allwinner_write(data, SPI_TCR_REG, reg);
 
 	spi_context_release(ctx, ret);
 
@@ -353,23 +435,41 @@ static int spi_allwinner_init(const struct device *dev)
 	struct spi_allwinner_data *data = dev->data;
 	uint32_t reg, timeout = 1000;
 
-	device_map(&data->base, cfg->base_phys, cfg->base_size, K_MEM_CACHE_NONE);
-	device_map(&data->ccu, SPI_CCU_BASE, SPI_CCU_SIZE, K_MEM_CACHE_NONE);
-	device_map(&data->pio, SPI_PIO_BASE, SPI_PIO_SIZE, K_MEM_CACHE_NONE);
+	printk("MK0: spi%d init enter\n", cfg->ccu_instance);
 
+	printk("MK1: map base phys=0x%08x\n", (unsigned int)cfg->base_phys);
+	device_map(&data->base, cfg->base_phys, cfg->base_size, K_MEM_CACHE_NONE);
+	printk("MK1: base VA=%p\n", (void *)data->base);
+
+	printk("MK2: map ccu\n");
+	device_map(&data->ccu, SPI_CCU_BASE, SPI_CCU_SIZE, K_MEM_CACHE_NONE);
+	printk("MK2: ccu VA=%p\n", (void *)data->ccu);
+
+	printk("MK3: map pio\n");
+	device_map(&data->pio, SPI_PIO_BASE, SPI_PIO_SIZE, K_MEM_CACHE_NONE);
+	printk("MK3: pio VA=%p\n", (void *)data->pio);
+
+	printk("MK4: ccu enable\n");
 	spi_allwinner_ccu_enable(data, cfg->ccu_instance);
 
 #if defined(CONFIG_SPI_ALLWINNER_A523_SPI0_PC_PINMUX)
 	if (cfg->ccu_instance == 0) {
+		printk("MK5: pinmux\n");
 		spi_allwinner_pinmux_spi0_pc(data);
+		printk("MK5: pinmux done\n");
 	}
 #endif
 
 	/* Soft reset the controller */
+	printk("MK6: srst poll enter\n");
 	spi_allwinner_write(data, SPI_GCR_REG, SPI_GCR_SRST);
 	do {
+		if ((timeout % 100) == 0) {
+			printk("MK6: srst poll, timeout=%u reg=%08x\n", timeout, reg);
+		}
 		reg = spi_allwinner_read(data, SPI_GCR_REG);
 	} while ((reg & SPI_GCR_SRST) != 0 && --timeout != 0);
+	printk("MK7: srst poll exit timeout=%u reg=%08x\n", timeout, reg);
 	if (timeout == 0) {
 		LOG_ERR("Controller reset timed out");
 		return -ETIMEDOUT;
@@ -377,12 +477,37 @@ static int spi_allwinner_init(const struct device *dev)
 
 	spi_allwinner_write(data, SPI_GCR_REG, SPI_GCR_MASTER | SPI_GCR_TP);
 
+	printk("MK8: cs configure\n");
 	spi_context_cs_configure_all(&data->ctx);
 
-	/* Keep CS de-asserted while the controller is idle */
-	reg = spi_allwinner_read(data, SPI_TCR_REG) & ~SPI_TCR_SS_LEVEL;
+	/* Keep CS de-asserted while the controller is idle; with SPOL=1
+	 * the pad idles high, so SS_LEVEL must be set.
+	 */
+	reg = spi_allwinner_read(data, SPI_TCR_REG) | SPI_TCR_SS_LEVEL;
 	reg |= SPI_TCR_SS_MANUAL;
 	spi_allwinner_write(data, SPI_TCR_REG, reg);
+
+	printk("MK9: spi%d init done\n", cfg->ccu_instance);
+
+	printk("MK10: gcr=%08x tcr=%08x ic=%08x ista=%08x\n",
+	       spi_allwinner_read(data, 0x04),
+	       spi_allwinner_read(data, 0x08),
+	       spi_allwinner_read(data, 0x10),
+	       spi_allwinner_read(data, 0x14));
+	printk("MK10: fcr=%08x fsr=%08x ccr=%08x r30=%08x r34=%08x r38=%08x\n",
+	       spi_allwinner_read(data, 0x18),
+	       spi_allwinner_read(data, 0x1c),
+	       spi_allwinner_read(data, 0x24),
+	       spi_allwinner_read(data, 0x30),
+	       spi_allwinner_read(data, 0x34),
+	       spi_allwinner_read(data, 0x38));
+	printk("MK10: r3c=%08x r40=%08x r44=%08x r48=%08x\n",
+	       spi_allwinner_read(data, 0x3c),
+	       spi_allwinner_read(data, 0x40),
+	       spi_allwinner_read(data, 0x44),
+	       spi_allwinner_read(data, 0x48));
+
+	spi_context_unlock_unconditionally(&data->ctx);
 
 	return 0;
 }
