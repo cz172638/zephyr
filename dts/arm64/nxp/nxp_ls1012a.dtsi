@@ -84,5 +84,20 @@
 			#size-cells = <1>;
 			status = "disabled";
 		};
+
+		/* endpoint mode with HOST_AGT_PEX = 1 in the RCW */
+		pcie_ep1: pcie-ep@3400000 {
+			compatible = "fsl,ls1012a-pcie-ep", "fsl,ls-pcie-ep";
+			reg = <0x0 0x03400000 0x0 0x00100000>,
+			      <0x40 0x00000000 0x8 0x00000000>;
+			reg-names = "regs", "addr_space";
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 118 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			big-endian;
+			bar-fixed-64bit = <0x14>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
 	};
 };

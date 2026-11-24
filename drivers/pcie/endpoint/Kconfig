@@ -112,6 +112,7 @@ endif # PCIE_EPC
 
 source "drivers/pcie/endpoint/Kconfig.aardvark"
 source "drivers/pcie/endpoint/Kconfig.rk3399"
+source "drivers/pcie/endpoint/Kconfig.dwc"
 
 source "drivers/pcie/endpoint/functions/Kconfig"
 

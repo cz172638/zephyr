@@ -1,0 +1,43 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * FRWY-LS1012A: the PCIe controller as endpoint on the M.2 Type-E slot
+ * (RCW HOST_AGT_PEX = 1). The slot is wired as a host slot: the link needs
+ * a crossover cable without REFCLK and supplies; the SerDes runs on its
+ * internal 125 MHz reference.
+ */
+
+#include <mem.h>
+
+/ {
+	/* BAR backing store in DDR, above Zephyr (0x82000000, 16 MiB) */
+	pcie_bar_mem: pcie-bar-mem@98000000 {
+		compatible = "mmio-sram";
+		reg = <0x0 0x98000000 0x0 DT_SIZE_M(32)>;
+	};
+};
+
+&pcie_ep1 {
+	status = "okay";
+
+	epf_test0: function@0 {
+		compatible = "zephyr,pcie-epf-test";
+		reg = <0>;
+		/*
+		 * LS1012A ID, not in the pci_endpoint_test table; on the host
+		 * echo "1957 8100" > /sys/bus/pci/drivers/pci-endpoint-test/new_id
+		 */
+		vendor-id = <0x1957>;
+		device-id = <0x8100>;
+		class-code = <0xff0000>;
+		memory-region = <&pcie_bar_mem>;
+		/*
+		 * BAR0 32-bit registers, BAR2 and BAR4 64-bit prefetchable;
+		 * BAR4 8 MiB fits the 30 MiB memory window of the RK3399 root
+		 * complex behind a switch.
+		 */
+		bar-sizes = <8192 0 0x100000 0 0x800000 0>;
+	};
+};

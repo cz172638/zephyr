@@ -26,3 +26,5 @@ zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_AARDVARK_XORTEST
 add_subdirectory_ifdef(CONFIG_PCIE_EPC functions)
 zephyr_library_sources_ifdef(CONFIG_PCIE_EP_CDNS pcie_ep_cdns.c)
 zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_RK3399 pcie_epc_rk3399.c)
+zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_DWC pcie_epc_dwc.c)
+zephyr_library_sources_ifdef(CONFIG_PCIE_EPC_LAYERSCAPE pcie_epc_layerscape.c)
