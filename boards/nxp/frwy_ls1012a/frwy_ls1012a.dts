@@ -1,0 +1,33 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <nxp/nxp_ls1012a.dtsi>
+
+/ {
+	model = "NXP FRWY-LS1012A";
+	compatible = "fsl,ls1012a-frwy", "fsl,ls1012a";
+
+	chosen {
+		zephyr,console = &duart0;
+		zephyr,shell-uart = &duart0;
+		zephyr,sram = &sram0;
+	};
+
+	/*
+	 * 1 GiB DDR3L at 0x80000000, secure memory (BL31) at its top.
+	 * Zephyr at the BL33 address of the NXP TF-A, also usable from U-Boot.
+	 */
+	sram0: memory@82000000 {
+		reg = <0x0 0x82000000 0x0 DT_SIZE_M(16)>;
+	};
+};
+
+&duart0 {
+	status = "okay";
+	current-speed = <115200>;
+};

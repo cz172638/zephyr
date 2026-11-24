@@ -1,0 +1,6 @@
+board:
+  name: frwy_ls1012a
+  full_name: FRWY-LS1012A
+  vendor: nxp
+  socs:
+  - name: ls1012a
