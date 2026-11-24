@@ -1,0 +1,77 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <arm64/armv8-a.dtsi>
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <mem.h>
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0>;
+		};
+	};
+
+	psci: psci {
+		compatible = "arm,psci-0.2";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+	};
+
+	soc {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		compatible = "simple-bus";
+		ranges;
+
+		gic: interrupt-controller@1401000 {
+			compatible = "arm,gic-v2", "arm,gic";
+			reg = <0x0 0x01401000 0x0 0x1000>, /* GICD */
+			      <0x0 0x01402000 0x0 0x2000>; /* GICC */
+			interrupt-controller;
+			#interrupt-cells = <4>;
+			status = "okay";
+		};
+
+		/* platform clock / 2: 125 MHz with the 500 MHz platform PLL */
+		duart0: serial@21c0500 {
+			compatible = "fsl,ns16550", "ns16550";
+			reg = <0x0 0x021c0500 0x0 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 54 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clock-frequency = <125000000>;
+			reg-shift = <0>;
+			status = "disabled";
+		};
+
+		duart1: serial@21c0600 {
+			compatible = "fsl,ns16550", "ns16550";
+			reg = <0x0 0x021c0600 0x0 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 54 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clock-frequency = <125000000>;
+			reg-shift = <0>;
+			status = "disabled";
+		};
+
+	};
+};
