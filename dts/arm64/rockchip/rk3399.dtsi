@@ -392,6 +392,14 @@
 		status = "disabled";
 	};
 
+	/* non-secure eFuse (1024 bits): CPU ID at byte 7, 16 bytes */
+	efuse0: efuse@ff690000 {
+		compatible = "rockchip,rk3399-efuse";
+		reg = <0xff690000 0x80>;
+		clocks = <&cru_clk PCLK_EFUSE1024NS>;
+		status = "disabled";
+	};
+
 	gpio0: gpio@ff720000 {
 		compatible = "snps,designware-gpio";
 		reg = <0xff720000 0x100>;
