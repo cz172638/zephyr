@@ -8,3 +8,12 @@ tests:
       - rock_pi_4/rk3399/a53/hmp
     tags: pcie
     build_only: true
+  sample.boards.rockchip.rk3399.pcie_shell.ssh:
+    platform_allow:
+      - rock_pi_4/rk3399/a53/smp
+      - rock_pi_4/rk3399/a53/hmp
+    tags: pcie
+    build_only: true
+    extra_args:
+      - EXTRA_CONF_FILE=ssh.conf
+      - CONFIG_PCIE_SHELL_SSH_PASSWORD="test"
