@@ -196,7 +196,8 @@
 /*
  * Gigabit Ethernet: RTL8211E (PHY address 1) on RGMII. Its 125 MHz CLKOUT is
  * the MAC clock (mac_clk pin); the PHY adds no RX delay, the GRF delay lines
- * do. The board has no MAC address storage, so a random one is used.
+ * do. The board has no MAC address storage: the address is derived from the
+ * eFuse CPU ID (hwinfo).
  */
 &gmac {
 	pinctrl-0 = <&rgmii_pins>;
@@ -206,7 +207,10 @@
 	clock-in-out = "input";
 	tx-delay = <0x28>;
 	rx-delay = <0x11>;
-	zephyr,random-mac-address;
+	status = "okay";
+};
+
+&efuse0 {
 	status = "okay";
 };
 
