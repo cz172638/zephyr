@@ -1,0 +1,11 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config HWINFO_RK3399
+	bool "RK3399 eFuse CPU ID"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3399_EFUSE_ENABLED
+	depends on CLOCK_CONTROL
+	select HWINFO_HAS_DRIVER
+	help
+	  Device ID from the 16-byte CPU ID in the RK3399 non-secure eFuse.

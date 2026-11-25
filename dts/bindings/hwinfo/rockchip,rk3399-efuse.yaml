@@ -1,0 +1,17 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK3399 non-secure eFuse, read by the hwinfo driver: the device
+  ID is the 16-byte CPU ID at byte 7.
+
+compatible: "rockchip,rk3399-efuse"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
