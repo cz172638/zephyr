@@ -10,6 +10,8 @@
  * The BootROM tries the SPI NOR first: "fwupdate ymodem" writes
  * <img>-rock_pi_4-spi.bin there over the shell UART, "flash erase" of its
  * first sector falls back to the eMMC.
+ * With ssh.conf, an SSH server with the shell backend starts after DHCP;
+ * its RSA host key is kept in settings.
  */
 
 #include <stdlib.h>
@@ -23,6 +25,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/dhcpv4.h>
+#if defined(CONFIG_SSH_SERVER)
+#include <stdio.h>
+#include <zephyr/net/ssh/server.h>
+#include <zephyr/shell/shell_uart.h>
+#endif
 #include <zephyr/shell/shell.h>
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/sys/printk.h>
@@ -307,6 +314,49 @@ static void wdt_start(void)
 }
 #endif
 
+#if defined(CONFIG_SSH_SERVER)
+static int run(const char *cmd)
+{
+	int ret = shell_execute_cmd(shell_backend_uart_get_ptr(), cmd);
+
+	if (ret != 0) {
+		printk("ssh: \"%s\": %d\n", cmd, ret);
+	}
+	return ret;
+}
+
+/* host key 0 from settings, or a new one saved there */
+static void ssh_start(void)
+{
+	char cmd[96];
+
+	if (CONFIG_PCIE_SHELL_SSH_PASSWORD[0] == '\0') {
+		printk("ssh: no password configured, server not started\n");
+		return;
+	}
+	while (!shell_ready(shell_backend_uart_get_ptr())) {
+		k_msleep(10);
+	}
+	if (run("net ssh_key load 0 priv id_rsa") != 0) {
+		printk("ssh: generating a %d bit RSA host key\n",
+		       CONFIG_PCIE_SHELL_SSH_HOST_KEY_BITS);
+		snprintf(cmd, sizeof(cmd), "net ssh_key gen 0 rsa %d",
+			 CONFIG_PCIE_SHELL_SSH_HOST_KEY_BITS);
+		if (run(cmd) != 0) {
+			return;
+		}
+		(void)run("net ssh_key save 0 priv id_rsa");
+	}
+	ssh_server_set_banner_text("Board " CONFIG_BOARD_TARGET);
+	snprintf(cmd, sizeof(cmd), "net sshd start -i 0 -k 0%s%s -p %s",
+		 CONFIG_PCIE_SHELL_SSH_USERNAME[0] != '\0' ? " -u " : "",
+		 CONFIG_PCIE_SHELL_SSH_USERNAME, CONFIG_PCIE_SHELL_SSH_PASSWORD);
+	if (run(cmd) == 0) {
+		printk("ssh: listening on port %d\n", CONFIG_SSH_PORT);
+	}
+}
+#endif
+
 int main(void)
 {
 	enum pcie_role saved;
@@ -324,5 +374,8 @@ int main(void)
 	if (IS_ENABLED(CONFIG_NET_DHCPV4) && net_if_get_default() != NULL) {
 		net_dhcpv4_start(net_if_get_default());
 	}
+#if defined(CONFIG_SSH_SERVER)
+	ssh_start();
+#endif
 	return 0;
 }
