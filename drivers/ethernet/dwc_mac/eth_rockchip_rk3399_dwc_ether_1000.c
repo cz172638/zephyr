@@ -15,6 +15,7 @@ LOG_MODULE_REGISTER(dwmac_plat, CONFIG_ETHERNET_LOG_LEVEL);
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/reset.h>
 #include <zephyr/drivers/syscon.h>
@@ -22,6 +23,8 @@ LOG_MODULE_REGISTER(dwmac_plat, CONFIG_ETHERNET_LOG_LEVEL);
 #include <zephyr/kernel.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/phy.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/crc.h>
 #include <zephyr/sys/util.h>
 
 #include "eth_dwmac_priv.h"
@@ -196,6 +199,28 @@ static struct dwmac_dma_desc dwmac_tx_descs[NB_TX_DESCS]
 static struct dwmac_dma_desc dwmac_rx_descs[NB_RX_DESCS]
 	__nocache_noinit __aligned(DESCRIPTOR_ALIGNMENT);
 
+/*
+ * The board has nowhere to keep a MAC address: derive a locally
+ * administered unicast one from the device ID (CRC-32 and CRC-16 of it).
+ */
+static int mac_from_device_id(uint8_t *mac)
+{
+	uint8_t id[16];
+	ssize_t n;
+
+	if (!IS_ENABLED(CONFIG_HWINFO)) {
+		return -ENODATA;
+	}
+	n = hwinfo_get_device_id(id, sizeof(id));
+	if (n <= 0) {
+		return n < 0 ? (int)n : -ENODATA;
+	}
+	sys_put_be32(crc32_ieee(id, n), &mac[0]);
+	sys_put_be16(crc16_ccitt(0xffffU, id, n), &mac[4]);
+	mac[0] = (mac[0] & ~0x01U) | 0x02U;
+	return 0;
+}
+
 int dwmac_platform_init(const struct device *dev)
 {
 	const struct net_eth_mac_config mac_cfg = NET_ETH_MAC_DT_INST_CONFIG_INIT(0);
@@ -212,6 +237,9 @@ int dwmac_platform_init(const struct device *dev)
 	irq_enable(DT_INST_IRQN(0));
 
 	ret = net_eth_mac_load(&mac_cfg, p->mac_addr);
+	if (ret == -ENODATA) {
+		ret = mac_from_device_id(p->mac_addr);
+	}
 	if (ret < 0) {
 		LOG_ERR("could not get a MAC address (%d)", ret);
 		return ret;

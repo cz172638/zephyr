@@ -168,9 +168,12 @@ config ETH_ROCKCHIP_RK3399_DWC_ETHER_1000
 	select CLOCK_CONTROL
 	select RESET
 	select SYSCON
+	imply HWINFO
 	default y
 	help
 	  This enables the Synopsys DesignWare MAC driver on Rockchip RK3399.
+	  Without a MAC address in the devicetree, the address is derived from
+	  the hwinfo device ID (the eFuse CPU ID): the same on every boot.
 
 config ETH_DWMAC_MMU
 	bool "Synopsys DesignWare MAC driver for MMU based platforms"
