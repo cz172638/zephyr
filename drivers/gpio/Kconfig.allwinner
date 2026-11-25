@@ -6,4 +6,4 @@ config GPIO_ALLWINNER
 	default y
 	depends on DT_HAS_ALLWINNER_SUNXI_GPIO_ENABLED
 	help
-	  Enable the Allwinner GPIO driver for H618.
+	  Enable the Allwinner GPIO driver for H618 and A523.

@@ -1,0 +1,29 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config PCIE_SUN55I
+	bool "Allwinner A523 PCIe root complex"
+	default y
+	depends on DT_HAS_ALLWINNER_SUN55I_A523_PCIE_ENABLED
+	depends on GPIO
+	help
+	  The A523/A527/T527 PCIe controller (DesignWare, root complex only):
+	  power domain, clocks and combo PHY bring-up, configuration requests
+	  through outbound iATU region 0, memory and I/O windows from "ranges",
+	  generic enumeration. No interrupts yet (polled devices only).
+
+config PCIE_SUN55I_INIT_PRIORITY
+	int "POST_KERNEL init priority"
+	default 84
+	depends on PCIE_SUN55I
+	help
+	  After GPIO and the GPIO hogs (the lane switch on the Cubie A5E).
+
+config PCIE_SUN55I_POLL_MS
+	int "Link monitor period [ms]"
+	default 100
+	depends on PCIE_SUN55I
+	help
+	  The core resets the root port registers and the iATU when the link
+	  goes down. The monitor puts them back and enumerates again when the
+	  link is in L0. 0 disables it.

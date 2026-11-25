@@ -10,6 +10,7 @@ source "drivers/pcie/controller/Kconfig.aardvark"
 source "drivers/pcie/controller/Kconfig.brcmstb"
 source "drivers/pcie/controller/Kconfig.ecam"
 source "drivers/pcie/controller/Kconfig.rk3399"
+source "drivers/pcie/controller/Kconfig.sun55i"
 # zephyr-keep-sorted-stop
 
 endif # PCIE_CONTROLLER

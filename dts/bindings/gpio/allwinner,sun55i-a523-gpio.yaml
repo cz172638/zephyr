@@ -1,0 +1,10 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Allwinner A523 GPIO bank (pin controller layout with 0x30 bytes per
+  bank: four drive level registers, pull registers at 0x24).
+
+compatible: "allwinner,sun55i-a523-gpio"
+
+include: allwinner,sunxi-gpio.yaml

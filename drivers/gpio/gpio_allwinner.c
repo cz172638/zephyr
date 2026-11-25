@@ -19,6 +19,8 @@
 #define SUNXI_INT_CTL_OFFSET 0x210
 #define SUNXI_INT_STA_OFFSET 0x214
 #define SUNXI_PULL_OFFSET    0x1C
+/* A523: four drive level registers, the pull registers follow at 0x24 */
+#define SUN55I_PULL_OFFSET   0x24
 #define SUNXI_DAT_OFFSET     0x10
 
 #define SUNXI_CFG_PIN_MASK(pin) (0xFUL << (((pin) & 0x7) << 2))
@@ -31,7 +33,7 @@
 
 /* Helper macros for pin configuration and pull register offsets */
 #define SUNXI_CFG_OFFSET(pin)            (FIELD_GET(GENMASK(4, 3), (pin)) * 4)
-#define SUNXI_PULL_OFFSET_BY_PIN(pin)    (SUNXI_PULL_OFFSET + FIELD_GET(BIT(4), (pin)) * 4)
+#define SUNXI_PULL_OFFSET_BY_PIN(base, pin) ((base) + FIELD_GET(BIT(4), (pin)) * 4)
 
 struct gpio_allwinner_config {
 	struct gpio_driver_config common;
@@ -40,6 +42,7 @@ struct gpio_allwinner_config {
 	DEVICE_MMIO_NAMED_ROM(pio_base);
 
 	uint32_t hw_bank;
+	uint32_t pull_offset;
 };
 
 struct gpio_allwinner_data {
@@ -58,6 +61,7 @@ struct gpio_allwinner_data {
 static int gpio_allwinner_pin_configure(const struct device *port, gpio_pin_t pin,
 					gpio_flags_t flags)
 {
+	const struct gpio_allwinner_config *config = port->config;
 	struct gpio_allwinner_data *data = port->data;
 	uintptr_t reg_base = DEVICE_MMIO_NAMED_GET(port, reg_base);
 
@@ -99,11 +103,13 @@ static int gpio_allwinner_pin_configure(const struct device *port, gpio_pin_t pi
 		val |= SUNXI_CFG_PIN_FUNC(pin, 0);
 		sys_write32(val, reg_base + SUNXI_CFG_OFFSET(pin));
 
-		pull_reg = sys_read32(reg_base + SUNXI_PULL_OFFSET_BY_PIN(pin));
+		pull_reg = sys_read32(reg_base +
+				      SUNXI_PULL_OFFSET_BY_PIN(config->pull_offset, pin));
 
 		pull_reg &= ~SUNXI_PULL_PIN_MASK(pin);
 		pull_reg |= SUNXI_PULL_PIN_VAL(pin, pull_val);
-		sys_write32(pull_reg, reg_base + SUNXI_PULL_OFFSET_BY_PIN(pin));
+		sys_write32(pull_reg,
+			    reg_base + SUNXI_PULL_OFFSET_BY_PIN(config->pull_offset, pin));
 		k_spin_unlock(&data->lock, key);
 	}
 
@@ -320,6 +326,9 @@ static void gpio_allwinner_init(const struct device *port)
 		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(reg_base, DT_DRV_INST(n)),                      \
 		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(pio_base, DT_DRV_INST(n)),                      \
 		.hw_bank = DT_INST_PROP(n, allwinner_hw_bank),                                     \
+		.pull_offset = DT_INST_NODE_HAS_COMPAT(n, allwinner_sun55i_a523_gpio)              \
+				       ? SUN55I_PULL_OFFSET                                        \
+				       : SUNXI_PULL_OFFSET,                                        \
 	};                                                                                         \
 	static struct gpio_allwinner_data gpio_allwinner_data_##n;                                 \
 	static int gpio_allwinner_init_##n(const struct device *port)                              \

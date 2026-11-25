@@ -143,6 +143,24 @@ config PCIE_CTRL_SHELL
 	  register a backend (pcie_shell_register()). Replaces the generic
 	  PCIE_SHELL, which uses the same command name.
 
+config PCIE_CTRL_SHELL_EPFTEST
+	bool "pcie epftest: host side of the endpoint test function"
+	default y
+	depends on PCIE_CTRL_SHELL && PCIE_CONTROLLER
+	select CRC
+	help
+	  "pcie epftest <b:d.f> read|write|copy [<size> [<bar>]]": the
+	  endpoint test function (Linux pci-epf-test register block) reads,
+	  writes or copies a buffer in this host's memory, the host checks
+	  the CRC or the data, as Linux pcitest does. Status is polled.
+
+config PCIE_CTRL_SHELL_EPFTEST_SIZE
+	int "pcie epftest buffer size"
+	default 65536
+	depends on PCIE_CTRL_SHELL_EPFTEST
+	help
+	  Two static buffers of this size (source and destination).
+
 config PCIE_CTRL_SHELL_BOOT
 	bool "pcie boot: boot an endpoint over PCIe"
 	default y

@@ -1,0 +1,51 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Allwinner A523/A527/T527 PCIe controller: Synopsys DesignWare core,
+  root complex only, PCIe 2.1 x1, unrolled iATU with 8 outbound regions.
+
+  "dbi" (0x480000): DBI at 0, DBI2 at 0x100000, iATU at 0x300000 and the
+  Allwinner application registers at 0x400000.
+  "config": configuration requests through outbound region 0. It must
+  start the 256 MiB window of the controller's AXI slave port
+  (0x20000000): the iATU sees addresses relative to it.
+  "combo": PCIe/USB 3.0 combo sub-system registers at 0, INNO PHY at
+  0x80000.
+
+  The driver also programs the PCIe power domain of the PCK-600, the CCU
+  clocks and the PHY itself: the SoC has no clock, reset or power domain
+  drivers yet.
+
+compatible: "allwinner,sun55i-a523-pcie"
+
+include: pcie-controller.yaml
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+    description: Must be "dbi", "config", "combo".
+
+  ranges:
+    required: true
+
+  num-lanes:
+    type: int
+    default: 1
+    enum: [1]
+
+  max-link-speed:
+    type: int
+    default: 2
+    enum: [1, 2]
+
+  perst-gpios:
+    type: phandle-array
+    description: PERST# to the slot.
+
+  slot-power-gpios:
+    type: phandle-array
+    description: Switch of the slot's 3.3 V supply.

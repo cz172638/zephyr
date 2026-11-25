@@ -124,6 +124,7 @@ static const struct {
 	{0x0019, true, "secpci", "Secondary PCI Express"},
 	{0x001e, true, "l1ss", "L1 PM Substates"},
 	{0x001f, true, "ptm", "Precision Time Measurement"},
+	{0x0021, true, "frsq", "FRS Queueing"},
 	{0x0025, true, "dlf", "Data Link Feature"},
 	{0x0026, true, "pl16", "Physical Layer 16 GT/s"},
 };
@@ -1224,6 +1225,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cmds,
 #endif
 	SHELL_CMD(debug, PCIE_DEBUG_SUBCMDS, "Controller specific bring-up and test commands",
 		  NULL),
+#if defined(CONFIG_PCIE_CTRL_SHELL_EPFTEST)
+	SHELL_CMD_ARG(epftest, NULL,
+		      "<b:d.f> read|write|copy [<size> [<bar>]] Endpoint test function: "
+		      "transfer to or from this host's memory, check CRC or data",
+		      pcie_shell_cmd_epftest, 3, 2),
+#endif
 #if defined(CONFIG_PCIE_CTRL_SHELL_BOOT)
 	SHELL_CMD_ARG(boot, NULL,
 		      "[-i <vid:did>] [-t <s>] <file>... Boot an endpoint over PCIe (U-Boot "
