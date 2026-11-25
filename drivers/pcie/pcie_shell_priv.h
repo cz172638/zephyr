@@ -19,5 +19,6 @@ const struct pcie_shell_ctrl *pcie_shell_active(const struct shell *sh);
 int pcie_shell_parse_pair(const char *s, uint16_t *a, uint16_t *b);
 
 int pcie_shell_cmd_boot(const struct shell *sh, size_t argc, char **argv);
+int pcie_shell_cmd_epftest(const struct shell *sh, size_t argc, char **argv);
 
 #endif /* ZEPHYR_DRIVERS_PCIE_PCIE_SHELL_PRIV_H_ */

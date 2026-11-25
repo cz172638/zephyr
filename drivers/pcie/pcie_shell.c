@@ -1225,6 +1225,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(pcie_cmds,
 #endif
 	SHELL_CMD(debug, PCIE_DEBUG_SUBCMDS, "Controller specific bring-up and test commands",
 		  NULL),
+#if defined(CONFIG_PCIE_CTRL_SHELL_EPFTEST)
+	SHELL_CMD_ARG(epftest, NULL,
+		      "<b:d.f> read|write|copy [<size> [<bar>]] Endpoint test function: "
+		      "transfer to or from this host's memory, check CRC or data",
+		      pcie_shell_cmd_epftest, 3, 2),
+#endif
 #if defined(CONFIG_PCIE_CTRL_SHELL_BOOT)
 	SHELL_CMD_ARG(boot, NULL,
 		      "[-i <vid:did>] [-t <s>] <file>... Boot an endpoint over PCIe (U-Boot "
