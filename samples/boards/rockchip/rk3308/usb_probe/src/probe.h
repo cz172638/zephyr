@@ -9,4 +9,7 @@
 /* SSH server with the shell backend (src/ssh.c, with net.conf) */
 void probe_ssh_start(void);
 
+/* CMSIS-DAP over TCP (src/dap.c, with net.conf) */
+void probe_dap_start(void);
+
 #endif /* USB_PROBE_PROBE_H_ */

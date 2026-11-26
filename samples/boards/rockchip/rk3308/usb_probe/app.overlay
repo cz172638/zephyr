@@ -62,3 +62,68 @@
 	pinctrl-0 = <&uart2_default>;
 	pinctrl-names = "default";
 };
+
+/*
+ * JTAG/SWD on header 2: 41 TCK/SWCLK (GPIO3_B3, SPI1_CLK), 39 TMS/SWDIO
+ * (GPIO3_B5), 40 TDI (GPIO3_B4, SPI1_MOSI), 42 TDO (GPIO3_B2, SPI1_MISO),
+ * 43 nRESET (GPIO2_B4). GPIO functions by default; SPI1 shifts the whole
+ * bytes of JTAG sequences with its pads switched to SPI ("spi" state).
+ * Served as CMSIS-DAP over TCP (net.conf).
+ */
+&pinctrl {
+	jtag_gpio: jtag-gpio {
+		group1 {
+			pinmux = <RK3308_GPIO_FUNC(SPI1_CLK)>, <RK3308_GPIO_FUNC(SPI1_MOSI)>,
+				 <RK3308_GPIO_FUNC(SPI1_CSN0)>,
+				 <RK3308_PINMUX(2, RK3308_PIN(1, 4), 0x48, 8, 2, 0)>;
+			bias-disable;
+		};
+
+		group2 {
+			pinmux = <RK3308_GPIO_FUNC(SPI1_MISO)>;
+			bias-pull-up;
+		};
+	};
+
+	jtag_spi: jtag-spi {
+		group1 {
+			pinmux = <SPI1_CLK>, <SPI1_MOSI>;
+			bias-disable;
+		};
+
+		group2 {
+			pinmux = <SPI1_MISO>;
+			bias-pull-up;
+		};
+	};
+};
+
+&gpio2 {
+	status = "okay";
+};
+
+&gpio3 {
+	status = "okay";
+};
+
+/* SCK up to 50 MHz (spiclk / 2) */
+&spi1 {
+	clock-frequency = <100000000>;
+	status = "okay";
+};
+
+/ {
+	dap: dap {
+		compatible = "zephyr,swdp-gpio";
+		clk-gpios = <&gpio3 11 GPIO_ACTIVE_HIGH>;
+		dio-gpios = <&gpio3 13 GPIO_ACTIVE_HIGH>;
+		tdi-gpios = <&gpio3 12 GPIO_ACTIVE_HIGH>;
+		tdo-gpios = <&gpio3 10 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio2 12 GPIO_ACTIVE_LOW>;
+		jtag-spi = <&spi1>;
+		port-write-cycles = <2>;
+		pinctrl-0 = <&jtag_gpio>;
+		pinctrl-1 = <&jtag_spi>;
+		pinctrl-names = "default", "spi";
+	};
+};
