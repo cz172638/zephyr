@@ -6,6 +6,7 @@ common:
     - usb
   platform_allow:
     - rock_pi_s
+    - rock_pi_s/rk3308/smp
   integration_platforms:
     - rock_pi_s
   harness: console
