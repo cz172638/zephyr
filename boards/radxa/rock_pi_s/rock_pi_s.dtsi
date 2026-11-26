@@ -47,6 +47,27 @@
 			pinmux = <UART0_RX_M0>, <UART0_TX_M0>;
 		};
 	};
+
+	/* header pins 23 (RX) and 24 (TX) */
+	uart1_default: uart1-default {
+		group1 {
+			pinmux = <UART1_RX>, <UART1_TX>;
+		};
+	};
+
+	/* header pins 21 (RX) and 19 (TX) */
+	uart2_default: uart2-default {
+		group1 {
+			pinmux = <UART2_RX_M0>, <UART2_TX_M0>;
+		};
+	};
+
+	/* header pins 40 (RX) and 39 (TX) */
+	uart3_default: uart3-default {
+		group1 {
+			pinmux = <UART3_RX_M0>, <UART3_TX_M0>;
+		};
+	};
 };
 
 &uart0 {
@@ -82,3 +103,9 @@
 				 "100BASE Half-Duplex", "100BASE Full-Duplex";
 	};
 };
+
+/* USB-C: OTG port, also the power input */
+zephyr_udc0: &usb20_otg {
+	status = "okay";
+};
+
