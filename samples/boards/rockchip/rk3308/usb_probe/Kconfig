@@ -4,4 +4,34 @@
 # USB sample options (VID/PID, strings) of the in-tree USB samples
 source "samples/subsys/usb/common/Kconfig.sample_usbd"
 
+if SSH_SERVER
+
+config USB_PROBE_SSH_USERNAME
+	string "SSH user name (empty: any)"
+	default "root"
+
+config USB_PROBE_SSH_PASSWORD
+	string "SSH password"
+	default ""
+	help
+	  Stored in clear text in the image. Empty: the server is not
+	  started.
+
+config USB_PROBE_SSH_HOST_KEY
+	string "RSA host key file (DER)"
+	default ""
+	help
+	  Private RSA key built into the image, relative to the application
+	  directory or absolute, e.g. made with
+	  "openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+	  -outform DER -out host_key.der". The probe has no storage, so
+	  without it a new key (and fingerprint) is generated on every
+	  boot.
+
+config USB_PROBE_SSH_HOST_KEY_BITS
+	int "Size of a host key generated at boot"
+	default 2048
+
+endif
+
 source "Kconfig.zephyr"
