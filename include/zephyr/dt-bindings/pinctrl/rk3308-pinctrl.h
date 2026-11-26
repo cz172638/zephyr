@@ -28,6 +28,18 @@
 #define UART0_RX_M0	RK3308_PINMUX(0x0040, 0, 2, 1)
 #define UART0_TX_M0	RK3308_PINMUX(0x0040, 2, 2, 1)
 
+/* UART1: GPIO1_D0/D1, GRF_GPIO1D_IOMUX (0x0038), func 1 */
+#define UART1_RX	RK3308_PINMUX(0x0038, 0, 2, 1)
+#define UART1_TX	RK3308_PINMUX(0x0038, 2, 2, 1)
+
+/* UART2 M0: GPIO1_C6/C7, GRF_GPIO1CH_IOMUX (0x0034), 4-bit fields, func 2 */
+#define UART2_RX_M0	RK3308_PINMUX(0x0034, 4, 4, 2)
+#define UART2_TX_M0	RK3308_PINMUX(0x0034, 8, 4, 2)
+
+/* UART3 M0: GPIO3_B4/B5, GRF_GPIO3B_IOMUX (0x0068), 4-bit fields, func 4 */
+#define UART3_RX_M0	RK3308_PINMUX(0x0068, 8, 4, 4)
+#define UART3_TX_M0	RK3308_PINMUX(0x0068, 12, 4, 4)
+
 /*
  * To add a group, read its pins' GRF_GPIO*_IOMUX* field from the TRM and build
  * one RK3308_PINMUX() per pin, e.g. the MAC2IO RMII function (func 4) lives on
