@@ -166,10 +166,14 @@ config ETH_ROCKCHIP_RK3308_DWC_ETHER_1000
 	select NOCACHE_MEMORY
 	select SYSCON
 	select CACHE_MANAGEMENT
+	select CRC
+	imply HWINFO
 	default y
 	help
 	  This enables the Synopsys DesignWare MAC (v3.x) driver for the
 	  10/100 RMII MAC of the Rockchip RK3308.
+	  Without a MAC address in the devicetree, the address is derived from
+	  the hwinfo device ID (the OTP CPU ID): the same on every boot.
 
 config ETH_ROCKCHIP_RK3399_DWC_ETHER_1000
 	bool "Driver for DWC Ethernet MAC-based Rockchip RK3399"
