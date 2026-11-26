@@ -2,9 +2,10 @@
  * Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
  * SPDX-License-Identifier: Apache-2.0
  *
- * Rockchip RK3308 CRU clock gate controller, with the rate of the SDMMC and
- * SPI clocks (mux and divider from DPLL, VPLL0, VPLL1 or the oscillator, the
- * PLLs as the boot loader left them).
+ * Rockchip RK3308 CRU clock gate controller, with the rate of the SDMMC, SPI
+ * and PWM clocks (mux and divider from DPLL, VPLL0, VPLL1 or the oscillator,
+ * the PLLs as the boot loader left them) and of the core clock (APLL at one
+ * of the operating points, as in U-Boot's clk_rk3308.c).
  */
 
 #define DT_DRV_COMPAT rockchip_rk3308_cru_clk
@@ -14,6 +15,8 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/irq.h>
+#include <zephyr/kernel.h>
 #include <zephyr/dt-bindings/clock/rk3308-cru.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/device_mmio.h>
@@ -40,8 +43,9 @@ LOG_MODULE_REGISTER(clock_control_rk3308_cru, CONFIG_CLOCK_CONTROL_LOG_LEVEL);
 
 #define OSC_HZ 24000000ULL
 
-/* clock parents: PLL index as used by RK3308_CRU_PLL_CONx(), or the oscillator */
+/* clock sources: PLL index as used by RK3308_CRU_PLL_CONx(), or the oscillator */
 enum rk3308_src {
+	SRC_APLL = 0,
 	SRC_DPLL = 1,
 	SRC_VPLL0 = 2,
 	SRC_VPLL1 = 3,
@@ -64,6 +68,34 @@ static const struct rk3308_comp rk3308_comps[] = {
 	{SCLK_SPI0, 30, 14, 7, 3, {SRC_DPLL, SRC_VPLL0, SRC_XIN24M}},
 	{SCLK_SPI1, 31, 14, 7, 3, {SRC_DPLL, SRC_VPLL0, SRC_XIN24M}},
 	{SCLK_SPI2, 32, 14, 7, 3, {SRC_DPLL, SRC_VPLL0, SRC_XIN24M}},
+	{SCLK_PWM0, 29, 14, 7, 3, {SRC_DPLL, SRC_VPLL0, SRC_XIN24M}},
+};
+
+/* APLL (PLL 0) settings and the core bus dividers per core rate */
+#define RK3308_APLL 0U
+#define PLL_CON1_LOCK BIT(10)
+#define CLKSEL0_ACLK_DIV GENMASK(14, 12)
+#define CLKSEL0_DBG_DIV  GENMASK(11, 8)
+#define CLKSEL0_PLL_SEL  GENMASK(7, 6)
+#define CLKSEL0_CORE_DIV GENMASK(3, 0)
+#define CRU_MODE_SLOW    0U
+
+struct rk3308_cpu_rate {
+	uint16_t mhz;
+	uint8_t refdiv;
+	uint16_t fbdiv;
+	uint8_t postdiv1;
+	uint8_t postdiv2;
+	uint8_t aclk_div;
+	uint8_t dbg_div;
+};
+
+/* Linux clk-rk3308.c (PLL table, rk3308_cpuclk_rates) */
+static const struct rk3308_cpu_rate rk3308_cpu_rates[] = {
+	{408, 1, 68, 2, 2, 1, 1},
+	{600, 1, 75, 3, 1, 1, 3},
+	{816, 1, 68, 2, 1, 1, 3},
+	{1008, 1, 84, 2, 1, 1, 5},
 };
 
 /* clk_sdmmc: CLKSEL_CON39 bit 15 selects clk_sdmmc_div (0) or _div50 */
@@ -101,6 +133,9 @@ static void rk3308_cru_gate_write(mm_reg_t base, uint16_t clk_id, bool enable)
 
 static int clock_control_rk3308_on(const struct device *dev, clock_control_subsys_t sys)
 {
+	if ((uint16_t)(uintptr_t)sys == ARMCLK) {
+		return 0;
+	}
 	if ((uint16_t)(uintptr_t)sys == SCLK_SDMMC) {
 		rk3308_cru_gate_write(DEVICE_MMIO_GET(dev), SDMMC_DIV_GATE, true);
 	}
@@ -111,6 +146,9 @@ static int clock_control_rk3308_on(const struct device *dev, clock_control_subsy
 
 static int clock_control_rk3308_off(const struct device *dev, clock_control_subsys_t sys)
 {
+	if ((uint16_t)(uintptr_t)sys == ARMCLK) {
+		return -ENOTSUP;
+	}
 	rk3308_cru_gate_write(DEVICE_MMIO_GET(dev), (uint16_t)(uintptr_t)sys, false);
 
 	return 0;
@@ -204,9 +242,91 @@ static int rk3308_comp_set_rate(mm_reg_t base, const struct rk3308_comp *c, uint
 	return 0;
 }
 
+static uint32_t rk3308_armclk_rate(mm_reg_t base)
+{
+	uint32_t sel = sys_read32(base + RK3308_CRU_CLKSEL_CON(0));
+	uint32_t pll = FIELD_GET(CLKSEL0_PLL_SEL, sel);
+	static const enum rk3308_src core_src[] = {SRC_APLL, SRC_VPLL0, SRC_VPLL1};
+	uint64_t parent;
+
+	if (pll >= ARRAY_SIZE(core_src)) {
+		return 0;
+	}
+	parent = rk3308_src_rate(base, core_src[pll]);
+	return (uint32_t)(parent / (FIELD_GET(CLKSEL0_CORE_DIV, sel) + 1U));
+}
+
+static int rk3308_apll_set(mm_reg_t base, const struct rk3308_cpu_rate *r)
+{
+	uint32_t mask = GENMASK(1, 0) << (2U * RK3308_APLL);
+	int timeout = 1000;
+
+	/* the cores run from the oscillator while the PLL relocks */
+	sys_write32((mask << 16) | (CRU_MODE_SLOW << (2U * RK3308_APLL)),
+		    base + RK3308_CRU_MODE);
+	sys_write32(((PLL_CON0_POSTDIV1 | PLL_CON0_FBDIV) << 16) |
+			    FIELD_PREP(PLL_CON0_POSTDIV1, r->postdiv1) |
+			    FIELD_PREP(PLL_CON0_FBDIV, r->fbdiv),
+		    base + RK3308_CRU_PLL_CON0(RK3308_APLL));
+	sys_write32(((PLL_CON1_DSMPD | PLL_CON1_POSTDIV2 | PLL_CON1_REFDIV) << 16) |
+			    PLL_CON1_DSMPD | FIELD_PREP(PLL_CON1_POSTDIV2, r->postdiv2) |
+			    FIELD_PREP(PLL_CON1_REFDIV, r->refdiv),
+		    base + RK3308_CRU_PLL_CON1(RK3308_APLL));
+	while ((sys_read32(base + RK3308_CRU_PLL_CON1(RK3308_APLL)) & PLL_CON1_LOCK) == 0U) {
+		if (--timeout == 0) {
+			return -ETIMEDOUT;
+		}
+		k_busy_wait(1);
+	}
+	sys_write32((mask << 16) | (CRU_MODE_NORMAL << (2U * RK3308_APLL)),
+		    base + RK3308_CRU_MODE);
+	return 0;
+}
+
+static void rk3308_core_div_set(mm_reg_t base, const struct rk3308_cpu_rate *r)
+{
+	sys_write32(((CLKSEL0_ACLK_DIV | CLKSEL0_DBG_DIV | CLKSEL0_PLL_SEL | CLKSEL0_CORE_DIV)
+		     << 16) |
+			    FIELD_PREP(CLKSEL0_ACLK_DIV, r->aclk_div) |
+			    FIELD_PREP(CLKSEL0_DBG_DIV, r->dbg_div),
+		    base + RK3308_CRU_CLKSEL_CON(0));
+}
+
+/* core from APLL 1:1; bus dividers lowered before a rate increase */
+static int rk3308_armclk_set_rate(mm_reg_t base, uint32_t hz)
+{
+	const struct rk3308_cpu_rate *r = NULL;
+	uint32_t old = rk3308_armclk_rate(base);
+	unsigned int key;
+	int ret;
+
+	for (size_t i = 0; i < ARRAY_SIZE(rk3308_cpu_rates); i++) {
+		if (rk3308_cpu_rates[i].mhz * 1000000U == hz) {
+			r = &rk3308_cpu_rates[i];
+		}
+	}
+	if (r == NULL) {
+		return -EINVAL;
+	}
+	key = irq_lock();
+	if (hz > old) {
+		rk3308_core_div_set(base, r);
+		ret = rk3308_apll_set(base, r);
+	} else {
+		ret = rk3308_apll_set(base, r);
+		rk3308_core_div_set(base, r);
+	}
+	irq_unlock(key);
+	return ret;
+}
+
 static int clock_control_rk3308_set_rate(const struct device *dev, clock_control_subsys_t sys,
 					 clock_control_subsys_rate_t rate)
 {
+	if ((uint16_t)(uintptr_t)sys == ARMCLK) {
+		return rk3308_armclk_set_rate(DEVICE_MMIO_GET(dev), (uint32_t)(uintptr_t)rate);
+	}
+
 	const struct rk3308_comp *c = rk3308_comp_find((uint16_t)(uintptr_t)sys);
 	uint32_t want = (uint32_t)(uintptr_t)rate;
 
@@ -225,6 +345,10 @@ static int clock_control_rk3308_get_rate(const struct device *dev, clock_control
 	uint16_t clk_id = (uint16_t)(uintptr_t)sys;
 	const struct rk3308_comp *c = rk3308_comp_find(clk_id);
 
+	if (clk_id == ARMCLK) {
+		*rate = rk3308_armclk_rate(DEVICE_MMIO_GET(dev));
+		return *rate != 0U ? 0 : -EIO;
+	}
 	if (c != NULL) {
 		*rate = rk3308_comp_rate(DEVICE_MMIO_GET(dev), c);
 		return *rate != 0U ? 0 : -EIO;
