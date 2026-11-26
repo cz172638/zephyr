@@ -188,6 +188,13 @@
 			status = "disabled";
 		};
 
+		/* the CPU ID at byte 7 is the hwinfo device ID */
+		otp: efuse@ff210000 {
+			compatible = "rockchip,rk3308-otp";
+			reg = <0xff210000 0x4000>;
+			status = "disabled";
+		};
+
 		/* 10/100 RMII MAC (MAC2IO), DWMAC v3.x */
 		mac: ethernet@ff4e0000 {
 			compatible = "rockchip,rk3308-mac", "snps,dwmac";
