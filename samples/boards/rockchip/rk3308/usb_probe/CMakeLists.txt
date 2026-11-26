@@ -6,7 +6,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(rk3308_usb_probe)
 
 include(${ZEPHYR_BASE}/samples/subsys/usb/common/common.cmake)
-target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE src/main.c src/cpufreq.c)
 
 if(CONFIG_SSH_SERVER)
   target_sources(app PRIVATE src/ssh.c)
