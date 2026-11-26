@@ -1,0 +1,12 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config PWM_ROCKCHIP
+	bool "Rockchip PWM (RK3328 generation)"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3328_PWM_ENABLED
+	depends on CLOCK_CONTROL
+	select PINCTRL
+	help
+	  Rockchip PWM as in RK3328 and RK3308: one channel per instance,
+	  continuous output.

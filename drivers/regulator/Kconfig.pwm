@@ -1,0 +1,21 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config REGULATOR_PWM
+	bool "PWM-controlled regulators"
+	default y
+	depends on DT_HAS_PWM_REGULATOR_ENABLED
+	select PWM
+	help
+	  Regulators whose output voltage follows the duty cycle of a PWM
+	  (continuous mode of the pwm-regulator binding).
+
+if REGULATOR_PWM
+
+config REGULATOR_PWM_INIT_PRIORITY
+	int "Init priority"
+	default 76
+	help
+	  Device driver initialization priority, after the PWM controller.
+
+endif # REGULATOR_PWM

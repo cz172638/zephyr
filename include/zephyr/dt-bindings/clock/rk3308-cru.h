@@ -57,4 +57,14 @@
 #define PCLK_SPI1	RK3308_CLK_GATE(6, 5)
 #define PCLK_SPI2	RK3308_CLK_GATE(6, 6)
 
+/* PWM0 functional clock (set_rate programs CLKSEL_CON29) and APB clock */
+#define SCLK_PWM0	RK3308_CLK_GATE(3, 1)
+#define PCLK_PWM0	RK3308_CLK_GATE(6, 3)
+
+/*
+ * Core clock: not a gate (CLKGATE_CON index 0xff). set_rate reprograms APLL
+ * to one of the core operating points; the caller owns vdd_core.
+ */
+#define ARMCLK		RK3308_CLK_GATE(0xff, 0)
+
 #endif /* ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_RK3308_CRU_H_ */

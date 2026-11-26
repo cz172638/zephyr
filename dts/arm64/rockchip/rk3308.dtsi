@@ -196,6 +196,15 @@
 			status = "disabled";
 		};
 
+		pwm0: pwm@ff180000 {
+			compatible = "rockchip,rk3328-pwm";
+			reg = <0xff180000 0x10>;
+			clocks = <&cru_clk SCLK_PWM0>, <&cru_clk PCLK_PWM0>;
+			clock-names = "pwm", "pclk";
+			#pwm-cells = <3>;
+			status = "disabled";
+		};
+
 		/* micro SD slot; the CIU runs at half of clk_sdmmc */
 		sdmmc: mmc@ff480000 {
 			compatible = "rockchip,rk3308-dw-mshc";

@@ -1,0 +1,35 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip PWM of the RK3328 generation (also RK3308), one channel per
+  node. The PWM clock is set to clock-frequency; period and duty are
+  counted in its cycles.
+
+compatible: "rockchip,rk3328-pwm"
+
+include: [pwm-controller.yaml, pinctrl-device.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+
+  clock-names:
+    required: true
+    description: Must be "pwm" (functional clock), "pclk" (APB).
+
+  clock-frequency:
+    type: int
+    default: 24000000
+    description: Rate set on the PWM clock.
+
+  "#pwm-cells":
+    const: 3
+
+pwm-cells:
+  - channel
+  - period
+  - flags
