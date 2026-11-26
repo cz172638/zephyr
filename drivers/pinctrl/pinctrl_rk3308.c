@@ -36,12 +36,12 @@ int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintp
 
 	for (; pin_cnt > 0U; pin_cnt--, pins++) {
 		uint32_t cfg = pins->cfg;
-		uint32_t off = cfg & 0xffU;
-		uint32_t shift = (cfg >> 8) & 0xfU;
-		uint32_t width = (cfg >> 12) & 0x7U;
-		uint32_t mux = (cfg >> 16) & 0xfU;
-		uint32_t bank = (cfg >> 20) & 0x7U;
-		uint32_t pin = (cfg >> 23) & 0x1fU;
+		uint32_t off = cfg & 0xfffU;
+		uint32_t shift = (cfg >> 12) & 0xfU;
+		uint32_t width = (cfg >> 16) & 0x7U;
+		uint32_t mux = (cfg >> 19) & 0xfU;
+		uint32_t bank = (cfg >> 23) & 0x7U;
+		uint32_t pin = (cfg >> 26) & 0x1fU;
 		uint32_t mask = BIT(width) - 1U;
 
 		/* hiword-masked write: enable only the field being changed */

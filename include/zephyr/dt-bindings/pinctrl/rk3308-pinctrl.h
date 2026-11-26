@@ -12,20 +12,24 @@
  * of deriving it from the bank/pin number; bank and pin locate its pull
  * field (GRF_GPIO<bank><port>_P, regular: 2 bits per pin):
  *
- *   bits [7:0]   GRF iomux register offset (from GRF base 0xff000000)
- *   bits [11:8]  field shift within that 32-bit register (0..15)
- *   bits [14:12] field width in bits (1..4)
- *   bits [19:16] mux function value
- *   bits [22:20] GPIO bank (0..4)
- *   bits [27:23] pin within the bank (0..31, A0 = 0, D7 = 31)
+ *   bits [11:0]  GRF iomux register offset (from GRF base 0xff000000; the
+ *                recalculated fields of some pins lie at 0x6xx)
+ *   bits [15:12] field shift within that 32-bit register (0..15)
+ *   bits [18:16] field width in bits (1..4)
+ *   bits [22:19] mux function value
+ *   bits [25:23] GPIO bank (0..4)
+ *   bits [30:26] pin within the bank (0..31, A0 = 0, D7 = 31)
  *
  * The field must lie within the low 16 bits of its register; GRF iomux
  * registers are hiword-masked, so the driver writes the write-enable mask in
  * bits [31:16]. Offsets and fields: RK3308 TRM v1.1 Part1, GRF_GPIO*_IOMUX*.
  */
 #define RK3308_PINMUX(bank, pin, off, shift, width, mux)                                           \
-	(((off) & 0xff) | (((shift) & 0xf) << 8) | (((width) & 0x7) << 12) |                        \
-	 (((mux) & 0xf) << 16) | (((bank) & 0x7) << 20) | (((pin) & 0x1f) << 23))
+	(((off) & 0xfff) | (((shift) & 0xf) << 12) | (((width) & 0x7) << 16) |                      \
+	 (((mux) & 0xf) << 19) | (((bank) & 0x7) << 23) | (((pin) & 0x1f) << 26))
+
+/* the same pin with its GPIO function (mux 0) */
+#define RK3308_GPIO_FUNC(pinmux) ((pinmux) & ~(0xf << 19))
 
 /* pin number within a bank: port A..D (0..3), pin 0..7 */
 #define RK3308_PIN(port, n) ((port) * 8 + (n))
@@ -60,6 +64,16 @@
 
 /* PWM0: GPIO0_B5, GRF_GPIO0B_IOMUX (0x0008), func 1 (vdd_core on ROCK Pi S) */
 #define PWM0		RK3308_PINMUX(0, RK3308_PIN(1, 5), 0x08, 10, 2, 1)
+
+/*
+ * SPI1 (header pins 42 MISO, 41 CLK, 40 MOSI, 39 CSN0): GPIO3_B2/B3 have
+ * recalculated 3-bit fields in 0x0610, B4/B5 4-bit fields in GRF_GPIO3B_IOMUX
+ * (0x0068); func 3 (Linux pinctrl-rockchip rk3308_mux_recalced_data)
+ */
+#define SPI1_MISO	RK3308_PINMUX(3, RK3308_PIN(1, 2), 0x610, 0, 3, 3)
+#define SPI1_CLK	RK3308_PINMUX(3, RK3308_PIN(1, 3), 0x610, 4, 3, 3)
+#define SPI1_MOSI	RK3308_PINMUX(3, RK3308_PIN(1, 4), 0x68, 8, 4, 3)
+#define SPI1_CSN0	RK3308_PINMUX(3, RK3308_PIN(1, 5), 0x68, 12, 4, 3)
 
 /*
  * To add a group, read its pins' GRF_GPIO*_IOMUX* field from the TRM and build
