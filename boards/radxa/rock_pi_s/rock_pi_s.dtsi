@@ -86,7 +86,11 @@
 	status = "okay";
 	clock-in-out = "output";
 	phy-handle = <&rtl8201f>;
-	zephyr,random-mac-address;
+};
+
+/* CPU ID: the MAC address derived from it */
+&otp {
+	status = "okay";
 };
 
 &mdio {

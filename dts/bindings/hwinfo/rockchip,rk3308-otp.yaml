@@ -1,0 +1,14 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK3308 OTP, read by the hwinfo driver: the device ID is the
+  16-byte CPU ID at byte 7.
+
+compatible: "rockchip,rk3308-otp"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true

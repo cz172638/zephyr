@@ -15,3 +15,8 @@ common:
       - "USB probe: 2 UART bridges"
 tests:
   sample.boards.rockchip.rk3308.usb_probe: {}
+  sample.boards.rockchip.rk3308.usb_probe.net:
+    build_only: true
+    extra_args:
+      - EXTRA_CONF_FILE=net.conf
+      - CONFIG_USB_PROBE_SSH_PASSWORD="test"

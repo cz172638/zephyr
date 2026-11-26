@@ -5,6 +5,8 @@
  * RK3308 as a lab probe: USB composite device with CDC ACM ports, the first
  * one the probe's shell, the others bridged to UARTs (zephyr,uart-bridge);
  * the line coding the host sets on a bridged port is applied to its UART.
+ * With net.conf: Ethernet with DHCP, mDNS (rk3308-probe-<mac>.local), and
+ * the shell over SSH.
  */
 
 #include <sample_usbd.h>
@@ -13,7 +15,12 @@
 #include <zephyr/drivers/uart/uart_bridge.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/net/net_if.h>
+#include <zephyr/net/dhcpv4.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/usb/usbd.h>
+
+#include "probe.h"
 
 LOG_MODULE_REGISTER(usb_probe, LOG_LEVEL_INF);
 
@@ -56,5 +63,16 @@ int main(void)
 		return -EIO;
 	}
 	LOG_INF("USB probe: %zu UART bridges", ARRAY_SIZE(bridges));
+
+	if (IS_ENABLED(CONFIG_NET_DHCPV4) && net_if_get_default() != NULL) {
+		struct net_linkaddr *ll = net_if_get_link_addr(net_if_get_default());
+
+		printk("net: MAC %02x:%02x:%02x:%02x:%02x:%02x, DHCP\n", ll->addr[0],
+		       ll->addr[1], ll->addr[2], ll->addr[3], ll->addr[4], ll->addr[5]);
+		net_dhcpv4_start(net_if_get_default());
+	}
+	if (IS_ENABLED(CONFIG_SSH_SERVER)) {
+		probe_ssh_start();
+	}
 	return 0;
 }

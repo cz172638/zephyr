@@ -7,3 +7,14 @@ project(rk3308_usb_probe)
 
 include(${ZEPHYR_BASE}/samples/subsys/usb/common/common.cmake)
 target_sources(app PRIVATE src/main.c)
+
+if(CONFIG_SSH_SERVER)
+  target_sources(app PRIVATE src/ssh.c)
+  if(NOT CONFIG_USB_PROBE_SSH_HOST_KEY STREQUAL "")
+    get_filename_component(host_key ${CONFIG_USB_PROBE_SSH_HOST_KEY}
+                           ABSOLUTE BASE_DIR ${APPLICATION_SOURCE_DIR})
+    set(gen_dir ${ZEPHYR_BINARY_DIR}/include/generated)
+    generate_inc_file_for_target(app ${host_key} ${gen_dir}/ssh_host_key.der.inc)
+    target_compile_definitions(app PRIVATE USB_PROBE_SSH_HOST_KEY_INC)
+  endif()
+endif()

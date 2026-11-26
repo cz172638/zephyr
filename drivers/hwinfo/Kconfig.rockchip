@@ -1,0 +1,10 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config HWINFO_RK3308
+	bool "RK3308 OTP CPU ID"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3308_OTP_ENABLED
+	select HWINFO_HAS_DRIVER
+	help
+	  Device ID from the 16-byte CPU ID in the RK3308 OTP.
