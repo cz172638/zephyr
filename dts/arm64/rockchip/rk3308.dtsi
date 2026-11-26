@@ -8,6 +8,7 @@
  */
 
 #include <arm64/armv8-a.dtsi>
+#include <zephyr/dt-bindings/clock/rk3308-cru.h>
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
 #include <freq.h>
 #include <mem.h>
@@ -192,6 +193,19 @@
 		otp: efuse@ff210000 {
 			compatible = "rockchip,rk3308-otp";
 			reg = <0xff210000 0x4000>;
+			status = "disabled";
+		};
+
+		/* micro SD slot; the CIU runs at half of clk_sdmmc */
+		sdmmc: mmc@ff480000 {
+			compatible = "rockchip,rk3308-dw-mshc";
+			reg = <0xff480000 0x4000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 76 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&cru_clk HCLK_SDMMC>, <&cru_clk SCLK_SDMMC>;
+			clock-names = "biu", "ciu";
+			min-bus-freq = <400000>;
+			max-bus-freq = <50000000>;
 			status = "disabled";
 		};
 

@@ -12,6 +12,7 @@ description: |
             uart0_default: uart0-default {
                     group1 {
                             pinmux = <UART0_RX_M0>, <UART0_TX_M0>;
+                            bias-pull-up;
                     };
             };
     };
@@ -24,7 +25,17 @@ include: base.yaml
 
 child-binding:
   child-binding:
-    description: RK3308 pin configuration group.
+    description: |
+      RK3308 pin configuration group; bias-pull-up, bias-pull-down or
+      bias-disable set the pull of all its pins, without one the pull is
+      left as it is.
+
+    include:
+      - name: pincfg-node.yaml
+        property-allowlist:
+          - bias-disable
+          - bias-pull-up
+          - bias-pull-down
 
     properties:
       pinmux:

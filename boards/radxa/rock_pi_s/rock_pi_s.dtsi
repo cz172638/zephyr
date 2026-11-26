@@ -42,6 +42,20 @@
 };
 
 &pinctrl {
+	/* micro SD: no pull-ups on the board, card detect on GPIO0_A3 */
+	sdmmc_default: sdmmc-default {
+		group1 {
+			pinmux = <SDMMC_D0>, <SDMMC_D1>, <SDMMC_D2>, <SDMMC_D3>, <SDMMC_CMD>,
+				 <SDMMC_DET>;
+			bias-pull-up;
+		};
+
+		group2 {
+			pinmux = <SDMMC_CLK>;
+			bias-disable;
+		};
+	};
+
 	uart0_default: uart0-default {
 		group1 {
 			pinmux = <UART0_RX_M0>, <UART0_TX_M0>;
@@ -86,6 +100,19 @@
 	status = "okay";
 	clock-in-out = "output";
 	phy-handle = <&rtl8201f>;
+};
+
+&sdmmc {
+	pinctrl-0 = <&sdmmc_default>;
+	pinctrl-names = "default";
+	bus-width = <4>;
+	status = "okay";
+
+	sdmmc_disk: sdmmc {
+		compatible = "zephyr,sdmmc-disk";
+		disk-name = "SD";
+		status = "okay";
+	};
 };
 
 /* CPU ID: the MAC address derived from it */

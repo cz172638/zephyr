@@ -19,6 +19,10 @@ configdefault UART_NS16550_ACCESS_WORD_ONLY
 config SYSCON_INIT_PRIORITY
 	default 10
 
+# sys_reboot() through PSCI SYSTEM_RESET (TF-A BL31)
+config PM_CPU_OPS
+	default y
+
 config FLASH_SIZE
 	default 0
 

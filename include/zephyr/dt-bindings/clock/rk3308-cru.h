@@ -42,4 +42,19 @@
 #define SCLK_MAC_REF	RK3308_CLK_GATE(9, 1)
 #define SCLK_MAC_RXTX	RK3308_CLK_GATE(9, 0)
 
+/*
+ * SDMMC: clk_sdmmc (its gate; "on" also ungates clk_sdmmc_div at
+ * CLKGATE_CON8 bit 6, set_rate programs CLKSEL_CON39) and the AHB clock
+ */
+#define SCLK_SDMMC	RK3308_CLK_GATE(8, 7)
+#define HCLK_SDMMC	RK3308_CLK_GATE(9, 7)
+
+/* SPI functional clocks (set_rate programs CLKSEL_CON30..32) and APB clocks */
+#define SCLK_SPI0	RK3308_CLK_GATE(3, 2)
+#define SCLK_SPI1	RK3308_CLK_GATE(3, 3)
+#define SCLK_SPI2	RK3308_CLK_GATE(3, 4)
+#define PCLK_SPI0	RK3308_CLK_GATE(6, 4)
+#define PCLK_SPI1	RK3308_CLK_GATE(6, 5)
+#define PCLK_SPI2	RK3308_CLK_GATE(6, 6)
+
 #endif /* ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_RK3308_CRU_H_ */

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Synopsys DesignWare Mobile Storage Host (dw_mmc) in its Rockchip
- * integration (RK3399 SDMMC): one slot, polled, FIFO PIO, 3.3 V,
+ * integration (RK3399 and RK3308 SDMMC): one slot, polled, FIFO PIO, 3.3 V,
  * default and high speed (up to 50 MHz), 1/4-bit bus.
  *
  * Rockchip feeds the card interface unit through a fixed /2, so the CRU
@@ -16,8 +16,6 @@
  * are muxed to JTAG by hand (GPIO4_B2/B3 AP TCK/TMS, B4/B5 MCU TCK/TMS)
  * and the slot reports no card until the next boot.
  */
-
-#define DT_DRV_COMPAT rockchip_rk3399_dw_mshc
 
 #include <errno.h>
 #include <string.h>
@@ -614,25 +612,36 @@ static int dw_mshc_init(const struct device *dev)
 	return 0;
 }
 
+/* per node, both compatibles number their instances from 0 */
+#define DW_MSHC_NAME(what, n) _CONCAT(_CONCAT(dw_mshc_##what, _), DT_INST_DEP_ORD(n))
+
 #define DW_MSHC_INIT(n)                                                                            \
 	PINCTRL_DT_INST_DEFINE(n);                                                                 \
-	static const struct dw_mshc_config dw_mshc_config_##n = {                                  \
+	static const struct dw_mshc_config DW_MSHC_NAME(config, n) = {                             \
 		DEVICE_MMIO_ROM_INIT(DT_DRV_INST(n)),                                              \
 		.clk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR_BY_NAME(n, biu)),                     \
 		.biu = (clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_NAME(n, biu, clkid),         \
 		.ciu = (clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_NAME(n, ciu, clkid),         \
-		.grf = DEVICE_DT_GET_OR_NULL(DT_INST_PHANDLE(n, rockchip_grf)),                    \
+		.grf = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, rockchip_grf),                         \
+				   (DEVICE_DT_GET(DT_INST_PHANDLE(n, rockchip_grf))), (NULL)),     \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                         \
 		.f_max = DT_INST_PROP(n, max_bus_freq),                                            \
 		.f_min = DT_INST_PROP(n, min_bus_freq),                                            \
 		.power_delay_ms = DT_INST_PROP(n, power_delay_ms),                                 \
 		.bus_width = DT_INST_PROP(n, bus_width),                                           \
 		.broken_cd = DT_INST_PROP(n, broken_cd),                                           \
-		.sd_jtag = DT_INST_PROP(n, rockchip_sd_jtag) &&                                    \
+		.sd_jtag = DT_INST_PROP_OR(n, rockchip_sd_jtag, false) &&                          \
 			   DT_INST_NODE_HAS_PROP(n, rockchip_grf),                                 \
 	};                                                                                         \
-	static struct dw_mshc_data dw_mshc_data_##n;                                               \
-	DEVICE_DT_INST_DEFINE(n, dw_mshc_init, NULL, &dw_mshc_data_##n, &dw_mshc_config_##n,       \
-			      POST_KERNEL, CONFIG_SDHC_INIT_PRIORITY, &dw_mshc_api);
+	static struct dw_mshc_data DW_MSHC_NAME(data, n);                                          \
+	DEVICE_DT_INST_DEFINE(n, dw_mshc_init, NULL, &DW_MSHC_NAME(data, n),                       \
+			      &DW_MSHC_NAME(config, n), POST_KERNEL, CONFIG_SDHC_INIT_PRIORITY,    \
+			      &dw_mshc_api);
 
+/* GRF and JTAG handover: RK3399 only (the RK3308 binding has no rockchip,grf) */
+#define DT_DRV_COMPAT rockchip_rk3399_dw_mshc
+DT_INST_FOREACH_STATUS_OKAY(DW_MSHC_INIT)
+#undef DT_DRV_COMPAT
+
+#define DT_DRV_COMPAT rockchip_rk3308_dw_mshc
 DT_INST_FOREACH_STATUS_OKAY(DW_MSHC_INIT)

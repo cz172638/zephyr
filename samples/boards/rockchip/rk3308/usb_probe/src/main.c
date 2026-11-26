@@ -5,14 +5,17 @@
  * RK3308 as a lab probe: USB composite device with CDC ACM ports, the first
  * one the probe's shell, the others bridged to UARTs (zephyr,uart-bridge);
  * the line coding the host sets on a bridged port is applied to its UART.
- * With net.conf: Ethernet with DHCP, mDNS (rk3308-probe-<mac>.local), and
- * the shell over SSH.
+ * The FAT partition of a micro SD card is mounted at /SD:; "fwupdate"
+ * writes the card's boot area. With net.conf: Ethernet with DHCP, mDNS
+ * (rk3308-probe-<mac>.local), and the shell over SSH.
  */
 
+#include <ff.h>
 #include <sample_usbd.h>
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart/uart_bridge.h>
+#include <zephyr/fs/fs.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/net_if.h>
@@ -26,6 +29,13 @@ LOG_MODULE_REGISTER(usb_probe, LOG_LEVEL_INF);
 
 static const struct device *const bridges[] = {
 	DT_FOREACH_STATUS_OKAY(zephyr_uart_bridge, DEVICE_DT_GET_COMMA)
+};
+
+static FATFS sd_fat;
+static struct fs_mount_t sd_mnt = {
+	.type = FS_FATFS,
+	.fs_data = &sd_fat,
+	.mnt_point = "/SD:",
 };
 
 static void msg_cb(struct usbd_context *const ctx, const struct usbd_msg *msg)
@@ -52,6 +62,7 @@ static void msg_cb(struct usbd_context *const ctx, const struct usbd_msg *msg)
 
 int main(void)
 {
+	int ret;
 	struct usbd_context *usbd = sample_usbd_init_device(msg_cb);
 
 	if (usbd == NULL) {
@@ -63,6 +74,9 @@ int main(void)
 		return -EIO;
 	}
 	LOG_INF("USB probe: %zu UART bridges", ARRAY_SIZE(bridges));
+
+	ret = fs_mount(&sd_mnt);
+	printk("SD: %s (%d)\n", ret == 0 ? "mounted at /SD:" : "no card or no FAT", ret);
 
 	if (IS_ENABLED(CONFIG_NET_DHCPV4) && net_if_get_default() != NULL) {
 		struct net_linkaddr *ll = net_if_get_link_addr(net_if_get_default());
