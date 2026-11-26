@@ -58,6 +58,9 @@
 #define SDMMC_CLK	RK3308_PINMUX(4, RK3308_PIN(3, 5), 0x98, 10, 2, 1)
 #define SDMMC_DET	RK3308_PINMUX(0, RK3308_PIN(0, 3), 0x00, 6, 2, 1)
 
+/* PWM0: GPIO0_B5, GRF_GPIO0B_IOMUX (0x0008), func 1 (vdd_core on ROCK Pi S) */
+#define PWM0		RK3308_PINMUX(0, RK3308_PIN(1, 5), 0x08, 10, 2, 1)
+
 /*
  * To add a group, read its pins' GRF_GPIO*_IOMUX* field from the TRM and build
  * one RK3308_PINMUX() per pin, e.g. the MAC2IO RMII function (func 4) lives on
