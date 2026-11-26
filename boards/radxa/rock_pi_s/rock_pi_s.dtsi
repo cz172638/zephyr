@@ -7,9 +7,21 @@
 #include <rockchip/rk3308.dtsi>
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/pinctrl/rk3308-pinctrl.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
 
 / {
 	compatible = "radxa,rock-pi-s", "rockchip,rk3308";
+
+	vdd_core: regulator-vdd-core {
+		compatible = "pwm-regulator";
+		pwms = <&pwm0 0 PWM_NSEC(5000) PWM_POLARITY_INVERTED>;
+		regulator-name = "vdd_core";
+		regulator-min-microvolt = <827000>;
+		regulator-max-microvolt = <1340000>;
+		regulator-settling-time-up-us = <250>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
 
 	chosen {
 		zephyr,sram = &sram0;
@@ -42,6 +54,13 @@
 };
 
 &pinctrl {
+	pwm0_default: pwm0-default {
+		group1 {
+			pinmux = <PWM0>;
+			bias-disable;
+		};
+	};
+
 	/* micro SD: no pull-ups on the board, card detect on GPIO0_A3 */
 	sdmmc_default: sdmmc-default {
 		group1 {
@@ -100,6 +119,17 @@
 	status = "okay";
 	clock-in-out = "output";
 	phy-handle = <&rtl8201f>;
+};
+
+/*
+ * vdd_core (CPU cores): buck set by PWM0 (inverted, 200 kHz), 0.827 V to
+ * 1.34 V, as in the Linux devicetree. Until a voltage is set the pin stays
+ * a GPIO input and the buck runs at its strapped voltage.
+ */
+&pwm0 {
+	pinctrl-0 = <&pwm0_default>;
+	pinctrl-names = "default";
+	status = "okay";
 };
 
 &sdmmc {
