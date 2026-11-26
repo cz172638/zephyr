@@ -54,9 +54,16 @@ description: |
   Of course, bidirectional bus transceiver between dio and SWD DIO can also be
   used together with noe pin to enable/disable transceivers.
 
+  JTAG: with tdi-gpios and tdo-gpios the driver also shifts JTAG
+  sequences, clk-gpios being TCK and dio-gpios TMS. jtag-spi names an SPI
+  controller whose SCK, MOSI and MISO pads are TCK, TDI and TDO: whole
+  bytes of a sequence go through it (mode 0, LSB first). The "default"
+  pinctrl state gives the pads their GPIO function, the "spi" state their
+  SPI function.
+
 compatible: "zephyr,swdp-gpio"
 
-include: base.yaml
+include: [base.yaml, pinctrl-device.yaml]
 
 properties:
   clk-gpios:
@@ -86,6 +93,20 @@ properties:
     type: phandle-array
     description: |
       Optional pin to disable all bus transceivers if any are present.
+
+  tdi-gpios:
+    type: phandle-array
+    description: JTAG TDI (output)
+
+  tdo-gpios:
+    type: phandle-array
+    description: JTAG TDO (input)
+
+  jtag-spi:
+    type: phandle
+    description: |
+      SPI controller shifting whole bytes of JTAG sequences, its SCK, MOSI
+      and MISO pads wired as TCK, TDI and TDO.
 
   reset-gpios:
     type: phandle-array

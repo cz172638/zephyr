@@ -13,7 +13,13 @@
  */
 
 
-/* Serial Wire Debug Port interface bit-bang driver */
+/*
+ * Serial Wire Debug Port interface bit-bang driver, with JTAG sequences when
+ * TDI and TDO are wired (TCK = SWCLK, TMS = SWDIO). Whole bytes of a JTAG
+ * sequence can be shifted by an SPI controller instead (jtag-spi): its SCK,
+ * MOSI and MISO pads are TCK, TDI and TDO, switched from GPIO to SPI by the
+ * "spi" pinctrl state for the shift.
+ */
 
 #define DT_DRV_COMPAT zephyr_swdp_gpio
 
@@ -21,6 +27,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/swdp.h>
 
 #include "swdp_ll_pin.h"
@@ -40,8 +47,25 @@ LOG_MODULE_REGISTER(swdp, CONFIG_DP_DRIVER_LOG_LEVEL);
 #define DELAY_FAST_CYCLES		2U
 #define DELAY_SLOW_CYCLES		3U
 
+#if defined(CONFIG_PINCTRL)
+#include <zephyr/drivers/pinctrl.h>
+/* SPI pad functions on TCK, TDI and TDO */
+#define PINCTRL_STATE_SPI PINCTRL_STATE_PRIV_START
+#else
+#define PINCTRL_STATE_DEFAULT 0U
+#define PINCTRL_STATE_SPI 1U
+struct pinctrl_dev_config;
+#endif
+
+/* bytes per SPI transfer of a JTAG sequence */
+#define JTAG_SPI_CHUNK 64U
+
 struct sw_config {
 	struct gpio_dt_spec clk;
+	struct gpio_dt_spec tdi;
+	struct gpio_dt_spec tdo;
+	const struct device *spi;
+	const struct pinctrl_dev_config *pcfg;
 	struct gpio_dt_spec dout;
 	struct gpio_dt_spec dio;
 	struct gpio_dt_spec dnoe;
@@ -60,6 +84,12 @@ struct sw_cfg_data {
 	uint8_t turnaround;
 	bool data_phase;
 	bool fast_clock;
+	/*
+	 * SPI drivers reconfigure only for a new spi_config pointer: a clock
+	 * change fills the other one
+	 */
+	struct spi_config spi_cfg[2];
+	uint8_t spi_cfg_idx;
 };
 
 /* Set SWCLK DAP hardware output pin to high level */
@@ -433,6 +463,106 @@ static int sw_transfer(const struct device *dev,
 	return 0;
 }
 
+static int sw_pinctrl(const struct sw_config *config, uint8_t state)
+{
+#if defined(CONFIG_PINCTRL)
+	return pinctrl_apply_state(config->pcfg, state);
+#else
+	ARG_UNUSED(config);
+	ARG_UNUSED(state);
+	return -ENOTSUP;
+#endif
+}
+
+static bool sw_jtag_spi(const struct device *dev)
+{
+	const struct sw_config *config = dev->config;
+
+	return config->spi != NULL && config->pcfg != NULL;
+}
+
+/* whole bytes through the SPI controller; TCK low on both mux switches */
+static int sw_jtag_spi_shift(const struct device *dev, uint32_t nbytes,
+			     const uint8_t *tdi, uint8_t *tdo)
+{
+	const struct sw_config *config = dev->config;
+	struct sw_cfg_data *sw_data = dev->data;
+	int ret, ret2;
+
+	gpio_pin_set_dt(&config->clk, 0);
+	ret = sw_pinctrl(config, PINCTRL_STATE_SPI);
+	if (ret != 0) {
+		return ret;
+	}
+	while (nbytes > 0U && ret == 0) {
+		uint32_t n = MIN(nbytes, JTAG_SPI_CHUNK);
+		struct spi_buf tx = {.buf = (void *)tdi, .len = n};
+		struct spi_buf rx = {.buf = tdo, .len = n};
+		struct spi_buf_set txs = {.buffers = &tx, .count = 1};
+		struct spi_buf_set rxs = {.buffers = &rx, .count = 1};
+
+		ret = spi_transceive(config->spi, &sw_data->spi_cfg[sw_data->spi_cfg_idx], &txs,
+				     tdo != NULL ? &rxs : NULL);
+		tdi += n;
+		if (tdo != NULL) {
+			tdo += n;
+		}
+		nbytes -= n;
+	}
+	/* the SPI clock idles low: the GPIO takes over at the same level */
+	ret2 = sw_pinctrl(config, PINCTRL_STATE_DEFAULT);
+	return ret != 0 ? ret : ret2;
+}
+
+static int sw_jtag_sequence(const struct device *dev, uint32_t count, bool tms,
+			    const uint8_t *tdi, uint8_t *tdo)
+{
+	const struct sw_config *config = dev->config;
+	struct sw_cfg_data *sw_data = dev->data;
+	uint32_t done = 0U;
+	unsigned int key;
+	int ret;
+
+	if (config->tdi.port == NULL || config->tdo.port == NULL) {
+		return -ENOTSUP;
+	}
+	if (count == 0U) {
+		return 0;
+	}
+	/* TMS is SWDIO: an output for the whole sequence */
+	pin_swdio_out(dev, tms ? 1U : 0U);
+	pin_swdio_out_enable(dev);
+
+	if (sw_jtag_spi(dev) && count >= 8U) {
+		done = count & ~7U;
+		ret = sw_jtag_spi_shift(dev, done / 8U, tdi, tdo);
+		if (ret != 0) {
+			return ret;
+		}
+	}
+
+	key = irq_lock();
+	for (uint32_t i = done; i < count; i++) {
+		uint32_t bit;
+
+		gpio_pin_set_dt(&config->tdi, (tdi[i / 8U] >> (i % 8U)) & 1U);
+		pin_swclk_clr(dev);
+		pin_delay_asm(sw_data->clock_delay);
+		bit = (uint32_t)gpio_pin_get_dt(&config->tdo) & 1U;
+		pin_swclk_set(dev);
+		pin_delay_asm(sw_data->clock_delay);
+		if (tdo != NULL) {
+			if ((i % 8U) == 0U) {
+				tdo[i / 8U] = 0U;
+			}
+			tdo[i / 8U] |= (uint8_t)(bit << (i % 8U));
+		}
+	}
+	irq_unlock(key);
+
+	return 0;
+}
+
 static int sw_set_pins(const struct device *dev,
 		       const uint8_t pins, const uint8_t value)
 {
@@ -446,6 +576,10 @@ static int sw_set_pins(const struct device *dev,
 		} else {
 			gpio_pin_set_dt(&config->clk, 0);
 		}
+	}
+
+	if (config->tdi.port != NULL && (pins & BIT(SWDP_TDI_PIN)) != 0U) {
+		gpio_pin_set_dt(&config->tdi, (value & BIT(SWDP_TDI_PIN)) != 0U ? 1 : 0);
 	}
 
 	if (config->dout_reg != NULL) {
@@ -511,6 +645,16 @@ static int sw_get_pins(const struct device *dev, uint8_t *const state)
 	val = gpio_pin_get_dt(&config->dio);
 	*state |= val ? BIT(SWDP_SWDIO_PIN) : 0;
 
+	if (config->tdi.port != NULL) {
+		val = gpio_pin_get_dt(&config->tdi);
+		*state |= val ? BIT(SWDP_TDI_PIN) : 0;
+	}
+
+	if (config->tdo.port != NULL) {
+		val = gpio_pin_get_dt(&config->tdo);
+		*state |= val ? BIT(SWDP_TDO_PIN) : 0;
+	}
+
 	val = gpio_pin_get_dt(&config->clk);
 	*state |= val ? BIT(SWDP_SWCLK_PIN) : 0;
 
@@ -541,6 +685,9 @@ static int sw_set_clock(const struct device *dev, const uint32_t clock)
 	}
 
 	sw_data->clock_delay = delay;
+	sw_data->spi_cfg[sw_data->spi_cfg_idx ^ 1U] = sw_data->spi_cfg[sw_data->spi_cfg_idx];
+	sw_data->spi_cfg_idx ^= 1U;
+	sw_data->spi_cfg[sw_data->spi_cfg_idx].frequency = clock;
 
 	LOG_DBG("cpu_clock %d, delay %d", CPU_CLOCK, sw_data->clock_delay);
 
@@ -583,6 +730,19 @@ static int sw_port_on(const struct device *dev)
 	ret = gpio_pin_configure_dt(&config->dio, GPIO_INPUT);
 	if (ret) {
 		return ret;
+	}
+	if (config->tdi.port != NULL) {
+		ret = gpio_pin_configure_dt(&config->tdi, GPIO_OUTPUT_ACTIVE);
+		if (ret) {
+			return ret;
+		}
+	}
+
+	if (config->tdo.port != NULL) {
+		ret = gpio_pin_configure_dt(&config->tdo, GPIO_INPUT);
+		if (ret) {
+			return ret;
+		}
 	}
 
 	if (config->noe.port) {
@@ -678,6 +838,13 @@ static int sw_port_off(const struct device *dev)
 		}
 	}
 
+	if (config->tdi.port != NULL) {
+		ret = gpio_pin_configure_dt(&config->tdi, off_flags);
+		if (ret) {
+			return ret;
+		}
+	}
+
 	if (config->reset.port) {
 		ret = gpio_pin_configure_dt(&config->reset,
 					    config->keep_reset_deast
@@ -693,8 +860,24 @@ static int sw_port_off(const struct device *dev)
 
 static int sw_gpio_init(const struct device *dev)
 {
+	const struct sw_config *config = dev->config;
 	struct sw_cfg_data *sw_data = dev->data;
 	int ret;
+
+	if (config->pcfg != NULL) {
+		/* GPIO functions; the SPI controller may have muxed its pads */
+		ret = sw_pinctrl(config, PINCTRL_STATE_DEFAULT);
+		if (ret) {
+			return ret;
+		}
+	}
+	if (config->spi != NULL && !device_is_ready(config->spi)) {
+		return -ENODEV;
+	}
+	/* JTAG over SPI: mode 0, LSB first, native chip select (not muxed) */
+	sw_data->spi_cfg[0].operation = SPI_OP_MODE_CONTROLLER | SPI_WORD_SET(8) | SPI_TRANSFER_LSB;
+	sw_data->spi_cfg[0].peripheral = 0U;
+	sw_data->spi_cfg_idx = 0U;
 
 	/* start with the port turned off */
 	ret = sw_port_off(dev);
@@ -720,6 +903,7 @@ static struct swdp_api swdp_bitbang_api = {
 	.swdp_configure	= sw_configure,
 	.swdp_port_on	= sw_port_on,
 	.swdp_port_off	= sw_port_off,
+	.swdp_jtag_sequence = sw_jtag_sequence,
 };
 
 #define SW_GPIOS_GET_REG(n, gpios)							\
@@ -727,13 +911,29 @@ static struct swdp_api swdp_bitbang_api = {
 		    (INT_TO_POINTER(DT_REG_ADDR(DT_PHANDLE(DT_DRV_INST(n), gpios)))),	\
 		    (NULL))
 
+#define SW_PINCTRL_DEFINE(n)								\
+	COND_CODE_1(DT_INST_PINCTRL_HAS_NAME(n, spi), (PINCTRL_DT_INST_DEFINE(n);), ())
+
+#define SW_PINCTRL_GET(n)								\
+	COND_CODE_1(DT_INST_PINCTRL_HAS_NAME(n, spi),					\
+		    (PINCTRL_DT_INST_DEV_CONFIG_GET(n)), (NULL))
+
 #define SW_DEVICE_DEFINE(n)								\
 	BUILD_ASSERT((DT_INST_NODE_HAS_PROP(n, dout_gpios)) ==				\
 		     (DT_INST_NODE_HAS_PROP(n, dnoe_gpios)),				\
 		     "Either the dout-gpios or dnoe-gpios property is missing.");	\
+	BUILD_ASSERT(!DT_INST_NODE_HAS_PROP(n, jtag_spi) ||				\
+		     DT_INST_PINCTRL_HAS_NAME(n, spi),					\
+		     "jtag-spi needs the \"default\" and \"spi\" pinctrl states.");	\
 											\
+	SW_PINCTRL_DEFINE(n)								\
 	static const struct sw_config sw_cfg_##n = {					\
 		.clk = GPIO_DT_SPEC_INST_GET(n, clk_gpios),				\
+		.tdi = GPIO_DT_SPEC_INST_GET_OR(n, tdi_gpios, {0}),			\
+		.tdo = GPIO_DT_SPEC_INST_GET_OR(n, tdo_gpios, {0}),			\
+		.spi = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, jtag_spi),			\
+				   (DEVICE_DT_GET(DT_INST_PHANDLE(n, jtag_spi))), (NULL)),	\
+		.pcfg = SW_PINCTRL_GET(n),						\
 		.clk_reg = SW_GPIOS_GET_REG(n, clk_gpios),				\
 		.dio = GPIO_DT_SPEC_INST_GET(n, dio_gpios),				\
 		.dio_reg = SW_GPIOS_GET_REG(n, dio_gpios),				\
