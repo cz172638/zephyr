@@ -6,7 +6,9 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
+#if __has_include(<soc.h>)
 #include <soc.h>
+#endif
 
 static ALWAYS_INLINE void pin_delay_asm(uint32_t delay)
 {
@@ -16,6 +18,14 @@ static ALWAYS_INLINE void pin_delay_asm(uint32_t delay)
 			"subs %0, #1\n"
 			"bne .start_%=\n"
 			: "+l" (delay)
+			:
+			: "cc"
+			);
+#elif defined(CONFIG_ARM64)
+	__asm volatile ("1:\n"
+			"subs %0, %0, #1\n"
+			"b.ne 1b\n"
+			: "+r" (delay)
 			:
 			: "cc"
 			);

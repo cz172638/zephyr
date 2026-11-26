@@ -8,6 +8,8 @@ project(rk3308_usb_probe)
 include(${ZEPHYR_BASE}/samples/subsys/usb/common/common.cmake)
 target_sources(app PRIVATE src/main.c src/cpufreq.c)
 
+target_sources_ifdef(CONFIG_DAP_BACKEND_TCP app PRIVATE src/dap.c)
+
 if(CONFIG_SSH_SERVER)
   target_sources(app PRIVATE src/ssh.c)
   if(NOT CONFIG_USB_PROBE_SSH_HOST_KEY STREQUAL "")

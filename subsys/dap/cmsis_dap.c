@@ -202,8 +202,26 @@ static uint16_t dap_connect(struct dap_link_context *const ctx,
 		}
 		break;
 	case DAP_PORT_JTAG:
-		LOG_ERR("port unsupported");
-		port = DAP_ERROR;
+		if ((ctx->capabilities & DAP_DP_SUPPORTS_JTAG) == 0U) {
+			LOG_ERR("port unsupported");
+			port = DAP_PORT_DISABLED;
+			break;
+		}
+		LOG_INF("port jtag");
+		ctx->debug_port = DAP_PORT_JTAG;
+
+		if (atomic_test_and_set_bit(&ctx->state,
+					    DAP_STATE_CONNECTED)) {
+			LOG_ERR("DAP device is already connected");
+			break;
+		}
+
+		if (swdp_port_on(ctx->dev) != 0) {
+			LOG_ERR("failed to enable debug port");
+			atomic_clear_bit(&ctx->state, DAP_STATE_CONNECTED);
+			ctx->debug_port = DAP_PORT_DISABLED;
+			port = DAP_PORT_DISABLED;
+		}
 		break;
 	default:
 		LOG_DBG("port disabled");
@@ -833,6 +851,67 @@ static uint16_t dap_process_vendor_cmd(struct dap_link_context *const ctx,
 	return 1U;
 }
 
+/* Process JTAG Sequence command and prepare response */
+static uint16_t dap_jtag_sequence(struct dap_link_context *const ctx,
+				  const uint8_t *const request,
+				  uint8_t *const response)
+{
+	const uint8_t *seq = &request[1];
+	uint8_t *tdo = &response[1];
+	uint8_t count = request[0];
+	uint16_t len = 1U;
+
+	if (!atomic_test_bit(&ctx->state, DAP_STATE_CONNECTED) ||
+	    ctx->debug_port != DAP_PORT_JTAG) {
+		LOG_ERR("JTAG port not connected");
+		response[0] = DAP_ERROR;
+		return 1U;
+	}
+
+	while (count-- > 0U) {
+		uint8_t info = *seq++;
+		uint32_t tck = (info & 0x3fU) == 0U ? 64U : (info & 0x3fU);
+		uint32_t nbytes = (tck + 7U) / 8U;
+		bool capture = (info & BIT(7)) != 0U;
+
+		if (len + (capture ? nbytes : 0U) > ctx->pkt_size) {
+			response[0] = DAP_ERROR;
+			return 1U;
+		}
+		if (swdp_jtag_sequence(ctx->dev, tck, (info & BIT(6)) != 0U, seq,
+				       capture ? tdo : NULL) != 0) {
+			response[0] = DAP_ERROR;
+			return 1U;
+		}
+		seq += nbytes;
+		if (capture) {
+			tdo += nbytes;
+			len += nbytes;
+		}
+	}
+
+	response[0] = DAP_OK;
+	return len;
+}
+
+/* Process JTAG Configure command and prepare response */
+static uint16_t dap_jtag_configure(struct dap_link_context *const ctx,
+				   const uint8_t *const request,
+				   uint8_t *const response)
+{
+	uint8_t count = request[0];
+
+	if (count > ARRAY_SIZE(ctx->jtag.ir_length)) {
+		response[0] = DAP_ERROR;
+		return 1U;
+	}
+	ctx->jtag.count = count;
+	memcpy(ctx->jtag.ir_length, &request[1], count);
+
+	response[0] = DAP_OK;
+	return 1U;
+}
+
 /*
  * Process DAP command request and prepare response
  *   request:  pointer to request data
@@ -892,14 +971,10 @@ static uint16_t dap_process_cmd(struct dap_link_context *const ctx,
 		retval = dap_swdp_sequence(ctx, request, response);
 		break;
 	case ID_DAP_JTAG_SEQUENCE:
-		LOG_ERR("JTAG sequence unsupported");
-		retval = 1;
-		*response = DAP_ERROR;
+		retval = dap_jtag_sequence(ctx, request, response);
 		break;
 	case ID_DAP_JTAG_CONFIGURE:
-		LOG_ERR("JTAG configure unsupported");
-		retval = 1;
-		*response = DAP_ERROR;
+		retval = dap_jtag_configure(ctx, request, response);
 		break;
 	case ID_DAP_JTAG_IDCODE:
 		LOG_ERR("JTAG IDCODE unsupported");
@@ -1039,6 +1114,10 @@ int dap_link_init(struct dap_link_context *const dap_link_ctx)
 	dap_link_ctx->transfer.match_mask = 0U;
 	dap_link_ctx->capabilities = DAP_SUPPORTS_ATOMIC_COMMANDS |
 				     DAP_DP_SUPPORTS_SWD;
+	dap_link_ctx->jtag.count = 0U;
+	if (swdp_jtag_sequence(dap_link_ctx->dev, 0U, false, NULL, NULL) == 0) {
+		dap_link_ctx->capabilities |= DAP_DP_SUPPORTS_JTAG;
+	}
 
 	return 0;
 }

@@ -47,6 +47,39 @@ config DAP_BACKEND_USB
 	help
 	  DAP USB backend using bulk endpoints.
 
+config DAP_BACKEND_TCP
+	bool "TCP backend"
+	depends on NET_SOCKETS && NET_TCP && NET_IPV4
+	help
+	  DAP over TCP, framed as OpenOCD's "cmsis-dap backend tcp" expects:
+	    adapter driver cmsis-dap
+	    cmsis-dap backend tcp
+	    cmsis-dap tcp host <address>
+
+if DAP_BACKEND_TCP
+
+config DAP_BACKEND_TCP_PORT
+	int "TCP port"
+	default 4441
+
+config DAP_BACKEND_TCP_PACKET_SIZE
+	int "Packet size"
+	default 1024
+	range 64 1024
+	help
+	  Largest request and response payload; OpenOCD's TCP backend takes
+	  up to 1024 bytes.
+
+config DAP_BACKEND_TCP_STACK_SIZE
+	int "Server thread stack size"
+	default 2048
+
+config DAP_BACKEND_TCP_PRIORITY
+	int "Server thread priority"
+	default 7
+
+endif # DAP_BACKEND_TCP
+
 module = DAP
 module-str = dap
 source "subsys/logging/Kconfig.template.log_config"

@@ -7,7 +7,8 @@
  * the line coding the host sets on a bridged port is applied to its UART.
  * The FAT partition of a micro SD card is mounted at /SD:; "fwupdate"
  * writes the card's boot area. With net.conf: Ethernet with DHCP, mDNS
- * (rk3308-probe-<mac>.local), and the shell over SSH.
+ * (rk3308-probe-<mac>.local), the shell over SSH and CMSIS-DAP over TCP
+ * (SWD/JTAG on header 2).
  */
 
 #include <ff.h>
@@ -87,6 +88,9 @@ int main(void)
 	}
 	if (IS_ENABLED(CONFIG_SSH_SERVER)) {
 		probe_ssh_start();
+	}
+	if (IS_ENABLED(CONFIG_DAP_BACKEND_TCP)) {
+		probe_dap_start();
 	}
 	return 0;
 }

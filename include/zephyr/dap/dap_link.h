@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/swdp.h>
+#include <zephyr/sys/atomic.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,7 +36,7 @@ extern "C" {
  */
 struct dap_link_context {
 	/** @cond INTERNAL_HIDDEN */
-	/* Pointer to SWD or JTAG device. Only SWD is supported yet. */
+	/* SWD device, also shifting JTAG sequences if it supports them */
 	const struct device *dev;
 	atomic_t state;
 	/* Runtime debug port type */
@@ -54,6 +55,12 @@ struct dap_link_context {
 		/* Match Mask */
 		uint32_t match_mask;
 	} transfer;
+	struct {
+		/* Devices in the scan chain (DAP_JTAG_Configure) */
+		uint8_t count;
+		/* Their instruction register lengths */
+		uint8_t ir_length[8];
+	} jtag;
 	/** @endcond */
 };
 
@@ -104,6 +111,20 @@ void dap_link_set_pkt_size(struct dap_link_context *const dap_link_ctx,
  * @retval -errno Negative error code on failure.
  */
 int dap_link_backend_usb_init(struct dap_link_context *const dap_link_ctx);
+
+/**
+ * @brief Serve CMSIS-DAP over TCP
+ *
+ * Starts a thread that accepts one client at a time on
+ * CONFIG_DAP_BACKEND_TCP_PORT and executes the requests it frames as OpenOCD's
+ * cmsis-dap tcp backend does (8-byte header: "DAP" signature, payload length,
+ * packet type).
+ *
+ * @param dap_link_ctx Pointer to the DAP link context
+ * @retval 0 Server thread started
+ * @retval -EALREADY Already started
+ */
+int dap_link_backend_tcp_init(struct dap_link_context *const dap_link_ctx);
 
 #ifdef __cplusplus
 }
