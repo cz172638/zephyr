@@ -215,7 +215,7 @@
 		 * the 1.5 Mbaud debug console); there is no CRU driver yet.
 		 */
 		uart0: serial@ff0a0000 {
-			compatible = "rockchip,rk3308-uart", "ns16550";
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
 			reg = <0xff0a0000 0x100>;
 			interrupt-parent = <&gic>;
 			interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
@@ -225,7 +225,7 @@
 		};
 
 		uart1: serial@ff0b0000 {
-			compatible = "rockchip,rk3308-uart", "ns16550";
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
 			reg = <0xff0b0000 0x100>;
 			interrupt-parent = <&gic>;
 			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
@@ -235,7 +235,7 @@
 		};
 
 		uart2: serial@ff0c0000 {
-			compatible = "rockchip,rk3308-uart", "ns16550";
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
 			reg = <0xff0c0000 0x100>;
 			interrupt-parent = <&gic>;
 			interrupts = <GIC_SPI 20 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
@@ -245,7 +245,7 @@
 		};
 
 		uart3: serial@ff0d0000 {
-			compatible = "rockchip,rk3308-uart", "ns16550";
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
 			reg = <0xff0d0000 0x100>;
 			interrupt-parent = <&gic>;
 			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
@@ -255,7 +255,7 @@
 		};
 
 		uart4: serial@ff0e0000 {
-			compatible = "rockchip,rk3308-uart", "ns16550";
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
 			reg = <0xff0e0000 0x100>;
 			interrupt-parent = <&gic>;
 			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
