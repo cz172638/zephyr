@@ -196,6 +196,42 @@
 			status = "disabled";
 		};
 
+		spi0: spi@ff120000 {
+			compatible = "rockchip,rk3308-spi", "rockchip,rk3066-spi";
+			reg = <0xff120000 0x1000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 15 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&cru_clk SCLK_SPI0>, <&cru_clk PCLK_SPI0>;
+			clock-names = "spiclk", "apb_pclk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		spi1: spi@ff130000 {
+			compatible = "rockchip,rk3308-spi", "rockchip,rk3066-spi";
+			reg = <0xff130000 0x1000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&cru_clk SCLK_SPI1>, <&cru_clk PCLK_SPI1>;
+			clock-names = "spiclk", "apb_pclk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		spi2: spi@ff140000 {
+			compatible = "rockchip,rk3308-spi", "rockchip,rk3066-spi";
+			reg = <0xff140000 0x1000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&cru_clk SCLK_SPI2>, <&cru_clk PCLK_SPI2>;
+			clock-names = "spiclk", "apb_pclk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		pwm0: pwm@ff180000 {
 			compatible = "rockchip,rk3328-pwm";
 			reg = <0xff180000 0x10>;
