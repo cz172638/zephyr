@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/swdp.h>
+#include <zephyr/sys/atomic.h>
 
 #ifdef __cplusplus
 extern "C" {
