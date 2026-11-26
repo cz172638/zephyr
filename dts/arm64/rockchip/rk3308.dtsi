@@ -95,6 +95,34 @@
 			};
 		};
 
+		usb2phy_grf: syscon@ff008000 {
+			compatible = "rockchip,rk3308-usb2phy-grf", "syscon";
+			reg = <0xff008000 0x4000>;
+		};
+
+		/*
+		 * OTG controller (DWC2 3.10a): GHWCFG values read on a ROCK Pi S,
+		 * for the endpoint setup before the controller is enabled.
+		 * EP1/3/5/7 IN, EP2/4/6 OUT, EP0/8/9 bidirectional; 972 words
+		 * of FIFO RAM. FIFO sizes as in Linux.
+		 */
+		usb20_otg: usb@ff400000 {
+			compatible = "rockchip,rk3308-usb", "snps,dwc2";
+			reg = <0xff400000 0x40000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			rockchip,usb2phy-grf = <&usb2phy_grf>;
+			num-in-eps = <7>;
+			num-out-eps = <6>;
+			ghwcfg1 = <0x00006664>;
+			ghwcfg2 = <0x228e2450>;
+			ghwcfg4 = <0xdbf04030>;
+			g-rx-fifo-size = <280>;
+			g-np-tx-fifo-size = <16>;
+			g-tx-fifo-size = <256 128 128 64 32 16>;
+			status = "disabled";
+		};
+
 		cru: clock-controller@ff500000 {
 			compatible = "rockchip,rk3308-cru", "syscon";
 			reg = <0xff500000 0x10000>;
