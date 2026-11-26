@@ -112,6 +112,19 @@ void dap_link_set_pkt_size(struct dap_link_context *const dap_link_ctx,
  */
 int dap_link_backend_usb_init(struct dap_link_context *const dap_link_ctx);
 
+/**
+ * @brief Serve CMSIS-DAP over TCP
+ *
+ * Starts a thread that accepts one client at a time on
+ * CONFIG_DAP_BACKEND_TCP_PORT and executes the requests it frames as OpenOCD's
+ * cmsis-dap tcp backend does (8-byte header: "DAP" signature, payload length,
+ * packet type).
+ *
+ * @param dap_link_ctx Pointer to the DAP link context
+ * @retval 0 Server thread started
+ * @retval -EALREADY Already started
+ */
+int dap_link_backend_tcp_init(struct dap_link_context *const dap_link_ctx);
 
 #ifdef __cplusplus
 }
