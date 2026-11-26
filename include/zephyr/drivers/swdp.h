@@ -13,6 +13,9 @@
 #ifndef ZEPHYR_INCLUDE_SWDP_H_
 #define ZEPHYR_INCLUDE_SWDP_H_
 
+#include <errno.h>
+#include <stdbool.h>
+
 #include <zephyr/device.h>
 
 #ifdef __cplusplus
@@ -82,6 +85,12 @@ extern "C" {
 #define SWDP_SWCLK_PIN			0U
 /** Serial Wire Data Input/Output (SWDIO) pin identifier */
 #define SWDP_SWDIO_PIN			1U
+/** JTAG test data input (TDI) pin identifier */
+#define SWDP_TDI_PIN			2U
+/** JTAG test data output (TDO) pin identifier */
+#define SWDP_TDO_PIN			3U
+/** JTAG test reset (nTRST) pin identifier */
+#define SWDP_nTRST_PIN			5U
 /** Active-low reset (nRESET) pin identifier */
 #define SWDP_nRESET_PIN			7U
 
@@ -192,6 +201,17 @@ struct swdp_api {
 	 * @return 0 on success, or error code
 	 */
 	int (*swdp_port_off)(const struct device *dev);
+
+	/**
+	 * @brief Shift a JTAG sequence (optional)
+	 *
+	 * See swdp_jtag_sequence() for argument description
+	 */
+	int (*swdp_jtag_sequence)(const struct device *dev,
+				  uint32_t count,
+				  bool tms,
+				  const uint8_t *tdi,
+				  uint8_t *tdo);
 };
 
 /**
@@ -378,6 +398,46 @@ static inline int z_impl_swdp_configure(const struct device *dev,
 	const struct swdp_api *api = dev->api;
 
 	return api->swdp_configure(dev, turnaround, data_phase);
+}
+
+/**
+ * @brief Shift a JTAG sequence
+ *
+ * Clocks @p count TCK cycles with TMS held at @p tms, the TDI bits taken
+ * from @p tdi (LSB of the first byte first) and, if @p tdo is not NULL,
+ * the TDO bits stored the same way (sampled before each rising TCK edge).
+ * SWCLK is TCK, SWDIO is TMS. A @p count of 0 only checks that the
+ * driver and its wiring support JTAG.
+ *
+ * @param dev SWDP device
+ * @param count Number of TCK cycles
+ * @param tms TMS level during the sequence
+ * @param tdi TDI bits, (@p count + 7) / 8 bytes
+ * @param tdo Buffer for the TDO bits, (@p count + 7) / 8 bytes, or NULL
+ * @retval 0 On success
+ * @retval -ENOSYS The driver has no JTAG support
+ * @retval -ENOTSUP JTAG pins not wired
+ * @retval -errno Other negative errno code on failure
+ */
+__syscall int swdp_jtag_sequence(const struct device *dev,
+				 uint32_t count,
+				 bool tms,
+				 const uint8_t *tdi,
+				 uint8_t *tdo);
+
+static inline int z_impl_swdp_jtag_sequence(const struct device *dev,
+					    uint32_t count,
+					    bool tms,
+					    const uint8_t *tdi,
+					    uint8_t *tdo)
+{
+	const struct swdp_api *api = dev->api;
+
+	if (api->swdp_jtag_sequence == NULL) {
+		return -ENOSYS;
+	}
+
+	return api->swdp_jtag_sequence(dev, count, tms, tdi, tdo);
 }
 
 #ifdef __cplusplus
