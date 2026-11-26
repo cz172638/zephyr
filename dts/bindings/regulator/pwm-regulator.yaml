@@ -1,0 +1,49 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Regulator whose output voltage is set by the duty cycle of a PWM, in
+  the continuous mode of the Linux pwm-regulator binding: the voltage goes
+  linearly from regulator-min-microvolt to regulator-max-microvolt as the
+  duty cycle goes from the first to the second value of
+  pwm-dutycycle-range. The PWM flags (e.g. PWM_POLARITY_INVERTED) are
+  applied as usual: the duty cycle is the active part of the period.
+
+compatible: "pwm-regulator"
+
+include:
+  - name: base.yaml
+  - name: regulator.yaml
+    property-allowlist:
+      - regulator-name
+      - regulator-init-microvolt
+      - regulator-min-microvolt
+      - regulator-max-microvolt
+      - regulator-always-on
+      - regulator-boot-on
+
+properties:
+  pwms:
+    type: phandle-array
+    required: true
+
+  regulator-min-microvolt:
+    required: true
+
+  regulator-max-microvolt:
+    required: true
+
+  pwm-dutycycle-range:
+    type: array
+    default: [0, 100]
+    description: Duty cycles of the minimum and the maximum voltage.
+
+  pwm-dutycycle-unit:
+    type: int
+    default: 100
+    description: Unit of pwm-dutycycle-range (100 for percent).
+
+  regulator-settling-time-up-us:
+    type: int
+    default: 0
+    description: Wait after a voltage increase.
