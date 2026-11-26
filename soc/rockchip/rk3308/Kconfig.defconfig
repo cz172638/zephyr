@@ -14,6 +14,11 @@ config SYS_CLOCK_HW_CYCLES_PER_SEC
 configdefault UART_NS16550_ACCESS_WORD_ONLY
 	default y
 
+# CRU and GRF syscons before the CRU clock gates (a child of the CRU node,
+# CLOCK_CONTROL_INIT_PRIORITY) and the drivers using them
+config SYSCON_INIT_PRIORITY
+	default 10
+
 config FLASH_SIZE
 	default 0
 
