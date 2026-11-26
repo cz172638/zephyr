@@ -1,0 +1,64 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * ACM0: probe shell. ACM1: UART1 (header pins 24 TX, 23 RX). ACM2: UART2
+ * M0 (pins 19 TX, 21 RX). The host sets the line coding of each bridged
+ * port. UART0 (pins 8/10) stays the console of the probe.
+ */
+
+/ {
+	chosen {
+		zephyr,shell-uart = &cdc_acm_uart0;
+	};
+
+	uart-bridge1 {
+		compatible = "zephyr,uart-bridge";
+		peers = <&cdc_acm_uart1 &uart1>;
+	};
+
+	uart-bridge2 {
+		compatible = "zephyr,uart-bridge";
+		peers = <&cdc_acm_uart2 &uart2>;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "probe shell";
+	};
+
+	cdc_acm_uart1: cdc_acm_uart1 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "UART1 pins 23/24";
+	};
+
+	cdc_acm_uart2: cdc_acm_uart2 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "UART2 pins 19/21";
+	};
+};
+
+/*
+ * TX FIFO per IN endpoint, in the order the CDC ACM functions take them
+ * (lowest free number first): notification (interrupt), data (bulk) for
+ * each port. Bulk IN at high speed needs 128 words (512 bytes).
+ */
+&usb20_otg {
+	g-tx-fifo-size = <16 128 16 128 16 128>;
+};
+
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+};
+
+&uart2 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart2_default>;
+	pinctrl-names = "default";
+};
