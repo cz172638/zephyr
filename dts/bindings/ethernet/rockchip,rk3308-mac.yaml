@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+title: Rockchip RK3308 MAC
+
+description: |
+  10/100 RMII Ethernet MAC of the Rockchip RK3308 (MAC2IO), a Synopsys
+  DesignWare MAC v3.x. The driver programs the CRU and GRF itself (clock,
+  gates, reset, RMII pin group M0) until RK3308 clock and pinctrl drivers
+  exist.
+
+compatible: "rockchip,rk3308-mac"
+
+include: snps,dwmac.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  phy-connection-type:
+    required: true
+
+  phy-handle:
+    required: true
+
+  rockchip,grf:
+    type: phandle
+    required: true
+    description: GRF syscon (MAC interface/speed select, RMII pin mux).
+
+  rockchip,cru:
+    type: phandle
+    required: true
+    description: CRU syscon (MAC clock, gates and reset).
+
+  clock-in-out:
+    type: string
+    enum:
+      - "input"
+      - "output"
+    default: "output"
+    description: |
+      Direction of the 50 MHz RMII reference on the MAC_CLK pin. "output":
+      the SoC generates it from one of its PLLs, "input": it comes from the
+      PHY or an oscillator.

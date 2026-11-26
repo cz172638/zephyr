@@ -1,0 +1,16 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Rockchip RK3308 OTG controller (DWC2) with the INNO USB2 PHY, device
+  mode. The PHY's OTG port is set up through the USB2PHY GRF.
+
+compatible: "rockchip,rk3308-usb"
+
+include: ["snps,dwc2.yaml"]
+
+properties:
+  rockchip,usb2phy-grf:
+    type: phandle
+    required: true
+    description: USB2PHY GRF (0xff008000)

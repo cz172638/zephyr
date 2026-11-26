@@ -1,6 +1,9 @@
 family:
   - name: rockchip
     series:
+      - name: rk3308
+        socs:
+          - name: rk3308
       - name: rk3399
         socs:
           - name: rk3399

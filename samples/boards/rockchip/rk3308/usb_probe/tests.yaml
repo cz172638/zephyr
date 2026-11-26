@@ -1,0 +1,17 @@
+sample:
+  name: RK3308 USB lab probe
+  description: CDC ACM shell and UART bridges on the RK3308 OTG port
+common:
+  tags:
+    - usb
+  platform_allow:
+    - rock_pi_s
+  integration_platforms:
+    - rock_pi_s
+  harness: console
+  harness_config:
+    type: one_line
+    regex:
+      - "USB probe: 2 UART bridges"
+tests:
+  sample.boards.rockchip.rk3308.usb_probe: {}

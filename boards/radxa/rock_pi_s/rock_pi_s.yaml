@@ -1,0 +1,13 @@
+identifier: rock_pi_s
+name: Radxa ROCK Pi S (single core)
+type: mcu
+arch: arm64
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 16384
+vendor: radxa
+testing:
+  ignore_tags:
+    - net
+    - bluetooth

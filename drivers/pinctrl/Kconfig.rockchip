@@ -1,0 +1,9 @@
+# Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+config PINCTRL_RK3308
+	bool "Rockchip RK3308 pin controller"
+	default y
+	depends on DT_HAS_ROCKCHIP_RK3308_PINCTRL_ENABLED
+	help
+	  Enable the GRF iomux pin controller driver for Rockchip RK3308.

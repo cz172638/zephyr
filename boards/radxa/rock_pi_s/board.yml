@@ -1,0 +1,8 @@
+board:
+  name: rock_pi_s
+  full_name: Radxa ROCK Pi S
+  vendor: radxa
+  socs:
+  - name: rk3308
+    variants:
+    - name: smp

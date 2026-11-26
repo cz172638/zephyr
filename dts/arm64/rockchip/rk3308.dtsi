@@ -1,0 +1,267 @@
+/*
+ * Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Addresses and interrupt IDs: RK3308 TRM v1.1 Part1, tables 1-1 and 1-3.
+ * GIC_SPI n == interrupt ID (n + 32).
+ */
+
+#include <arm64/armv8-a.dtsi>
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+#include <freq.h>
+#include <mem.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x0>;
+			enable-method = "psci";
+		};
+
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x1>;
+			enable-method = "psci";
+		};
+
+		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x2>;
+			enable-method = "psci";
+		};
+
+		cpu3: cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a35";
+			reg = <0x3>;
+			enable-method = "psci";
+		};
+	};
+
+	psci: psci {
+		compatible = "arm,psci-1.1";
+		method = "smc";
+	};
+
+	firmware {
+		/* OP-TEE as BL32 behind TF-A (SPD=opteed) */
+		optee: optee {
+			compatible = "linaro,optee-tz";
+			method = "smc";
+			status = "disabled";
+		};
+	};
+
+	arch_timer: timer {
+		compatible = "arm,armv8-timer";
+		/* CNTFRQ_EL0 as programmed by TF-A: 24 MHz oscillator */
+		clock-frequency = <DT_FREQ_M(24)>;
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+	};
+
+	soc {
+		/* GIC-400 inside the 64K window at 0xff580000 */
+		gic: interrupt-controller@ff581000 {
+			compatible = "arm,gic-400", "arm,gic-v2", "arm,gic";
+			reg = <0xff581000 0x1000>,	/* GICD */
+			      <0xff582000 0x2000>;	/* GICC */
+			interrupt-controller;
+			#interrupt-cells = <4>;
+			#address-cells = <0>;
+			status = "okay";
+		};
+
+		grf: syscon@ff000000 {
+			compatible = "rockchip,rk3308-grf", "syscon";
+			reg = <0xff000000 0x10000>;
+
+			pinctrl: pinctrl {
+				compatible = "rockchip,rk3308-pinctrl";
+			};
+		};
+
+		usb2phy_grf: syscon@ff008000 {
+			compatible = "rockchip,rk3308-usb2phy-grf", "syscon";
+			reg = <0xff008000 0x4000>;
+		};
+
+		/*
+		 * OTG controller (DWC2 3.10a): GHWCFG values read on a ROCK Pi S,
+		 * for the endpoint setup before the controller is enabled.
+		 * EP1/3/5/7 IN, EP2/4/6 OUT, EP0/8/9 bidirectional; 972 words
+		 * of FIFO RAM. FIFO sizes as in Linux.
+		 */
+		usb20_otg: usb@ff400000 {
+			compatible = "rockchip,rk3308-usb", "snps,dwc2";
+			reg = <0xff400000 0x40000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			rockchip,usb2phy-grf = <&usb2phy_grf>;
+			num-in-eps = <7>;
+			num-out-eps = <6>;
+			ghwcfg1 = <0x00006664>;
+			ghwcfg2 = <0x228e2450>;
+			ghwcfg4 = <0xdbf04030>;
+			g-rx-fifo-size = <280>;
+			g-np-tx-fifo-size = <16>;
+			g-tx-fifo-size = <256 128 128 64 32 16>;
+			status = "disabled";
+		};
+
+		cru: clock-controller@ff500000 {
+			compatible = "rockchip,rk3308-cru", "syscon";
+			reg = <0xff500000 0x10000>;
+
+			cru_clk: clock-controller {
+				compatible = "rockchip,rk3308-cru-clk";
+				#clock-cells = <1>;
+			};
+		};
+
+		gpio0: gpio@ff220000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff220000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio1: gpio@ff230000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff230000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio2: gpio@ff240000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff240000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio3: gpio@ff250000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff250000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		gpio4: gpio@ff260000 {
+			compatible = "snps,designware-gpio";
+			reg = <0xff260000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			status = "disabled";
+		};
+
+		/* 10/100 RMII MAC (MAC2IO), DWMAC v3.x */
+		mac: ethernet@ff4e0000 {
+			compatible = "rockchip,rk3308-mac", "snps,dwmac";
+			reg = <0xff4e0000 0x10000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			rockchip,grf = <&grf>;
+			rockchip,cru = <&cru>;
+			phy-connection-type = "rmii";
+			/* CSR clock up to 150 MHz -> MDC /62, at most 2.4 MHz */
+			snps,clk-csr = <1>;
+			status = "disabled";
+
+			mdio: mdio {
+				compatible = "snps,dwmac-mdio";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		/*
+		 * Synopsys DW APB UARTs. clock-frequency assumes the boot loader
+		 * left SCLK_UARTx on the 24 MHz oscillator (what U-Boot does for
+		 * the 1.5 Mbaud debug console); there is no CRU driver yet.
+		 */
+		uart0: serial@ff0a0000 {
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
+			reg = <0xff0a0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart1: serial@ff0b0000 {
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
+			reg = <0xff0b0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart2: serial@ff0c0000 {
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
+			reg = <0xff0c0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 20 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart3: serial@ff0d0000 {
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
+			reg = <0xff0d0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+
+		uart4: serial@ff0e0000 {
+			compatible = "rockchip,rk3308-uart", "snps,dw-apb-uart", "ns16550";
+			reg = <0xff0e0000 0x100>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			reg-shift = <2>;
+			clock-frequency = <DT_FREQ_M(24)>;
+			status = "disabled";
+		};
+	};
+};

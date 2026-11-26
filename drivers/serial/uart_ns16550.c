@@ -685,10 +685,23 @@ static int uart_ns16550_configure(const struct device *dev,
 	struct uart_ns16550_dev_data * const dev_data = dev->data;
 	const struct uart_ns16550_dev_config * const dev_cfg = dev->config;
 	uint8_t mdc = 0U, c;
+	uint8_t ier = 0U;
 	uint32_t pclk = 0U;
 	int ret;
 
 	k_spinlock_key_t key = k_spin_lock(&dev_data->lock);
+
+#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+	/*
+	 * A runtime reconfiguration (a bridge applying the line coding of its
+	 * peer, say) keeps the interrupts the user enabled; masked while the
+	 * divisor and FIFOs are reprogrammed.
+	 */
+	if (dev_data->cb != NULL) {
+		ier = ns16550_inbyte(dev_cfg, IER(dev));
+		ns16550_outbyte(dev_cfg, IER(dev), 0x00);
+	}
+#endif
 
 #if defined(CONFIG_PINCTRL)
 	if (dev_cfg->pincfg != NULL) {
@@ -847,11 +860,11 @@ static int uart_ns16550_configure(const struct device *dev,
 	/* clear the port */
 	(void)ns16550_read_char(dev, &c);
 
-	/* disable interrupts  */
-	ns16550_outbyte(dev_cfg, IER(dev), 0x00);
 	ret = 0;
 
 out:
+	/* interrupts as before, all off at init */
+	ns16550_outbyte(dev_cfg, IER(dev), ier);
 	k_spin_unlock(&dev_data->lock, key);
 	return ret;
 };

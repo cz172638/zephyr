@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Jiri Kastner <cz172638@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+description: ARM Cortex-A35 CPU
+
+compatible: "arm,cortex-a35"
+
+include: cpu.yaml
