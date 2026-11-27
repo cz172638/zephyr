@@ -21,7 +21,10 @@
 #include <zephyr/drivers/pcie/aer.h>
 #include <zephyr/drivers/pcie/controller.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+
+LOG_MODULE_REGISTER(pcie_aer, LOG_LEVEL_INF);
 
 /* Configuration space, byte offsets */
 #define CMDSTAT    0x04
@@ -530,4 +533,42 @@ int pcie_aer_root_service(const struct device *dev, pcie_bdf_t root, pcie_aer_re
 
 	(void)pcie_aer_walk(dev, root, sweep_fn, &c);
 	return n + c.n;
+}
+
+void pcie_aer_report_log(const struct device *dev, const struct pcie_aer_event *ev)
+{
+	static const char *const sev[] = {"correctable", "non-fatal", "fatal"};
+	const struct pcie_aer_stat *st;
+	uint32_t n = 0;
+	char bits[96];
+
+	for (int i = 0; (st = pcie_aer_stat_get(i)) != NULL; i++) {
+		if (st->bdf == ev->bdf) {
+			n = st->cnt[0] + st->cnt[1] + st->cnt[2];
+			break;
+		}
+	}
+	if (n > CONFIG_PCIE_AER_LOG_LIMIT) {
+		return; /* counted only */
+	}
+	if (ev->sev == PCIE_AER_COR) {
+		pcie_aer_bits_str(bits, sizeof(bits), ev->ce, pcie_aer_ce_name);
+	} else {
+		pcie_aer_bits_str(bits, sizeof(bits), ev->ue, pcie_aer_ue_name);
+	}
+	if (ev->bdf == PCIE_BDF_NONE) {
+		LOG_WRN("%s: AER %s error, source unknown", dev->name, sev[ev->sev]);
+	} else {
+		LOG_WRN("%s: AER %s error from %02x:%02x.%x%s: %s", dev->name, sev[ev->sev],
+			PCIE_BDF_TO_BUS(ev->bdf), PCIE_BDF_TO_DEV(ev->bdf),
+			PCIE_BDF_TO_FUNC(ev->bdf), ev->multiple ? " (and more)" : "",
+			bits[0] != '\0' ? bits : "(no AER status)");
+	}
+	if (ev->hdr_valid) {
+		LOG_WRN("  TLP header %08x %08x %08x %08x", ev->hdr[0], ev->hdr[1], ev->hdr[2],
+			ev->hdr[3]);
+	}
+	if (n == CONFIG_PCIE_AER_LOG_LIMIT) {
+		LOG_WRN("  further errors of this source only counted (pcie controller aer)");
+	}
 }
