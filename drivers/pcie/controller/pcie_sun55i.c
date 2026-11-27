@@ -30,6 +30,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pcie/aer.h>
 #include <zephyr/drivers/pcie/controller.h>
 #include <zephyr/drivers/pcie/pcie.h>
 #if defined(CONFIG_PCIE_CTRL_SHELL)
@@ -202,6 +203,7 @@ struct sun55i_rc_data {
 	struct k_work_delayable mon_work;
 	uint8_t up_polls;
 	unsigned int link_downs;
+	unsigned int aer_events;
 	unsigned int core_resets;
 };
 
@@ -754,6 +756,16 @@ static void sun55i_rc_scan(const struct device *dev)
 	pcie_generic_ctrl_enumerate(dev, PCIE_BDF(0, 0, 0));
 	(void)pcie_dev_scan();
 	data->scans++;
+#if defined(CONFIG_PCIE_AER)
+	{
+		uint32_t flags = (IS_ENABLED(CONFIG_PCIE_AER_UR_EP) ? PCIE_AER_UR_EP : 0) |
+				 (IS_ENABLED(CONFIG_PCIE_AER_UR_BRIDGE) ? PCIE_AER_UR_BRIDGE : 0) |
+				 (IS_ENABLED(CONFIG_PCIE_AER_ECRC) ? PCIE_AER_ECRC : 0);
+		int n = pcie_aer_setup(dev, PCIE_BDF(0, 0, 0), flags);
+
+		LOG_INF("%s: AER on %d function(s), polled", dev->name, n);
+	}
+#endif
 }
 
 /*
@@ -800,6 +812,20 @@ static void mon_handler(struct k_work *work)
 	} else if (reset && data->link) {
 		sun55i_rc_scan(dev);
 	}
+#if defined(CONFIG_PCIE_AER)
+	/*
+	 * No error interrupt: the root port's received messages and its own
+	 * errors are taken every poll, so the counters say how many polls saw
+	 * errors, not how many errors there were
+	 */
+	if (data->link && up) {
+		int n = pcie_aer_root_service(dev, PCIE_BDF(0, 0, 0), pcie_aer_report_log);
+
+		if (n > 0) {
+			data->aer_events += n;
+		}
+	}
+#endif
 	k_mutex_unlock(&data->op_lock);
 out:
 	k_work_schedule(dw, K_MSEC(CONFIG_PCIE_SUN55I_POLL_MS));
@@ -896,8 +922,8 @@ static void sh_info(const struct device *dev, const struct shell *sh)
 	shell_print(sh, "root port  %08x class %08x, buses %u..%u, scans %u", drd(dev, 0),
 		    drd(dev, DBI_CLASS), (unsigned int)PCIE_BUS_SECONDARY_NUMBER(bus),
 		    (unsigned int)PCIE_BUS_SUBORDINATE_NUMBER(bus), data->scans);
-	shell_print(sh, "events     link downs %u, core resets %u", data->link_downs,
-		    data->core_resets);
+	shell_print(sh, "events     link downs %u, core resets %u, AER %u", data->link_downs,
+		    data->core_resets, data->aer_events);
 	shell_print(sh, "lnkcap     %08x  lnkctl/sta %08x  lnkctl2 %08x",
 		    drd(dev, data->exp_cap + EXP_LNKCAP), drd(dev, data->exp_cap + EXP_LNKCTL),
 		    drd(dev, data->exp_cap + EXP_LNKCTL2));
