@@ -127,6 +127,13 @@ int pcie_aer_setup(const struct device *dev, pcie_bdf_t root, uint32_t flags);
  */
 int pcie_aer_root_service(const struct device *dev, pcie_bdf_t root, pcie_aer_report_t report);
 
+/**
+ * A pcie_aer_report_t that logs an event (source, severity, status bits,
+ * TLP header) as a warning, the first CONFIG_PCIE_AER_LOG_LIMIT events of
+ * each source; later ones are only counted.
+ */
+void pcie_aer_report_log(const struct device *dev, const struct pcie_aer_event *ev);
+
 /** Counters: entry i (NULL past the end), and reset */
 const struct pcie_aer_stat *pcie_aer_stat_get(int i);
 void pcie_aer_stat_clear(void);
